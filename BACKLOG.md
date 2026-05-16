@@ -187,7 +187,7 @@ arrives.
 
 ---
 
-### BL-011 — Tables routes ⏳ · Est: 3h · Deps: BL-010, BL-009
+### BL-011 — Tables routes ✅ · Est: 3h · Deps: BL-010, BL-009
 
 **Why:** The headline `PATCH` gap lives here. Test thoroughly.
 
