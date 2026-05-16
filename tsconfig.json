@@ -4,6 +4,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2025"],
+    "types": ["node"],
 
     "strict": true,
     "noImplicitAny": true,
