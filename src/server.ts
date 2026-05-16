@@ -5,9 +5,9 @@
  * `close()`, and a `url` getter for the bound base URL. Routes registered at
  * construction time receive parsed JSON bodies and decoded path parameters.
  *
- * The 404 default and 400-on-bad-JSON responses use a minimal Google-style
- * error shape inline; BL-005 lifts that into `src/util/errors.ts` with the
- * full reason set.
+ * Handlers can throw a `BqError` (from `src/util/errors.ts`) and it will be
+ * serialized to the Google-shaped response body with the matching HTTP
+ * status. Anything else thrown becomes a 500 `internalError`.
  */
 
 import { createServer as createHttpServer } from 'node:http';
@@ -17,6 +17,7 @@ import type { AddressInfo } from 'node:net';
 
 import { compileRoutes, matchRoute, parseQueryString } from './router.ts';
 import type { RouteRequest, RouteResponse, Server, ServerConfig } from './types.ts';
+import { BqError } from './util/errors.ts';
 
 export type {
   Handler,
@@ -26,29 +27,16 @@ export type {
   Server,
   ServerConfig,
 } from './types.ts';
+export { BqError } from './util/errors.ts';
+export type { BqErrorBody, BqErrorEntry, BqErrorReason } from './util/errors.ts';
 
-const NOT_FOUND: RouteResponse = {
+const NOT_FOUND_RESPONSE: RouteResponse = {
   status: 404,
-  body: {
-    error: {
-      code: 404,
-      errors: [{ reason: 'notFound', message: 'Route not found.' }],
-      message: 'Route not found.',
-    },
-  },
+  body: BqError.notFound('Route not found.').toResponseBody(),
 };
 
-function googleError(status: number, reason: string, message: string): RouteResponse {
-  return {
-    status,
-    body: {
-      error: {
-        code: status,
-        errors: [{ reason, message }],
-        message,
-      },
-    },
-  };
+function sendBqError(res: ServerResponse, err: BqError): void {
+  send(res, { status: err.code, body: err.toResponseBody() });
 }
 
 export function createServer(config: ServerConfig = {}): Server {
@@ -67,14 +55,14 @@ export function createServer(config: ServerConfig = {}): Server {
     try {
       body = await readBody(req, headers['content-type'] ?? '');
     } catch (err) {
-      // readBody only throws Error.
-      send(res, googleError(400, 'invalid', (err as Error).message));
+      // readBody only throws BqError (with reason: 'invalid').
+      sendBqError(res, err as BqError);
       return;
     }
 
     const match = matchRoute(compiled, method, url.pathname);
     if (match === null) {
-      send(res, NOT_FOUND);
+      send(res, NOT_FOUND_RESPONSE);
       return;
     }
 
@@ -91,8 +79,11 @@ export function createServer(config: ServerConfig = {}): Server {
       const response = await match.route.handler(request);
       send(res, response);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      send(res, googleError(500, 'internalError', message));
+      const bqErr =
+        err instanceof BqError
+          ? err
+          : BqError.internalError(err instanceof Error ? err.message : 'Internal error');
+      sendBqError(res, bqErr);
     }
   }
 
@@ -157,7 +148,7 @@ async function readBody(req: IncomingMessage, contentType: string): Promise<unkn
     return JSON.parse(text) as unknown;
   } catch (err) {
     // JSON.parse always throws a SyntaxError (a subclass of Error).
-    throw new Error(`Invalid JSON: ${(err as Error).message}`);
+    throw BqError.invalid(`Invalid JSON: ${(err as Error).message}`);
   }
 }
 
