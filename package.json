@@ -1,0 +1,63 @@
+{
+  "name": "bigquery-local",
+  "version": "0.0.1",
+  "description": "Node.js + DuckDB local emulator for the Google BigQuery REST API. Drop-in for testing, CI, and local dev — with working PATCH.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-reporter=spec",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=90 --test-coverage-functions=90",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "bigquery",
+    "emulator",
+    "duckdb",
+    "typescript",
+    "nodejs",
+    "testing",
+    "sql",
+    "local-development",
+    "gcp"
+  ],
+  "author": "JT Turner <jtwebman@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jtwebman/bigquery-local.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jtwebman/bigquery-local/issues"
+  },
+  "homepage": "https://github.com/jtwebman/bigquery-local#readme",
+  "dependencies": {
+    "@duckdb/node-api": "1.5.2-r.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.15",
+    "@google-cloud/bigquery": "8.3.1",
+    "typescript": "6.0.3"
+  }
+}
