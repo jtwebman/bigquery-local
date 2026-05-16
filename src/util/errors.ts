@@ -21,7 +21,8 @@ export type BqErrorReason =
   | 'accessDenied'
   | 'internalError'
   | 'quotaExceeded'
-  | 'unsupportedFeature';
+  | 'unsupportedFeature'
+  | 'conditionNotMet';
 
 const REASON_TO_STATUS: Record<BqErrorReason, number> = {
   notFound: 404,
@@ -31,6 +32,7 @@ const REASON_TO_STATUS: Record<BqErrorReason, number> = {
   internalError: 500,
   quotaExceeded: 429,
   unsupportedFeature: 400,
+  conditionNotMet: 412,
 };
 
 export interface BqErrorEntry {
@@ -100,5 +102,9 @@ export class BqError extends Error {
 
   static unsupportedFeature(message: string, location?: string): BqError {
     return new BqError('unsupportedFeature', message, location);
+  }
+
+  static conditionNotMet(message: string, location?: string): BqError {
+    return new BqError('conditionNotMet', message, location);
   }
 }
