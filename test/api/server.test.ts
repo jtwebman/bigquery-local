@@ -3,6 +3,7 @@ import { after, before, test } from 'node:test';
 
 import { createServer } from '../../src/server.ts';
 import type { RouteDefinition, Server } from '../../src/types.ts';
+import { BqError } from '../../src/util/errors.ts';
 
 interface GoogleErrorBody {
   readonly error: {
@@ -44,6 +45,13 @@ const routes: RouteDefinition[] = [
     method: 'GET',
     path: '/non-error-rejection',
     handler: () => Promise.reject('plain string rejection'),
+  },
+  {
+    method: 'GET',
+    path: '/bq-error',
+    handler: () => {
+      throw BqError.notFound('thing not found', 'dataset.id');
+    },
   },
   {
     method: 'GET',
@@ -164,6 +172,16 @@ test('non-Error handler rejection also becomes a 500 with a generic message', as
   assert.equal(body.error.code, 500);
   assert.equal(body.error.errors[0]?.reason, 'internalError');
   assert.equal(body.error.errors[0]?.message, 'Internal error');
+});
+
+test('thrown BqError is serialized with its reason, status, and location', async () => {
+  const res = await fetch(`${server.url}/bq-error`);
+  assert.equal(res.status, 404);
+  const body = (await res.json()) as GoogleErrorBody;
+  assert.equal(body.error.code, 404);
+  assert.equal(body.error.errors[0]?.reason, 'notFound');
+  assert.equal(body.error.errors[0]?.message, 'thing not found');
+  assert.equal((body.error.errors[0] as { location?: string })?.location, 'dataset.id');
 });
 
 test('custom response headers are merged with content-type', async () => {

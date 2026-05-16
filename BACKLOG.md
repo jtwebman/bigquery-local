@@ -101,7 +101,7 @@ arrives.
 
 ---
 
-### BL-005 — Error response shape ⏳ · Est: 1h · Deps: BL-004
+### BL-005 — Error response shape ✅ · Est: 1h · Deps: BL-004
 
 **Why:** BQ clients depend on Google's exact error shape for retry vs abort decisions.
 
