@@ -229,7 +229,7 @@ arrives.
 
 ---
 
-### BL-014 — SQL translator ⏳ · Est: 4h · Deps: BL-013
+### BL-014 — SQL translator ✅ · Est: 4h · Deps: BL-013
 
 **Scope:**
 - `src/sql/translate.ts` walks tokens, applies the rewrite table from plan §"SQL translation":
