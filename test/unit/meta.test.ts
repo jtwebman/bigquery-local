@@ -57,6 +57,25 @@ test('ensureMetaSchema is idempotent', async () => {
 // Datasets
 // ---------------------------------------------------------------------------
 
+test('timestamp columns store as DuckDB TIMESTAMP and accept date arithmetic', async () => {
+  const db = await freshDb();
+  try {
+    await upsertDataset(db, { project: 'p', datasetId: 'fresh' });
+    // Demonstrates the value of the TIMESTAMP refactor: SQL on the metadata
+    // tables can use native temporal filtering directly.
+    const recent = await db.query<{ id: string }>(
+      `SELECT dataset_id AS id FROM _bq.datasets
+       WHERE created_at >= now() - INTERVAL 1 MINUTE`,
+    );
+    assert.deepEqual(
+      recent.map((r) => r.id),
+      ['fresh'],
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 test('upsertDataset inserts a new dataset and getDataset reads it back', async () => {
   const db = await freshDb();
   try {
