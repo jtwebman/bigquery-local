@@ -140,6 +140,27 @@ function handleIdentifier(
   if (tok === undefined) return i + 1;
   const upper = tok.value.toUpperCase();
 
+  // `IN UNNEST(<expr>)` → `= ANY (<expr>)`. DuckDB doesn't accept the BQ
+  // `IN UNNEST(array)` membership idiom but does accept `= ANY(array)`.
+  if (upper === 'IN') {
+    const unnestIdx = skipWhitespace(tokens, i + 1, endIdx);
+    if (unnestIdx !== null) {
+      const next = tokens[unnestIdx];
+      if (next?.kind === 'identifier' && next.value.toUpperCase() === 'UNNEST') {
+        const openParen = findFollowingOpenParen(tokens, unnestIdx + 1, endIdx);
+        if (openParen !== null) {
+          // Emit `= ANY (`; the main loop will translate the contents
+          // (including any param rewrites) and the closing `)` flows
+          // through as a regular punctuation token.
+          out.push('= ANY (');
+          return openParen + 1;
+        }
+      }
+    }
+    out.push(tok.value);
+    return i + 1;
+  }
+
   // If this identifier is immediately followed by `(`, it's a function call.
   // Otherwise it's just a name (column, table, alias) — pass it through.
   const parenIdx = findFollowingOpenParen(tokens, i + 1, endIdx);

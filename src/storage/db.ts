@@ -27,10 +27,22 @@ export interface Db {
     sql: string,
     params?: readonly unknown[],
   ): Promise<readonly Row[]>;
+  /** Run SQL and return both rows and column metadata. Used by the query
+   * endpoint when it needs to synthesize a result schema for the response. */
+  queryWithSchema(sql: string, params?: readonly unknown[]): Promise<QueryResult>;
   /** Get a reusable prepared statement; the same SQL string returns the same cached statement. */
   prepare(sql: string): PreparedStatement;
   /** Close the connection and instance. Safe to call more than once. */
   close(): Promise<void>;
+}
+
+export interface QueryResult {
+  /** Column names in select order. */
+  readonly columnNames: readonly string[];
+  /** DuckDB type strings per column (e.g. `BIGINT`, `VARCHAR`, `TIMESTAMP WITH TIME ZONE`). */
+  readonly columnTypes: readonly string[];
+  /** Plain JS-typed row objects keyed by column name. */
+  readonly rows: ReadonlyArray<Record<string, unknown>>;
 }
 
 export interface PreparedStatement {
@@ -94,6 +106,18 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
       // boolean, Date, string, Uint8Array, …); callers narrow via the Row
       // generic parameter.
       return reader.getRowObjectsJS() as readonly Record<string, unknown>[] as never;
+    },
+    async queryWithSchema(sql, params): Promise<QueryResult> {
+      ensureOpen();
+      const values = asDuckValues(params);
+      const reader =
+        values === undefined
+          ? await connection.runAndReadAll(sql)
+          : await connection.runAndReadAll(sql, values);
+      const columnNames = reader.columnNames();
+      const columnTypes = reader.columnTypes().map((t) => t.toString());
+      const rows = reader.getRowObjectsJS() as readonly Record<string, unknown>[];
+      return { columnNames, columnTypes, rows };
     },
     prepare(sql) {
       ensureOpen();
