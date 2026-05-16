@@ -31,7 +31,7 @@ arrives.
 
 ## Phase 1 — Repo & infra
 
-### BL-001 — Repo skeleton ⏳ · Est: 1h · Deps: —
+### BL-001 — Repo skeleton ✅ · Est: 1h · Deps: —
 
 **Why:** Foundation for everything else.
 
@@ -52,7 +52,7 @@ arrives.
 
 ---
 
-### BL-002 — CI workflow ⏳ · Est: 30m · Deps: BL-001
+### BL-002 — CI workflow ✅ · Est: 30m · Deps: BL-001
 
 **Why:** Quality gate from day one.
 
@@ -68,7 +68,7 @@ arrives.
 
 ---
 
-### BL-003 — gh repo create + first commit ⏳ · Est: 15m · Deps: BL-001, BL-002
+### BL-003 — gh repo create + first commit ✅ · Est: 15m · Deps: BL-001, BL-002
 
 **Why:** Make the project pushable and visible.
 
@@ -84,7 +84,7 @@ arrives.
 
 ## Phase 2 — HTTP + DuckDB foundation
 
-### BL-004 — HTTP server + router ⏳ · Est: 2h · Deps: BL-001
+### BL-004 — HTTP server + router ✅ · Est: 2h · Deps: BL-001
 
 **Why:** Every endpoint depends on the router.
 
