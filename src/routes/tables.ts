@@ -330,17 +330,26 @@ function qualifiedTableName(datasetId: string, tableId: string): string {
   return `${quoteIdent(datasetId)}.${quoteIdent(tableId)}`;
 }
 
+/** Full DuckDB column definition: quoted name + type + (NOT NULL when
+ * the BQ field's mode is REQUIRED). REPEATED columns stay nullable —
+ * the whole list value can be NULL even though its elements have BQ's
+ * usual NULL-aware semantics. */
+function columnDefinition(field: BqField): string {
+  const constraint = field.mode === 'REQUIRED' ? ' NOT NULL' : '';
+  return `${quoteIdent(field.name)} ${bqTypeToDuck(field)}${constraint}`;
+}
+
 function buildCreateTableSql(
   datasetId: string,
   tableId: string,
   fields: readonly BqField[],
 ): string {
-  const columns = fields.map((f) => `${quoteIdent(f.name)} ${bqTypeToDuck(f)}`).join(', ');
+  const columns = fields.map(columnDefinition).join(', ');
   return `CREATE TABLE ${qualifiedTableName(datasetId, tableId)} (${columns})`;
 }
 
 function buildAddColumnSql(datasetId: string, tableId: string, field: BqField): string {
-  return `ALTER TABLE ${qualifiedTableName(datasetId, tableId)} ADD COLUMN ${quoteIdent(field.name)} ${bqTypeToDuck(field)}`;
+  return `ALTER TABLE ${qualifiedTableName(datasetId, tableId)} ADD COLUMN ${columnDefinition(field)}`;
 }
 
 function buildDropTableSql(datasetId: string, tableId: string): string {

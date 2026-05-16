@@ -202,7 +202,7 @@ arrives.
 
 ---
 
-### BL-012 — Tabledata.insertAll ⏳ · Est: 3h · Deps: BL-011
+### BL-012 — Tabledata.insertAll ✅ · Est: 3h · Deps: BL-011
 
 **Scope:**
 - `POST /projects/{p}/datasets/{d}/tables/{t}/insertAll`.
