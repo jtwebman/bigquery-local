@@ -130,7 +130,7 @@ arrives.
 
 ---
 
-### BL-007 — DuckDB connection layer ⏳ · Est: 1.5h · Deps: BL-001
+### BL-007 — DuckDB connection layer ✅ · Est: 1.5h · Deps: BL-001
 
 **Why:** Storage substrate everything else uses.
 
