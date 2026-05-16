@@ -144,7 +144,7 @@ arrives.
 
 ---
 
-### BL-008 — Metadata schema + ETag ⏳ · Est: 2h · Deps: BL-007, BL-005
+### BL-008 — Metadata schema + ETag ✅ · Est: 2h · Deps: BL-007, BL-005
 
 **Why:** Datasets/tables/jobs need persisted metadata; `PATCH` needs ETags.
 

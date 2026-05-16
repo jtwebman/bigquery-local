@@ -12,6 +12,7 @@ const reasonToStatus: ReadonlyArray<readonly [BqErrorReason, number]> = [
   ['internalError', 500],
   ['quotaExceeded', 429],
   ['unsupportedFeature', 400],
+  ['conditionNotMet', 412],
 ];
 
 for (const [reason, status] of reasonToStatus) {
@@ -42,6 +43,8 @@ test('static factories produce the matching reason and status', () => {
   assert.equal(BqError.quotaExceeded('m').code, 429);
   assert.equal(BqError.unsupportedFeature('m').reason, 'unsupportedFeature');
   assert.equal(BqError.unsupportedFeature('m').code, 400);
+  assert.equal(BqError.conditionNotMet('m').reason, 'conditionNotMet');
+  assert.equal(BqError.conditionNotMet('m').code, 412);
 });
 
 test('BqError is an Error subclass with name "BqError"', () => {
