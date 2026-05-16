@@ -1,0 +1,4 @@
+# Normalize line endings to LF on every checkout, regardless of platform.
+# Biome's formatter is configured for LF; Windows runners otherwise get
+# CRLF via git's core.autocrlf=true default and fail format:check.
+* text=auto eol=lf
