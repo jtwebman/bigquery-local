@@ -175,7 +175,7 @@ arrives.
 
 ## Phase 3 — REST endpoints
 
-### BL-010 — Datasets routes ⏳ · Est: 2h · Deps: BL-008
+### BL-010 — Datasets routes ✅ · Est: 2h · Deps: BL-008
 
 **Scope:**
 - `GET`, `POST`, `PATCH`, `DELETE` on `/projects/{p}/datasets[/{d}]`.
