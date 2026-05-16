@@ -6,6 +6,14 @@
  * resource metadata flows through this module; user-visible BQ datasets get
  * their own DuckDB schemas elsewhere.
  *
+ * **Timestamp columns** (`created_at`, `updated_at`, `started_at`,
+ * `ended_at`, `expires_at`) are stored as DuckDB native `TIMESTAMP`, so
+ * future SQL surfaces — INFORMATION_SCHEMA views, time-based filters,
+ * ad-hoc dev queries — can use them directly. The JS-facing API stays on
+ * millisecond `number`s; conversion happens in the SQL via DuckDB's
+ * `epoch_ms()` (bidirectional: `BIGINT ms → TIMESTAMP` on insert,
+ * `TIMESTAMP → BIGINT ms` on select).
+ *
  * Each resource exposes a small CRUD surface (`get*`, `upsert*`,
  * `delete*` where applicable). `upsert*` accepts an optional `ifMatch`
  * argument and surfaces `BqError.conditionNotMet` (HTTP 412) on a stale
@@ -32,8 +40,8 @@ const DDL_STATEMENTS: readonly string[] = [
     description VARCHAR,
     labels JSON,
     default_table_expiration_ms BIGINT,
-    created_ms BIGINT NOT NULL,
-    updated_ms BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
     PRIMARY KEY (project, dataset_id)
   )`,
   `CREATE TABLE IF NOT EXISTS _bq.tables (
@@ -45,9 +53,9 @@ const DDL_STATEMENTS: readonly string[] = [
     "schema" JSON,
     description VARCHAR,
     num_rows BIGINT,
-    created_ms BIGINT NOT NULL,
-    updated_ms BIGINT NOT NULL,
-    expiration_ms BIGINT,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    expires_at TIMESTAMP,
     partitioning JSON,
     clustering JSON,
     PRIMARY KEY (project, dataset_id, table_id)
@@ -61,9 +69,9 @@ const DDL_STATEMENTS: readonly string[] = [
     query VARCHAR,
     params JSON,
     types JSON,
-    created_ms BIGINT NOT NULL,
-    started_ms BIGINT,
-    ended_ms BIGINT,
+    created_at TIMESTAMP NOT NULL,
+    started_at TIMESTAMP,
+    ended_at TIMESTAMP,
     result_schema JSON,
     result_total_rows BIGINT,
     PRIMARY KEY (project, job_id)
@@ -122,7 +130,8 @@ function jsonOrNull(value: unknown): string | null {
 
 /** Bind a millisecond timestamp / count as DuckDB BIGINT — DuckDB-Node's
  * default coercion of JS `number` is INTEGER (32-bit), which truncates
- * `Date.now()` values. Always wrap BIGINT-typed columns through this. */
+ * `Date.now()` values. Always wrap BIGINT-typed columns (and BIGINT inputs
+ * to `epoch_ms()` for TIMESTAMP columns) through this. */
 function bigintOrNull(value: number | undefined): bigint | null {
   return value === undefined ? null : BigInt(value);
 }
@@ -147,15 +156,20 @@ export interface DatasetMeta extends DatasetMetaInput {
   readonly updatedMs: number;
 }
 
+const SELECT_DATASET = `SELECT
+  project, dataset_id, etag, location, friendly_name, description,
+  labels, default_table_expiration_ms,
+  epoch_ms(created_at) AS created_ms,
+  epoch_ms(updated_at) AS updated_ms
+FROM _bq.datasets
+WHERE project = $1 AND dataset_id = $2`;
+
 export async function getDataset(
   db: Db,
   project: string,
   datasetId: string,
 ): Promise<DatasetMeta | null> {
-  const rows = await db.query<Record<string, unknown>>(
-    'SELECT * FROM _bq.datasets WHERE project = $1 AND dataset_id = $2',
-    [project, datasetId],
-  );
+  const rows = await db.query<Record<string, unknown>>(SELECT_DATASET, [project, datasetId]);
   const row = rows[0];
   if (row === undefined) return null;
   return {
@@ -190,8 +204,8 @@ export async function upsertDataset(
   await db.exec(
     `INSERT INTO _bq.datasets (
       project, dataset_id, etag, location, friendly_name, description,
-      labels, default_table_expiration_ms, created_ms, updated_ms
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      labels, default_table_expiration_ms, created_at, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, epoch_ms($9::BIGINT), epoch_ms($10::BIGINT))
     ON CONFLICT (project, dataset_id) DO UPDATE SET
       etag = EXCLUDED.etag,
       location = EXCLUDED.location,
@@ -199,7 +213,7 @@ export async function upsertDataset(
       description = EXCLUDED.description,
       labels = EXCLUDED.labels,
       default_table_expiration_ms = EXCLUDED.default_table_expiration_ms,
-      updated_ms = EXCLUDED.updated_ms`,
+      updated_at = EXCLUDED.updated_at`,
     [
       input.project,
       input.datasetId,
@@ -260,17 +274,22 @@ export interface TableMeta extends TableMetaInput {
   readonly updatedMs: number;
 }
 
+const SELECT_TABLE = `SELECT
+  project, dataset_id, table_id, type, etag, "schema", description,
+  num_rows, partitioning, clustering,
+  epoch_ms(created_at) AS created_ms,
+  epoch_ms(updated_at) AS updated_ms,
+  epoch_ms(expires_at) AS expiration_ms
+FROM _bq.tables
+WHERE project = $1 AND dataset_id = $2 AND table_id = $3`;
+
 export async function getTable(
   db: Db,
   project: string,
   datasetId: string,
   tableId: string,
 ): Promise<TableMeta | null> {
-  const rows = await db.query<Record<string, unknown>>(
-    `SELECT * FROM _bq.tables
-     WHERE project = $1 AND dataset_id = $2 AND table_id = $3`,
-    [project, datasetId, tableId],
-  );
+  const rows = await db.query<Record<string, unknown>>(SELECT_TABLE, [project, datasetId, tableId]);
   const row = rows[0];
   if (row === undefined) return null;
   return {
@@ -306,19 +325,25 @@ export async function upsertTable(
   const newEtag = etag(input);
   const now = Date.now();
   const createdMs = existing?.createdMs ?? now;
+  const expiresAtParam = input.expirationMs === undefined ? null : BigInt(input.expirationMs);
   await db.exec(
     `INSERT INTO _bq.tables (
       project, dataset_id, table_id, type, etag, "schema", description,
-      num_rows, created_ms, updated_ms, expiration_ms, partitioning, clustering
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      num_rows, created_at, updated_at, expires_at, partitioning, clustering
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7,
+      $8, epoch_ms($9::BIGINT), epoch_ms($10::BIGINT),
+      CASE WHEN $11 IS NULL THEN NULL ELSE epoch_ms($11::BIGINT) END,
+      $12, $13
+    )
     ON CONFLICT (project, dataset_id, table_id) DO UPDATE SET
       type = EXCLUDED.type,
       etag = EXCLUDED.etag,
       "schema" = EXCLUDED."schema",
       description = EXCLUDED.description,
       num_rows = EXCLUDED.num_rows,
-      updated_ms = EXCLUDED.updated_ms,
-      expiration_ms = EXCLUDED.expiration_ms,
+      updated_at = EXCLUDED.updated_at,
+      expires_at = EXCLUDED.expires_at,
       partitioning = EXCLUDED.partitioning,
       clustering = EXCLUDED.clustering`,
     [
@@ -332,7 +357,7 @@ export async function upsertTable(
       bigintOrNull(input.numRows),
       BigInt(createdMs),
       BigInt(now),
-      bigintOrNull(input.expirationMs),
+      expiresAtParam,
       jsonOrNull(input.partitioning),
       jsonOrNull(input.clustering),
     ],
@@ -388,11 +413,17 @@ export interface JobMeta extends JobMetaInput {
   readonly createdMs: number;
 }
 
+const SELECT_JOB = `SELECT
+  project, job_id, state, statement_type, error, query, params, types,
+  result_schema, result_total_rows,
+  epoch_ms(created_at) AS created_ms,
+  epoch_ms(started_at) AS started_ms,
+  epoch_ms(ended_at) AS ended_ms
+FROM _bq.jobs
+WHERE project = $1 AND job_id = $2`;
+
 export async function getJob(db: Db, project: string, jobId: string): Promise<JobMeta | null> {
-  const rows = await db.query<Record<string, unknown>>(
-    'SELECT * FROM _bq.jobs WHERE project = $1 AND job_id = $2',
-    [project, jobId],
-  );
+  const rows = await db.query<Record<string, unknown>>(SELECT_JOB, [project, jobId]);
   const row = rows[0];
   if (row === undefined) return null;
   return {
@@ -416,11 +447,19 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
   const existing = await getJob(db, input.project, input.jobId);
   const now = Date.now();
   const createdMs = existing?.createdMs ?? now;
+  const startedAtParam = input.startedMs === undefined ? null : BigInt(input.startedMs);
+  const endedAtParam = input.endedMs === undefined ? null : BigInt(input.endedMs);
   await db.exec(
     `INSERT INTO _bq.jobs (
       project, job_id, state, statement_type, error, query, params, types,
-      created_ms, started_ms, ended_ms, result_schema, result_total_rows
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      created_at, started_at, ended_at, result_schema, result_total_rows
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8,
+      epoch_ms($9::BIGINT),
+      CASE WHEN $10 IS NULL THEN NULL ELSE epoch_ms($10::BIGINT) END,
+      CASE WHEN $11 IS NULL THEN NULL ELSE epoch_ms($11::BIGINT) END,
+      $12, $13
+    )
     ON CONFLICT (project, job_id) DO UPDATE SET
       state = EXCLUDED.state,
       statement_type = EXCLUDED.statement_type,
@@ -428,8 +467,8 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
       query = EXCLUDED.query,
       params = EXCLUDED.params,
       types = EXCLUDED.types,
-      started_ms = EXCLUDED.started_ms,
-      ended_ms = EXCLUDED.ended_ms,
+      started_at = EXCLUDED.started_at,
+      ended_at = EXCLUDED.ended_at,
       result_schema = EXCLUDED.result_schema,
       result_total_rows = EXCLUDED.result_total_rows`,
     [
@@ -442,8 +481,8 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
       jsonOrNull(input.params),
       jsonOrNull(input.types),
       BigInt(createdMs),
-      bigintOrNull(input.startedMs),
-      bigintOrNull(input.endedMs),
+      startedAtParam,
+      endedAtParam,
       jsonOrNull(input.resultSchema),
       bigintOrNull(input.resultTotalRows),
     ],
