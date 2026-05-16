@@ -12,23 +12,30 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Force the JS runtime that bundled GitHub Actions use internally
+  # (actions/checkout, actions/setup-node, …) to Node 24. Node 20 is
+  # deprecated and forced off June 2, 2026.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   ci:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} / node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['24', '26']
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node 24
+      - name: Setup Node ${{ matrix.node }}
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node }}
           cache: 'npm'
 
       - name: Install
