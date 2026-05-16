@@ -1,0 +1,274 @@
+/**
+ * `jobs` endpoints + getQueryResults.
+ *
+ *   POST /projects/{p}/jobs            — submit a job (v0: query only)
+ *   GET  /projects/{p}/jobs/{j}        — fetch a persisted job
+ *   GET  /projects/{p}/queries/{j}     — paginate result rows of a job
+ *
+ * v0 only accepts `configuration.query`. `configuration.load`,
+ * `configuration.copy`, `configuration.extract` are rejected with
+ * `unsupportedFeature`. The query execution path reuses
+ * `executeQuery` from `src/sql/queryEngine.ts`, which is the same
+ * pipeline `POST /queries` uses.
+ */
+
+import type { Db } from '../storage/db.ts';
+import { getJob } from '../storage/meta.ts';
+import type { JobMeta } from '../storage/meta.ts';
+import {
+  type FieldWire,
+  type QueryParameterParsed,
+  type RowWire,
+  executeQuery,
+  fieldToWire,
+  parseQueryParameters,
+} from '../sql/queryEngine.ts';
+import type { BqField } from '../storage/types.ts';
+import type { RouteDefinition, RouteResponse } from '../types.ts';
+import { BqError } from '../util/errors.ts';
+
+// ---------------------------------------------------------------------------
+// Wire format — Job resource (bigquery#job)
+// ---------------------------------------------------------------------------
+
+interface JobReferenceWire {
+  readonly projectId: string;
+  readonly jobId: string;
+  readonly location: string;
+}
+
+interface JobStatusWire {
+  readonly state: 'PENDING' | 'RUNNING' | 'DONE';
+  readonly errorResult?: { readonly reason: string; readonly message: string };
+}
+
+interface JobStatisticsWire {
+  readonly creationTime: string;
+  readonly startTime?: string;
+  readonly endTime?: string;
+  readonly totalBytesProcessed: string;
+  readonly query?: {
+    readonly statementType: string;
+    readonly totalSlotMs: string;
+    readonly schema?: { readonly fields: readonly FieldWire[] };
+  };
+}
+
+interface JobResourceWire {
+  readonly kind: 'bigquery#job';
+  readonly id: string;
+  readonly jobReference: JobReferenceWire;
+  readonly configuration: { readonly query: { readonly query: string } };
+  readonly status: JobStatusWire;
+  readonly statistics: JobStatisticsWire;
+}
+
+function jobMetaToResource(meta: JobMeta): JobResourceWire {
+  const schemaFields =
+    (meta.resultSchema as { fields?: readonly BqField[] } | undefined)?.fields ?? [];
+  return {
+    kind: 'bigquery#job',
+    id: `${meta.project}:US.${meta.jobId}`,
+    jobReference: { projectId: meta.project, jobId: meta.jobId, location: 'US' },
+    configuration: { query: { query: meta.query ?? '' } },
+    status: { state: meta.state },
+    statistics: {
+      creationTime: String(meta.createdMs),
+      ...(meta.startedMs !== undefined && { startTime: String(meta.startedMs) }),
+      ...(meta.endedMs !== undefined && { endTime: String(meta.endedMs) }),
+      totalBytesProcessed: '0',
+      query: {
+        statementType: meta.statementType ?? 'SELECT',
+        totalSlotMs: '0',
+        ...(schemaFields.length > 0 && {
+          schema: { fields: schemaFields.map(fieldToWire) },
+        }),
+      },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Body parsing for POST /jobs
+// ---------------------------------------------------------------------------
+
+function asObject(value: unknown, path: string): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw BqError.invalid(`${path} must be a JSON object.`, path);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function expectString(value: unknown, path: string): string {
+  if (typeof value !== 'string') {
+    throw BqError.invalid(`${path} must be a string.`, path);
+  }
+  return value;
+}
+
+interface ParsedJobBody {
+  readonly query: string;
+  readonly parameters: readonly QueryParameterParsed[];
+  readonly jobIdHint: string | undefined;
+}
+
+function parseJobBody(body: unknown): ParsedJobBody {
+  const obj = asObject(body, 'request body');
+  const configuration = asObject(obj['configuration'], 'configuration');
+
+  // Reject every other job type up front so the client sees a clear error.
+  for (const otherType of ['load', 'copy', 'extract']) {
+    if (configuration[otherType] !== undefined) {
+      throw BqError.unsupportedFeature(
+        `configuration.${otherType} jobs are not supported in v0.`,
+        `configuration.${otherType}`,
+      );
+    }
+  }
+
+  const queryConfig = configuration['query'];
+  if (queryConfig === undefined) {
+    throw BqError.invalid(
+      'configuration.query is required (v0 only supports query jobs).',
+      'configuration.query',
+    );
+  }
+  const queryConfigObj = asObject(queryConfig, 'configuration.query');
+  const query = expectString(queryConfigObj['query'], 'configuration.query.query');
+  const parameters = parseQueryParameters(
+    queryConfigObj['queryParameters'],
+    'configuration.query.queryParameters',
+  );
+
+  let jobIdHint: string | undefined;
+  const refRaw = obj['jobReference'];
+  if (refRaw !== undefined && refRaw !== null) {
+    const refObj = asObject(refRaw, 'jobReference');
+    if (refObj['jobId'] !== undefined) {
+      jobIdHint = expectString(refObj['jobId'], 'jobReference.jobId');
+    }
+  }
+
+  return { query, parameters, jobIdHint };
+}
+
+// ---------------------------------------------------------------------------
+// GET /queries/{j} pagination
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PAGE_SIZE = 1000;
+const MAX_PAGE_SIZE = 10_000;
+
+function parseMaxResults(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_PAGE_SIZE;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw BqError.invalid('maxResults must be a positive integer.', 'maxResults');
+  }
+  return Math.min(parsed, MAX_PAGE_SIZE);
+}
+
+function parsePageToken(value: string | undefined): number {
+  if (value === undefined || value === '') return 0;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+  }
+  return parsed;
+}
+
+interface QueryResultsResponseWire {
+  readonly kind: 'bigquery#getQueryResultsResponse';
+  readonly schema: { readonly fields: readonly FieldWire[] };
+  readonly jobReference: JobReferenceWire;
+  readonly totalRows: string;
+  readonly rows: readonly RowWire[];
+  readonly pageToken?: string;
+  readonly jobComplete: boolean;
+  readonly cacheHit: false;
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
+
+export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
+  return [
+    {
+      method: 'POST',
+      path: '/projects/{p}/jobs',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const parsed = parseJobBody(req.body);
+        const exec = await executeQuery(db, project, parsed.query, parsed.parameters, {
+          ...(parsed.jobIdHint !== undefined && { jobId: parsed.jobIdHint }),
+        });
+        const meta = await getJob(db, project, exec.jobId);
+        if (meta === null) {
+          /* node:coverage ignore next 4 */
+          throw BqError.internalError(`Job ${exec.jobId} was created but could not be re-read.`);
+        }
+        return { status: 200, body: jobMetaToResource(meta) } satisfies RouteResponse;
+      },
+    },
+
+    {
+      method: 'GET',
+      path: '/projects/{p}/jobs/{j}',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const jobId = req.params['j'] as string;
+        const meta = await getJob(db, project, jobId);
+        if (meta === null) {
+          throw BqError.notFound(`Job "${project}:${jobId}" not found.`);
+        }
+        return { status: 200, body: jobMetaToResource(meta) } satisfies RouteResponse;
+      },
+    },
+
+    {
+      method: 'GET',
+      path: '/projects/{p}/queries/{j}',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const jobId = req.params['j'] as string;
+        const meta = await getJob(db, project, jobId);
+        if (meta === null) {
+          throw BqError.notFound(`Job "${project}:${jobId}" not found.`);
+        }
+        const maxResults = parseMaxResults(req.query['maxResults']);
+        const startIndex = parsePageToken(req.query['pageToken']);
+        const schemaFields =
+          (meta.resultSchema as { fields?: readonly BqField[] } | undefined)?.fields ?? [];
+        const totalRows = meta.resultTotalRows ?? 0;
+
+        const rowsRaw = await db.query<{ row: unknown }>(
+          `SELECT row FROM _bq.job_rows
+           WHERE project = $1 AND job_id = $2 AND row_index >= $3::BIGINT
+           ORDER BY row_index
+           LIMIT $4::BIGINT`,
+          [project, jobId, BigInt(startIndex), BigInt(maxResults)],
+        );
+        const rows = rowsRaw.map((r) => {
+          const raw = r.row;
+          return (typeof raw === 'string' ? JSON.parse(raw) : raw) as RowWire;
+        });
+
+        const nextStart = startIndex + rows.length;
+        const hasMore = nextStart < totalRows;
+
+        const body: QueryResultsResponseWire = {
+          kind: 'bigquery#getQueryResultsResponse',
+          schema: { fields: schemaFields.map(fieldToWire) },
+          jobReference: { projectId: project, jobId, location: 'US' },
+          totalRows: String(totalRows),
+          rows,
+          ...(hasMore && { pageToken: String(nextStart) }),
+          jobComplete: meta.state === 'DONE',
+          cacheHit: false,
+        };
+        return { status: 200, body } satisfies RouteResponse;
+      },
+    },
+  ];
+}
