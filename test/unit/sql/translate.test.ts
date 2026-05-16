@@ -129,6 +129,17 @@ test('translate: STARTS_WITH passes through (DuckDB has it natively)', () => {
   assert.equal(norm(sql), "STARTS_WITH(col, 'pre')");
 });
 
+test('translate: IN UNNEST(@arr) becomes = ANY (@arr) for array membership', () => {
+  const { sql, paramOrder } = translate('WHERE id IN UNNEST(@ids)');
+  assert.match(norm(sql), /WHERE id = ANY \(\$1\)/);
+  assert.deepEqual(paramOrder, ['ids']);
+});
+
+test('translate: UNNEST not preceded by IN passes through as a table function', () => {
+  const { sql } = translate('SELECT * FROM UNNEST(@arr)');
+  assert.match(norm(sql), /UNNEST\(\$1\)/);
+});
+
 test('translate: ENDS_WITH passes through', () => {
   const { sql } = translate("ENDS_WITH(col, 'post')");
   assert.equal(norm(sql), "ENDS_WITH(col, 'post')");
@@ -211,7 +222,7 @@ test('translate: realistic v0 reference query rewrites cleanly', () => {
   assert.match(got, /json_extract_string\(e\.payload, '\$\.licenses\."us-east"'\)/);
   assert.match(got, /\(CURRENT_TIMESTAMP - INTERVAL 7 DAY\)/);
   assert.match(got, /STARTS_WITH\(e\.type, 'drops\.'\)/);
-  assert.match(got, /UNNEST\(\$1\)/);
+  assert.match(got, /= ANY \(\$1\)/);
   assert.match(got, /e\.created_at >= \$2/);
   assert.deepEqual(paramOrder, ['ids', 'since']);
 });

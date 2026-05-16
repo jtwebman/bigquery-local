@@ -247,7 +247,7 @@ arrives.
 
 ---
 
-### BL-015 — Query endpoint (POST /queries) ⏳ · Est: 3h · Deps: BL-014, BL-008, BL-009
+### BL-015 — Query endpoint (POST /queries) ✅ · Est: 3h · Deps: BL-014, BL-008, BL-009
 
 **Scope:**
 - `POST /projects/{p}/queries`: translate → bind named params → execute via DuckDB → map results to BQ wire format `{ schema, rows: [{ f: [{ v }] }], jobComplete: true, totalRows, jobReference }`.
