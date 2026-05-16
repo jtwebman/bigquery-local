@@ -159,7 +159,7 @@ arrives.
 
 ---
 
-### BL-009 — BQ ↔ DuckDB type map ⏳ · Est: 2h · Deps: BL-007
+### BL-009 — BQ ↔ DuckDB type map ✅ · Est: 2h · Deps: BL-007
 
 **Why:** Tables, insertAll, query results all need consistent type translation.
 
