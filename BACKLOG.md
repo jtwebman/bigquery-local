@@ -217,7 +217,7 @@ arrives.
 
 ## Phase 4 — SQL
 
-### BL-013 — SQL tokenizer ⏳ · Est: 2h · Deps: BL-001
+### BL-013 — SQL tokenizer ✅ · Est: 2h · Deps: BL-001
 
 **Scope:**
 - `src/sql/tokenize.ts` produces a flat token list from a BQ SQL string.
