@@ -116,7 +116,7 @@ arrives.
 
 ---
 
-### BL-006 — Discovery doc endpoint ⏳ · Est: 30m · Deps: BL-004
+### BL-006 — Discovery doc endpoint ✅ · Est: 30m · Deps: BL-004
 
 **Why:** `@google-cloud/bigquery` probes this on init.
 

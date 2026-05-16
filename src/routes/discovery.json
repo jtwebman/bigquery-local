@@ -1,0 +1,20 @@
+{
+  "kind": "discovery#restDescription",
+  "discoveryVersion": "v1",
+  "id": "bigquery:v2",
+  "name": "bigquery",
+  "version": "v2",
+  "title": "BigQuery API (bigquery-local emulator)",
+  "description": "Local emulator for the Google BigQuery REST API. This is a minimal discovery document describing only the endpoints implemented in this emulator; it is not a 1:1 mirror of Google's published BigQuery discovery document.",
+  "protocol": "rest",
+  "baseUrl": "http://localhost:9050/bigquery/v2/",
+  "basePath": "/bigquery/v2/",
+  "rootUrl": "http://localhost:9050/",
+  "servicePath": "bigquery/v2/",
+  "batchPath": "batch/bigquery/v2",
+  "documentationLink": "https://cloud.google.com/bigquery/docs/reference/rest",
+  "parameters": {},
+  "auth": {},
+  "schemas": {},
+  "resources": {}
+}
