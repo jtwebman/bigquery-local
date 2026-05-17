@@ -286,7 +286,7 @@ arrives.
 
 ---
 
-### BL-018 — Library entrypoint ⏳ · Est: 30m · Deps: BL-015
+### BL-018 — Library entrypoint ✅ · Est: 30m · Deps: BL-015
 
 **Scope:**
 - `src/index.ts` re-exports `createServer`, the public `ServerConfig` type, and the public `BqError` type. Nothing else.

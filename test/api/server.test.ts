@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { after, before, test } from 'node:test';
 
-import { createServer } from '../../src/server.ts';
+import { createRouterServer as createServer } from '../../src/server.ts';
 import type { RouteDefinition, Server } from '../../src/types.ts';
 import { BqError } from '../../src/util/errors.ts';
 
