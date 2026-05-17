@@ -407,7 +407,7 @@ Scope: `GET /projects/{p}/datasets/{d}/tables` with pagination. Acceptance: matc
 ### BL-029 — Jobs list endpoint with filters ✅ · Est: 2h · Deps: BL-016
 Scope: `GET /projects/{p}/jobs` with `stateFilter`, `minCreationTime`, `maxCreationTime`, `projection`. Acceptance: filters narrow results correctly.
 
-### BL-030 — `jobs.cancel` + `jobs.delete` ⏳ · Est: 1h · Deps: BL-016
+### BL-030 — `jobs.cancel` + `jobs.delete` ✅ · Est: 1h · Deps: BL-016
 Scope: terminate / remove a job record. Acceptance: cancelled job's state becomes `DONE` with `errorResult.reason='stopped'`; delete removes row.
 
 ### BL-031 — `tabledata.list` paginated ⏳ · Est: 2h · Deps: BL-012

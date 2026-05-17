@@ -13,7 +13,7 @@
  */
 
 import type { Db } from '../storage/db.ts';
-import { getJob, listJobs } from '../storage/meta.ts';
+import { cancelJob, deleteJob, getJob, listJobs } from '../storage/meta.ts';
 import type { JobMeta, JobState } from '../storage/meta.ts';
 import {
   type FieldWire,
@@ -66,12 +66,25 @@ interface JobResourceWire {
 function jobMetaToResource(meta: JobMeta): JobResourceWire {
   const schemaFields =
     (meta.resultSchema as { fields?: readonly BqField[] } | undefined)?.fields ?? [];
+  // Surface stored error (e.g. from a cancel) as both `status.errorResult`
+  // and an entry in `status.errors`, matching the real BQ wire shape.
+  const errorObj = meta.error as { reason?: string; message?: string } | undefined;
+  const errorResult =
+    errorObj !== undefined && errorObj !== null
+      ? {
+          reason: errorObj.reason ?? 'internalError',
+          message: errorObj.message ?? '',
+        }
+      : undefined;
   return {
     kind: 'bigquery#job',
     id: `${meta.project}:US.${meta.jobId}`,
     jobReference: { projectId: meta.project, jobId: meta.jobId, location: 'US' },
     configuration: { query: { query: meta.query ?? '' } },
-    status: { state: meta.state },
+    status: {
+      state: meta.state,
+      ...(errorResult !== undefined && { errorResult }),
+    },
     statistics: {
       creationTime: String(meta.createdMs),
       ...(meta.startedMs !== undefined && { startTime: String(meta.startedMs) }),
@@ -349,6 +362,41 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
           throw BqError.notFound(`Job "${project}:${jobId}" not found.`);
         }
         return { status: 200, body: jobMetaToResource(meta) } satisfies RouteResponse;
+      },
+    },
+
+    {
+      method: 'POST',
+      path: '/projects/{p}/jobs/{j}/cancel',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const jobId = req.params['j'] as string;
+        const meta = await cancelJob(db, project, jobId);
+        if (meta === null) {
+          throw BqError.notFound(`Job "${project}:${jobId}" not found.`);
+        }
+        // Wire shape: bigquery#jobCancelResponse wraps the (post-cancel) job.
+        const body = {
+          kind: 'bigquery#jobCancelResponse',
+          job: jobMetaToResource(meta),
+        };
+        return { status: 200, body } satisfies RouteResponse;
+      },
+    },
+
+    {
+      // BigQuery's delete endpoint uses a trailing /delete path segment, not
+      // the bare /jobs/{j}. Match that exactly so any BQ client works.
+      method: 'DELETE',
+      path: '/projects/{p}/jobs/{j}/delete',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const jobId = req.params['j'] as string;
+        const deleted = await deleteJob(db, project, jobId);
+        if (!deleted) {
+          throw BqError.notFound(`Job "${project}:${jobId}" not found.`);
+        }
+        return { status: 204 } satisfies RouteResponse;
       },
     },
 
