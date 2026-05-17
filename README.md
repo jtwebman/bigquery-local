@@ -234,20 +234,25 @@ transformation can slip in.
 
 ## Releasing
 
-Releases are tag-driven. To cut `v<X.Y.Z>`:
+Releases are cut as **GitHub Releases** — publishing a release creates the
+git tag and triggers the publish workflow.
 
-```bash
-# 1. Bump package.json on a release PR and merge it.
-# 2. From main, tag and push:
-git tag v0.1.0
-git push origin v0.1.0
-```
+1. Land a PR that bumps `package.json` `version` to `X.Y.Z`.
+2. From `main`, create the release:
 
-The push of a `v*` tag triggers `.github/workflows/publish.yml`, which:
+   ```bash
+   gh release create vX.Y.Z --generate-notes --title "vX.Y.Z"
+   ```
 
-- verifies the tag matches `package.json`,
+   Or use the UI at https://github.com/jtwebman/bigquery-local/releases/new
+   and tick "Generate release notes" — GitHub assembles the changelog from
+   the PRs merged since the previous release.
+
+Publishing the release triggers `.github/workflows/publish.yml`, which:
+
+- verifies the tag matches `package.json` (fails fast if not),
 - builds `linux/amd64` + `linux/arm64`,
-- pushes `jtwebman/bigquery-local:<version>` and `:latest` to Docker Hub.
+- pushes `jtwebman/bigquery-local:X.Y.Z` and `:latest` to Docker Hub.
 
 Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 

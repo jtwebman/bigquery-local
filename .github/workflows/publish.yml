@@ -1,16 +1,19 @@
 name: Publish
 
-# Tag-driven release: push a tag `v<version>` (e.g. `v0.1.0`) and this
-# workflow builds + pushes a multi-arch image to Docker Hub. The tag must
-# match `package.json` version exactly — otherwise the workflow fails fast
-# before any push happens.
+# Release-driven: publishing a GitHub Release (which also creates the tag)
+# triggers this workflow. The tag must match `package.json` version exactly
+# — otherwise the workflow fails fast before any image is pushed.
+#
+# Cut a release with the auto-generated changelog:
+#   gh release create v0.1.0 --generate-notes --title "v0.1.0"
+# or via the UI at https://github.com/jtwebman/bigquery-local/releases/new.
 
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 permissions:
