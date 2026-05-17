@@ -219,6 +219,27 @@ function handleIdentifier(
   if (tok === undefined) return i + 1;
   const upper = tok.value.toUpperCase();
 
+  // `NET.<FN>(…)` — the BQ Net library. DuckDB has no equivalents, so we
+  // surface a precise unsupported error rather than passing through and
+  // letting DuckDB say "function does not exist". The dotted name tokenizes
+  // as IDENT "NET" + PUNCT "." + IDENT "<FN>" — peek the next two tokens.
+  if (upper === 'NET') {
+    const dotIdx = skipWhitespace(tokens, i + 1, endIdx);
+    if (dotIdx !== null) {
+      const dotTok = tokens[dotIdx];
+      if (dotTok?.kind === 'punctuation' && dotTok.value === '.') {
+        const fnIdx = skipWhitespace(tokens, dotIdx + 1, endIdx);
+        const fnTok = fnIdx !== null ? tokens[fnIdx] : undefined;
+        if (fnTok?.kind === 'identifier') {
+          throw BqError.unsupportedFeature(
+            `BigQuery feature not supported in v0: NET.${fnTok.value}`,
+            `NET.${fnTok.value}`,
+          );
+        }
+      }
+    }
+  }
+
   // `IN UNNEST(<expr>)` → `= ANY (<expr>)`. DuckDB doesn't accept the BQ
   // `IN UNNEST(array)` membership idiom but does accept `= ANY(array)`.
   if (upper === 'IN') {
