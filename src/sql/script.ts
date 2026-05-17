@@ -232,7 +232,7 @@ async function evalScalarExpr(
   const wrapped = castTo === undefined ? `(${sql})` : `CAST((${sql}) AS ${castTo})`;
   const selectSql = `SELECT ${wrapped} AS r`;
   const translated = translate(selectSql, { project }).sql;
-  let result;
+  let result: Awaited<ReturnType<Db['queryWithSchema']>>;
   try {
     result = await db.queryWithSchema(translated, values);
   } catch (err) {
