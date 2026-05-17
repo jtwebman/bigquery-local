@@ -571,7 +571,7 @@ Scope: rewrite to UNION ALL of regular GROUP BY (or pass through if DuckDB suppo
 
 Scope: rewrite `… QUALIFY <window-expr>` to outer subquery + WHERE. Acceptance: example QUALIFY queries return expected rows.
 
-### BL-058 — PIVOT / UNPIVOT ⏳ · Est: 3h · Deps: BL-014
+### BL-058 — PIVOT / UNPIVOT ✅ · Est: 3h · Deps: BL-014
 
 Scope: rewrite PIVOT/UNPIVOT clauses (DuckDB supports natively). Acceptance: BQ doc examples pass.
 
