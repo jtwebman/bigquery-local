@@ -91,10 +91,7 @@ test('--port=0 boots, serves /discovery, and exits cleanly on SIGTERM', async ()
     assert.equal(body.kind, 'discovery#restDescription');
 
     child.kill('SIGTERM');
-    const [code, signal] = (await once(child, 'exit')) as [
-      number | null,
-      NodeJS.Signals | null,
-    ];
+    const [code, signal] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
     if (process.platform === 'win32') {
       // Windows has no real SIGTERM — `child.kill('SIGTERM')` becomes a
       // forced `TerminateProcess`, so the bin's handler never runs and the
