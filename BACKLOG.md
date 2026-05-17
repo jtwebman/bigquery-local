@@ -258,7 +258,7 @@ arrives.
 
 ---
 
-### BL-016 — Jobs endpoints ⏳ · Est: 2h · Deps: BL-015
+### BL-016 — Jobs endpoints ✅ · Est: 2h · Deps: BL-015
 
 **Scope:**
 - `POST /projects/{p}/jobs` for `configuration.query` only in v0; reject other job types with 400 `unsupportedFeature`.
