@@ -310,7 +310,7 @@ arrives.
 
 ## Phase 6 — Testing & coverage
 
-### BL-020 — Conformance test: schema-evolution flow ⏳ · Est: 2h · Deps: BL-011, BL-012, BL-015
+### BL-020 — Conformance test: schema-evolution flow ✅ · Est: 2h · Deps: BL-011, BL-012, BL-015
 
 **Scope:** End-to-end test in `test/conformance/schema-evolution.test.ts`:
 

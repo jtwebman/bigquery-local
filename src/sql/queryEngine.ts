@@ -169,6 +169,36 @@ function arrayPlaceholderCast(elementType: BqType): string {
   return `::JSON::${bqTypeToDuck({ name: 'x', type: elementType })}[]`;
 }
 
+/**
+ * Cast applied to scalar `$N` placeholders for types that DuckDB does not
+ * implicitly coerce from VARCHAR in every context. Equality and comparison
+ * coerce fine, but arithmetic with `INTERVAL` (e.g. `@now - INTERVAL 1 HOUR`)
+ * requires an explicit typed cast. The cast targets must match the
+ * column types chosen by `bqTypeToDuck` so cross-type comparisons line up:
+ *
+ *   BQ TIMESTAMP → DuckDB TIMESTAMPTZ (tz-aware, like real BQ)
+ *   BQ DATETIME  → DuckDB TIMESTAMP
+ *   BQ DATE      → DuckDB DATE
+ *   BQ TIME      → DuckDB TIME
+ *
+ * Returning `null` means no cast is needed — DuckDB will infer the right
+ * type from the bound JS value.
+ */
+function scalarPlaceholderCast(type: BqType): string | null {
+  switch (type) {
+    case 'TIMESTAMP':
+      return '::TIMESTAMPTZ';
+    case 'DATETIME':
+      return '::TIMESTAMP';
+    case 'DATE':
+      return '::DATE';
+    case 'TIME':
+      return '::TIME';
+    default:
+      return null;
+  }
+}
+
 function mapParameters(
   paramOrder: readonly string[],
   parameters: readonly QueryParameterParsed[],
@@ -193,7 +223,7 @@ function mapParameters(
   });
 }
 
-function augmentArrayCasts(
+function augmentPlaceholderCasts(
   sql: string,
   paramOrder: readonly string[],
   parameters: readonly QueryParameterParsed[],
@@ -203,8 +233,14 @@ function augmentArrayCasts(
   for (let i = 0; i < paramOrder.length; i += 1) {
     const name = paramOrder[i] as string;
     const param = byName.get(name);
-    if (param?.arrayElementType === undefined) continue;
-    const cast = arrayPlaceholderCast(param.arrayElementType);
+    if (param === undefined) continue;
+    let cast: string | null = null;
+    if (param.arrayElementType !== undefined) {
+      cast = arrayPlaceholderCast(param.arrayElementType);
+    } else {
+      cast = scalarPlaceholderCast(param.type);
+    }
+    if (cast === null) continue;
     const placeholderNumber = i + 1;
     const pattern = new RegExp(`\\$${placeholderNumber}(?!\\d)`, 'g');
     const replacement = `$${placeholderNumber}${cast}`;
@@ -266,7 +302,7 @@ export async function executeQuery(
 ): Promise<QueryExecution> {
   const translated = translate(query);
   const values = mapParameters(translated.paramOrder, parameters);
-  const sqlWithCasts = augmentArrayCasts(translated.sql, translated.paramOrder, parameters);
+  const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 
   let result: QueryResult;
   try {
