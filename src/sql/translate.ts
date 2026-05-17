@@ -67,6 +67,9 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   // DuckDB's `length()` is char count; `strlen()` is byte count, matching
   // BigQuery's OCTET_LENGTH for STRING.
   ['OCTET_LENGTH', 'strlen'],
+  // BL-038 — numeric/math:
+  ['IS_INF', 'isinf'],
+  ['IS_NAN', 'isnan'],
 ]);
 
 /** A small list of BQ functions we explicitly call out as unsupported, so
@@ -257,6 +260,35 @@ function handleIdentifier(
       // semantics line up.
       return rewriteRegexpReplace(tokens, parenIdx, endIdx, out, paramOrder, project);
 
+    case 'SAFE_DIVIDE':
+      // BQ: returns NULL if denominator is 0. `x / NULLIF(y, 0)` gives the
+      // same shape using only standard SQL.
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (a, b) => `(${a} / NULLIF(${b}, 0))`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'IEEE_DIVIDE':
+      // BQ: IEEE 754 semantics (±Inf, NaN) for FLOAT64 divide. DuckDB's
+      // DOUBLE / DOUBLE already follows IEEE 754, so casting both sides
+      // to DOUBLE is sufficient.
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (a, b) => `(CAST(${a} AS DOUBLE) / CAST(${b} AS DOUBLE))`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
     default: {
       if (UNSUPPORTED_FUNCTIONS.has(upper)) {
         throw BqError.unsupportedFeature(
@@ -300,6 +332,29 @@ function wrapCall(
   const fullPrefix = `${prefix}(`;
   const opens = (fullPrefix.match(/\(/g) ?? []).length;
   out.push(`${fullPrefix}${inner}${')'.repeat(opens)}`);
+  return close + 1;
+}
+
+/** Generic 2-arg function rewrite. Splits at the top-level comma,
+ * recursively translates each arg, then composes via `template(a, b)`. */
+function rewriteTwoArg(
+  tokens: readonly Token[],
+  openParenIdx: number,
+  endIdx: number,
+  template: (a: string, b: string) => string,
+  out: string[],
+  paramOrder: string[],
+  project: string,
+  funcName: string,
+): number {
+  const close = findMatchingClose(tokens, openParenIdx, endIdx);
+  const commaIdx = findTopLevelComma(tokens, openParenIdx + 1, close);
+  if (commaIdx === null) {
+    throw BqError.invalid(`${funcName} requires two arguments.`, funcName);
+  }
+  const arg1 = translateRange(tokens, openParenIdx + 1, commaIdx, paramOrder, project).trim();
+  const arg2 = translateRange(tokens, commaIdx + 1, close, paramOrder, project).trim();
+  out.push(template(arg1, arg2));
   return close + 1;
 }
 
