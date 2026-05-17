@@ -345,3 +345,54 @@ export async function executeQuery(
     totalRows: result.rows.length,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Dry run
+// ---------------------------------------------------------------------------
+
+export interface DryRunResult {
+  readonly schema: readonly BqField[];
+}
+
+/**
+ * Validate + plan a query without executing it. Returns the result schema
+ * the query would produce. Matches BigQuery's `dryRun: true` semantics:
+ * the query is parsed, bound, and planned — but no rows are read, no job is
+ * persisted, and no result page is allocated.
+ *
+ * Implementation rides on DuckDB's `DESCRIBE <query>`, which does the full
+ * bind step (so unknown columns / type mismatches / unknown tables surface
+ * here exactly as they would at execute time) and returns column metadata
+ * without running the plan.
+ *
+ * Parameters still go through the same translate → augment → bind pipeline
+ * so `@param` placeholders resolve cleanly. The bound values don't influence
+ * the output schema, but they have to be valid for DESCRIBE to succeed.
+ */
+export async function executeQueryDryRun(
+  db: Db,
+  query: string,
+  parameters: readonly QueryParameterParsed[],
+): Promise<DryRunResult> {
+  const translated = translate(query);
+  const values = mapParameters(translated.paramOrder, parameters);
+  const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
+  // DuckDB accepts DESCRIBE on a query string; the parameter bindings flow
+  // through the same prepared-statement path the executor uses.
+  const describeSql = `DESCRIBE ${sqlWithCasts}`;
+
+  let described: ReadonlyArray<Record<string, unknown>>;
+  try {
+    described = await db.query(describeSql, values);
+  } catch (err) {
+    throw BqError.invalid(err instanceof Error ? err.message : 'Query validation failed.', 'query');
+  }
+
+  const schema = described.map((row) => {
+    const name = String(row['column_name']);
+    const type = String(row['column_type']);
+    return duckTypeToBq(type, name);
+  });
+
+  return { schema };
+}
