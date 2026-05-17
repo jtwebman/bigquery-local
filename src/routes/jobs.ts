@@ -12,6 +12,8 @@
  * pipeline `POST /queries` uses.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type { Db } from '../storage/db.ts';
 import { cancelJob, deleteJob, getJob, listJobs } from '../storage/meta.ts';
 import type { JobMeta, JobState } from '../storage/meta.ts';
@@ -20,6 +22,7 @@ import {
   type QueryParameterParsed,
   type RowWire,
   executeQuery,
+  executeQueryDryRun,
   fieldToWire,
   parseQueryParameters,
 } from '../sql/queryEngine.ts';
@@ -123,6 +126,14 @@ interface ParsedJobBody {
   readonly query: string;
   readonly parameters: readonly QueryParameterParsed[];
   readonly jobIdHint: string | undefined;
+  readonly dryRun: boolean;
+}
+
+function expectBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw BqError.invalid(`${path} must be a boolean.`, path);
+  }
+  return value;
 }
 
 function parseJobBody(body: unknown): ParsedJobBody {
@@ -153,6 +164,15 @@ function parseJobBody(body: unknown): ParsedJobBody {
     'configuration.query.queryParameters',
   );
 
+  // BQ puts `dryRun` at the configuration level per the spec, but some
+  // clients also send it under `configuration.query`. Accept either.
+  let dryRun = false;
+  if (configuration['dryRun'] !== undefined) {
+    dryRun = expectBoolean(configuration['dryRun'], 'configuration.dryRun');
+  } else if (queryConfigObj['dryRun'] !== undefined) {
+    dryRun = expectBoolean(queryConfigObj['dryRun'], 'configuration.query.dryRun');
+  }
+
   let jobIdHint: string | undefined;
   const refRaw = obj['jobReference'];
   if (refRaw !== undefined && refRaw !== null) {
@@ -162,7 +182,7 @@ function parseJobBody(body: unknown): ParsedJobBody {
     }
   }
 
-  return { query, parameters, jobIdHint };
+  return { query, parameters, jobIdHint, dryRun };
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +359,42 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
       handler: async (req) => {
         const project = req.params['p'] as string;
         const parsed = parseJobBody(req.body);
+
+        if (parsed.dryRun) {
+          // Plan-only: validate + schema, no execution, no row persistence.
+          // The job is *not* stored, so GET /jobs/{j} on this jobId would 404.
+          // That matches real BQ — dry-run jobs aren't queryable after the fact.
+          const dry = await executeQueryDryRun(db, parsed.query, parsed.parameters);
+          const now = Date.now();
+          const jobId = parsed.jobIdHint ?? randomUUID();
+          // Hand-build the response so we don't go through jobMetaToResource
+          // (which assumes a persisted job). Shape matches real BQ's dry-run.
+          const body = {
+            kind: 'bigquery#job',
+            id: `${project}:US.${jobId}`,
+            jobReference: { projectId: project, jobId, location: 'US' },
+            configuration: {
+              query: { query: parsed.query },
+              dryRun: true,
+            },
+            status: { state: 'DONE' as const },
+            statistics: {
+              creationTime: String(now),
+              startTime: String(now),
+              endTime: String(now),
+              totalBytesProcessed: '0',
+              query: {
+                statementType: 'SELECT',
+                totalSlotMs: '0',
+                ...(dry.schema.length > 0 && {
+                  schema: { fields: dry.schema.map(fieldToWire) },
+                }),
+              },
+            },
+          };
+          return { status: 200, body } satisfies RouteResponse;
+        }
+
         const exec = await executeQuery(db, project, parsed.query, parsed.parameters, {
           ...(parsed.jobIdHint !== undefined && { jobId: parsed.jobIdHint }),
         });

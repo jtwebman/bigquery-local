@@ -10,11 +10,14 @@
  * handling, SQL translation, casting, and persistence.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import {
   type FieldWire,
   type QueryParameterParsed,
   type RowWire,
   executeQuery,
+  executeQueryDryRun,
   fieldToWire,
   parseQueryParameters,
 } from '../sql/queryEngine.ts';
@@ -54,13 +57,22 @@ function expectString(value: unknown, path: string): string {
 interface ParsedQueryBody {
   readonly query: string;
   readonly parameters: readonly QueryParameterParsed[];
+  readonly dryRun: boolean;
+}
+
+function expectBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw BqError.invalid(`${path} must be a boolean.`, path);
+  }
+  return value;
 }
 
 function parseQueryBody(body: unknown): ParsedQueryBody {
   const obj = asObject(body, 'request body');
   const query = expectString(obj['query'], 'query');
   const parameters = parseQueryParameters(obj['queryParameters'], 'queryParameters');
-  return { query, parameters };
+  const dryRun = obj['dryRun'] === undefined ? false : expectBoolean(obj['dryRun'], 'dryRun');
+  return { query, parameters, dryRun };
 }
 
 export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
@@ -71,6 +83,25 @@ export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
       handler: async (req) => {
         const project = req.params['p'] as string;
         const parsed = parseQueryBody(req.body);
+
+        if (parsed.dryRun) {
+          // Plan-only path: validate + schema, no execution, no persistence.
+          // BQ still emits a jobReference here so the client gets a stable
+          // shape; the jobId is fresh-each-time and not stored.
+          const dry = await executeQueryDryRun(db, parsed.query, parsed.parameters);
+          const body: QueryResponseWire = {
+            kind: 'bigquery#queryResponse',
+            schema: { fields: dry.schema.map(fieldToWire) },
+            jobReference: { projectId: project, jobId: randomUUID(), location: 'US' },
+            totalRows: '0',
+            rows: [],
+            totalBytesProcessed: '0',
+            jobComplete: true,
+            cacheHit: false,
+          };
+          return { status: 200, body } satisfies RouteResponse;
+        }
+
         const exec = await executeQuery(db, project, parsed.query, parsed.parameters);
         const body: QueryResponseWire = {
           kind: 'bigquery#queryResponse',

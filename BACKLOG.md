@@ -422,7 +422,7 @@ Scope: when request includes `templateSuffix`, auto-create `<base>_<suffix>` tab
 ### BL-034 — Multi-project: repeatable `--project` ⏳ · Est: 1h · Deps: BL-017, BL-008
 Scope: parser accepts multiple `--project` flags; metadata is scoped by project. Acceptance: two projects with same dataset name don't collide.
 
-### BL-035 — `dryRun: true` for queries ⏳ · Est: 2h · Deps: BL-015
+### BL-035 — `dryRun: true` for queries ✅ · Est: 2h · Deps: BL-015
 Scope: when `dryRun` is set, translate + parse without executing, return schema + bytes-processed estimate. Acceptance: `dryRun` returns `jobComplete: true, statistics.totalBytesProcessed` without writing rows.
 
 ### BL-036 — Query result `pageToken` semantics ⏳ · Est: 1h · Deps: BL-016
