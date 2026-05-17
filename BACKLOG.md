@@ -587,7 +587,7 @@ Scope: resolve `\`ds.events\_\*\``at translate time to`UNION ALL`; expose `\_TAB
 
 Scope: drop and recreate the underlying DuckDB table. Acceptance: row count goes to 0; schema preserved.
 
-### BL-062 — Multi-statement transactions ⏳ · Est: 2h · Deps: BL-052
+### BL-062 — Multi-statement transactions ✅ · Est: 2h · Deps: BL-052
 
 Scope: BEGIN / COMMIT / ROLLBACK; align semantics with BQ docs (limited rollback in real BQ). Acceptance: transactional rollback test passes.
 
