@@ -297,7 +297,7 @@ arrives.
 
 ---
 
-### BL-019 — gRPC port bind + UNIMPLEMENTED ⏳ · Est: 1h · Deps: BL-004
+### BL-019 — gRPC port bind + UNIMPLEMENTED ✅ · Est: 1h · Deps: BL-004
 
 **Scope:**
 - Bind a TCP listener on `--grpc-port` (default 9060) and respond at the HTTP/2 framing level minimally enough to return a gRPC `UNIMPLEMENTED` status to any RPC.

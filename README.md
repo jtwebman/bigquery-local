@@ -101,7 +101,7 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 | Capability | Status |
 |---|---|
 | REST on port 9050 | ⏳ |
-| gRPC port 9060 (bound, returns UNIMPLEMENTED) | ⏳ |
+| gRPC port 9060 (bound, returns UNIMPLEMENTED) | ✅ |
 | `--project`, `--port`, `--grpc-port`, `--database`, `--log-level`, `--log-format` | ✅ |
 | Multi-arch Docker image (`linux/amd64` + `linux/arm64`) | ⏳ |
 | Persistent file store (`--database=path.duckdb`) and `:memory:` mode | ⏳ |
