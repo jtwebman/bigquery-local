@@ -74,6 +74,10 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['UNIX_MILLIS', 'epoch_ms'],
   ['UNIX_MICROS', 'epoch_us'],
   ['LAST_DAY', 'last_day'],
+  // BL-042 — arrays: BQ GENERATE_ARRAY/FLATTEN don't exist in DuckDB by
+  // those names; the semantics map directly.
+  ['GENERATE_ARRAY', 'generate_series'],
+  ['FLATTEN', 'flatten'],
   // BL-041 — JSON:
   ['JSON_QUERY', 'json_extract'],
   ['JSON_QUERY_ARRAY', 'json_extract'],
