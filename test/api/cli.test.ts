@@ -1,5 +1,5 @@
 /**
- * Acceptance test for the `bin/bigquery-local.ts` CLI.
+ * Acceptance test for the `src/cli.ts` CLI.
  *
  * Spawns the bin as a real Node subprocess, parses the "listening on …" line
  * from stdout to discover the bound port, hits a route to prove the server is
@@ -16,7 +16,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const BIN = join(REPO_ROOT, 'bin/bigquery-local.ts');
+const BIN = join(REPO_ROOT, 'src/cli.ts');
 
 function spawnBin(args: readonly string[]): ChildProcessWithoutNullStreams {
   return spawn(process.execPath, [BIN, ...args], {

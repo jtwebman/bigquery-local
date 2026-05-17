@@ -1,5 +1,6 @@
 # bigquery-local
 
+[![npm](https://img.shields.io/npm/v/bigquery-local?label=npm)](https://www.npmjs.com/package/bigquery-local)
 [![Docker Hub](https://img.shields.io/docker/v/jtwebman/bigquery-local?label=Docker%20Hub&sort=semver)](https://hub.docker.com/r/jtwebman/bigquery-local)
 [![Image size](https://img.shields.io/docker/image-size/jtwebman/bigquery-local/latest?label=image%20size)](https://hub.docker.com/r/jtwebman/bigquery-local)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -16,10 +17,11 @@ Not production-ready, but the architecture stays close to real BigQuery
 on purpose — so this can also be a **migration on-ramp** for projects
 that want to move off BigQuery onto DuckDB.
 
-> **Status:** v0.1.0 — first published release. Available on
-> [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local). See
-> `plan.md` for the v0 plan + full-BigQuery scope appendix, and
-> `BACKLOG.md` for the work items.
+> **Status:** v0.2.0 — published to both
+> [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local) and
+> [npm](https://www.npmjs.com/package/bigquery-local). See `plan.md`
+> for the v0 plan + full-BigQuery scope appendix, and `BACKLOG.md` for
+> the work items.
 
 ---
 
@@ -118,16 +120,21 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 
 ## Quick start
 
-### Docker (available now)
+### Docker
 
 ```bash
 docker run --rm -p 9050:9050 -p 9060:9060 \
   jtwebman/bigquery-local:latest
 ```
 
-The default port is `9050`. The container also exposes `9060` for the
-gRPC placeholder (every RPC returns `UNIMPLEMENTED` — see the
-[gRPC](#grpc) section below).
+The default port is `9050`. The container also exposes `9060` for gRPC
+(every RPC returns `UNIMPLEMENTED` — see the [gRPC](#grpc) section).
+
+### npx (no install)
+
+```bash
+npx bigquery-local --port=9050 --database=./bq.duckdb
+```
 
 ### Pointing the BigQuery Node client at it
 
@@ -141,22 +148,31 @@ const bigQuery = new BigQuery({
 ```
 
 No credentials needed. The emulator accepts any (or no) auth header.
-One container serves any project id — projects are isolated by URL
-path, the same way real BigQuery does it.
+One server serves any project id — projects are isolated by URL path,
+the same way real BigQuery does it.
 
-### Library / `npx` (next release)
+### Embedding it in your tests
 
-The library entrypoint and `npx bigquery-local` are landing in the
-next release (npm publish — backlog item BL-024). The published API
-is already locked in:
+`bigquery-local` is also a Node library. Spin one up in-process —
+no Docker, no global port — and tear it down in `afterAll`:
+
+```bash
+npm install --save-dev bigquery-local
+```
 
 ```ts
 import { createServer } from 'bigquery-local';
+import { BigQuery } from '@google-cloud/bigquery';
 
 const server = await createServer({ database: ':memory:' });
 await server.listen(0); // 0 = pick a random free port
 
-// ...point any BigQuery client at server.url, across any project ids...
+const bigQuery = new BigQuery({
+  projectId: 'test',
+  apiEndpoint: server.url,
+});
+
+// ...run your tests against `bigQuery`...
 
 await server.close(); // closes the HTTP listener and the DB
 ```
@@ -269,10 +285,20 @@ git tag and triggers the publish workflow.
 Publishing the release triggers `.github/workflows/publish.yml`, which:
 
 - verifies the tag matches `package.json` (fails fast if not),
-- builds `linux/amd64` + `linux/arm64`,
-- pushes `jtwebman/bigquery-local:X.Y.Z` and `:latest` to Docker Hub.
+- builds `linux/amd64` + `linux/arm64` and pushes
+  `jtwebman/bigquery-local:X.Y.Z` and `:latest` to Docker Hub,
+- runs `tsc -p tsconfig.build.json` and publishes the npm package as
+  `bigquery-local@X.Y.Z` with `--provenance` (signed attestation tied
+  to the GitHub release).
 
-Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
+**Setup (one-time):**
+
+- GitHub repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
+- npm Trusted Publisher: on npmjs.com → package settings →
+  **Trusted Publishers** → add a GitHub Actions publisher for repo
+  `jtwebman/bigquery-local` and workflow `publish.yml`. No `NPM_TOKEN`
+  secret needed; the workflow authenticates via GitHub's OIDC token,
+  which also enables `npm publish --provenance`.
 
 ---
 

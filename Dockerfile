@@ -32,7 +32,6 @@ WORKDIR /app
 # No transpile step is required either at build or at runtime.
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
-COPY bin ./bin
 COPY src ./src
 
 # Run as the unprivileged `node` user that ships with the base image.
@@ -46,5 +45,5 @@ EXPOSE 9050 9060
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
     CMD node -e "fetch('http://127.0.0.1:9050/discovery/v1/apis/bigquery/v2/rest').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
-ENTRYPOINT ["/usr/bin/tini", "--", "node", "bin/bigquery-local.ts"]
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "src/cli.ts"]
 CMD ["--port=9050", "--grpc-port=9060"]
