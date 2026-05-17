@@ -83,7 +83,12 @@ function isIdentCont(ch: string): boolean {
 
 const MULTI_CHAR_OPS: readonly string[] = ['!=', '<>', '<=', '>=', '==', '||', '&&', '::'];
 const PUNCTUATION = new Set(['(', ')', ',', ';', '.', '[', ']', '{', '}']);
-const SINGLE_OPS = new Set(['+', '-', '*', '/', '%', '=', '<', '>', '!', '|', '&']);
+// `~` is bitwise NOT in both BQ and DuckDB. `^` is XOR in BQ but
+// exponentiation in DuckDB — we tokenize it but the semantic divergence
+// is documented (use `xor(a, b)` for XOR). The shift forms `<<` / `>>`
+// are tokenized as two `<` / `>` operators each (the join is by string
+// concat in the output), which is why they don't need entries here.
+const SINGLE_OPS = new Set(['+', '-', '*', '/', '%', '=', '<', '>', '!', '|', '&', '~', '^']);
 
 // ---------------------------------------------------------------------------
 // Entry point
