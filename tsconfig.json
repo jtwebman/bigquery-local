@@ -24,6 +24,8 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
 
+    "customConditions": ["src"],
+
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,

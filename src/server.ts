@@ -1,9 +1,14 @@
 /**
  * HTTP integration — wires `node:http` into the pure router.
  *
- * `createServer({ routes })` returns a `Server` handle with `listen()`,
- * `close()`, and a `url` getter for the bound base URL. Routes registered at
- * construction time receive parsed JSON bodies and decoded path parameters.
+ * `createRouterServer({ routes })` is the low-level building block: it
+ * binds a `node:http` server to a route table and returns a `Server` handle
+ * with `listen()`, `close()`, and a `url` getter for the bound base URL.
+ * It does not own the database or know about any specific BigQuery routes.
+ *
+ * The public, batteries-included entry point is `createServer` in
+ * `src/index.ts`, which builds the DB, wires every standard route, and
+ * delegates to this function.
  *
  * Handlers can throw a `BqError` (from `src/util/errors.ts`) and it will be
  * serialized to the Google-shaped response body with the matching HTTP
@@ -39,7 +44,7 @@ function sendBqError(res: ServerResponse, err: BqError): void {
   send(res, { status: err.code, body: err.toResponseBody() });
 }
 
-export function createServer(config: ServerConfig = {}): Server {
+export function createRouterServer(config: ServerConfig = {}): Server {
   const compiled = compileRoutes(config.routes ?? []);
   let httpServer: HttpServer | null = null;
   let boundPort: number | null = null;

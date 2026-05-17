@@ -14,15 +14,7 @@
  */
 import { pathToFileURL } from 'node:url';
 
-import { createDb } from '../src/storage/db.ts';
-import { ensureMetaSchema } from '../src/storage/meta.ts';
-import { discoveryRoutes } from '../src/routes/discovery.ts';
-import { createDatasetRoutes } from '../src/routes/datasets.ts';
-import { createTableRoutes } from '../src/routes/tables.ts';
-import { createTabledataRoutes } from '../src/routes/tabledata.ts';
-import { createQueriesRoutes } from '../src/routes/queries.ts';
-import { createJobsRoutes } from '../src/routes/jobs.ts';
-import { createServer } from '../src/server.ts';
+import { createServer } from '../src/index.ts';
 
 const VERSION = '0.0.1';
 
@@ -125,19 +117,7 @@ async function main(): Promise<void> {
   }
   const { options } = parsed;
 
-  const db = await createDb({ path: options.database });
-  await ensureMetaSchema(db);
-
-  const server = createServer({
-    routes: [
-      ...discoveryRoutes,
-      ...createDatasetRoutes(db),
-      ...createTableRoutes(db),
-      ...createTabledataRoutes(db),
-      ...createQueriesRoutes(db),
-      ...createJobsRoutes(db),
-    ],
-  });
+  const server = await createServer({ database: options.database });
   await server.listen(options.port);
   process.stdout.write(
     `bigquery-local ${VERSION} listening on ${server.url} (project=${options.project}, database=${options.database})\n`,
@@ -151,7 +131,6 @@ async function main(): Promise<void> {
     void (async () => {
       try {
         await server.close();
-        await db.close();
         process.exit(0);
       } catch (err) {
         /* node:coverage ignore next 3 */

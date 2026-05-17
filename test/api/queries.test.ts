@@ -8,7 +8,7 @@ import { createTableRoutes } from '../../src/routes/tables.ts';
 import { createDb } from '../../src/storage/db.ts';
 import type { Db } from '../../src/storage/db.ts';
 import { ensureMetaSchema } from '../../src/storage/meta.ts';
-import { createServer } from '../../src/server.ts';
+import { createRouterServer as createServer } from '../../src/server.ts';
 import type { Server } from '../../src/types.ts';
 
 interface FieldWire {

@@ -4,7 +4,7 @@ import { after, before, test } from 'node:test';
 import { BigQuery } from '@google-cloud/bigquery';
 
 import { DISCOVERY_PATH, discoveryRoutes } from '../../src/routes/discovery.ts';
-import { createServer } from '../../src/server.ts';
+import { createRouterServer as createServer } from '../../src/server.ts';
 import type { Server } from '../../src/types.ts';
 
 let server: Server;

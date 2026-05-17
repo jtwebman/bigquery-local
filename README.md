@@ -148,9 +148,11 @@ no Docker, no global port — and tear it down in `afterAll`:
 import { createServer } from 'bigquery-local';
 import { BigQuery } from '@google-cloud/bigquery';
 
-const server = await createServer({ project: 'test', database: ':memory:' });
+const server = await createServer({ database: ':memory:' });
 await server.listen(0); // 0 = pick a random free port
 
+// One server, any project — projects are isolated by URL path,
+// the same way real BigQuery does it.
 const bigQuery = new BigQuery({
   projectId: 'test',
   apiEndpoint: server.url,
@@ -158,7 +160,7 @@ const bigQuery = new BigQuery({
 
 // ...run your tests against `bigQuery`...
 
-await server.close();
+await server.close(); // closes the HTTP listener and the DB
 ```
 
 ---
