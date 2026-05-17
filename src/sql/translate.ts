@@ -626,6 +626,26 @@ function handleIdentifier(
     }
   }
 
+  // `TABLESAMPLE SYSTEM (n PERCENT)` — BQ's SYSTEM is storage-block-based,
+  // matching DuckDB's SYSTEM. But DuckDB's SYSTEM only emits whole storage
+  // blocks, which for small / in-memory tables means N% of "one block" rounds
+  // to all-or-nothing. BERNOULLI is row-level uniform sampling and gives the
+  // ~N%-of-rows result callers expect from `SYSTEM (n PERCENT)`.
+  if (upper === 'TABLESAMPLE') {
+    const nextIdx = skipWhitespace(tokens, i + 1, endIdx);
+    if (nextIdx !== null) {
+      const next = tokens[nextIdx];
+      if (next?.kind === 'identifier' && next.value.toUpperCase() === 'SYSTEM') {
+        out.push(tok.value);
+        for (let k = i + 1; k < nextIdx; k += 1) {
+          out.push((tokens[k] as Token).value);
+        }
+        out.push('BERNOULLI');
+        return nextIdx + 1;
+      }
+    }
+  }
+
   // `IN UNNEST(<expr>)` → `= ANY (<expr>)`. DuckDB doesn't accept the BQ
   // `IN UNNEST(array)` membership idiom but does accept `= ANY(array)`.
   if (upper === 'IN') {

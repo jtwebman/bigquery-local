@@ -575,7 +575,7 @@ Scope: rewrite `… QUALIFY <window-expr>` to outer subquery + WHERE. Acceptance
 
 Scope: rewrite PIVOT/UNPIVOT clauses (DuckDB supports natively). Acceptance: BQ doc examples pass.
 
-### BL-059 — TABLESAMPLE ⏳ · Est: 1.5h · Deps: BL-014
+### BL-059 — TABLESAMPLE ✅ · Est: 1.5h · Deps: BL-014
 
 Scope: `TABLESAMPLE SYSTEM (n PERCENT)` rewrite. Acceptance: sample size within ±20% of expected on 10k-row table.
 
