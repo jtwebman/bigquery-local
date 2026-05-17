@@ -201,11 +201,64 @@ function parseMaxResults(value: string | undefined): number {
   return Math.min(parsed, MAX_PAGE_SIZE);
 }
 
-function parsePageToken(value: string | undefined): number {
-  if (value === undefined || value === '') return 0;
+/** Opaque pageToken codec for `GET /queries/{j}`.
+ *
+ * Tokens are base64-encoded `{ jobId, offset }` so clients treat them as
+ * opaque — they can't manufacture one out of thin air and can't crib one
+ * from a different job. The jobId-binding catches the "stale token from a
+ * previous run" mistake with a 400 instead of silently reading the wrong
+ * job's rows.
+ *
+ * Format: `base64url(JSON({ j: <jobId>, o: <offset> }))`. The short keys
+ * keep the token reasonably short on the wire. */
+interface DecodedPageToken {
+  readonly jobId: string;
+  readonly offset: number;
+}
+
+export function encodeQueryPageToken(jobId: string, offset: number): string {
+  const json = JSON.stringify({ j: jobId, o: offset });
+  return Buffer.from(json, 'utf8').toString('base64url');
+}
+
+function decodeQueryPageToken(raw: string, expectedJobId: string): DecodedPageToken {
+  let parsed: unknown;
+  try {
+    const json = Buffer.from(raw, 'base64url').toString('utf8');
+    parsed = JSON.parse(json);
+  } catch {
+    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+  }
+  if (parsed === null || typeof parsed !== 'object') {
+    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+  }
+  const obj = parsed as Record<string, unknown>;
+  const jobId = obj['j'];
+  const offset = obj['o'];
+  if (
+    typeof jobId !== 'string' ||
+    typeof offset !== 'number' ||
+    !Number.isInteger(offset) ||
+    offset < 0
+  ) {
+    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+  }
+  if (jobId !== expectedJobId) {
+    throw BqError.invalid(
+      `pageToken was issued for a different job (got "${jobId}", expected "${expectedJobId}").`,
+      'pageToken',
+    );
+  }
+  return { jobId, offset };
+}
+
+/** Parse `startIndex` query param. Like pageToken's offset but client-supplied.
+ * BigQuery accepts an unsigned int as a string. Negative → 400. */
+function parseStartIndex(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) {
-    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+    throw BqError.invalid('startIndex must be a non-negative integer.', 'startIndex');
   }
   return parsed;
 }
@@ -467,24 +520,49 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
           throw BqError.notFound(`Job "${project}:${jobId}" not found.`);
         }
         const maxResults = parseMaxResults(req.query['maxResults']);
-        const startIndex = parsePageToken(req.query['pageToken']);
+
+        // Two ways to position into the result set:
+        //   - pageToken: opaque, issued by us, contains the jobId binding.
+        //   - startIndex: client-supplied integer.
+        // Per BQ behavior, pageToken wins when both are present.
+        const rawToken = req.query['pageToken'];
+        const startIndexParam = parseStartIndex(req.query['startIndex']);
+        let offset: number;
+        if (rawToken !== undefined && rawToken !== '') {
+          offset = decodeQueryPageToken(rawToken, jobId).offset;
+        } else if (startIndexParam !== undefined) {
+          offset = startIndexParam;
+        } else {
+          offset = 0;
+        }
+
         const schemaFields =
           (meta.resultSchema as { fields?: readonly BqField[] } | undefined)?.fields ?? [];
         const totalRows = meta.resultTotalRows ?? 0;
+
+        // Out-of-range offset (past the end of results) → 400. Real BQ
+        // returns InvalidArgument here rather than silently returning empty;
+        // that catches stale/corrupted tokens loudly.
+        if (offset > totalRows) {
+          throw BqError.invalid(
+            `Offset ${offset} is past the result set (totalRows=${totalRows}).`,
+            rawToken !== undefined ? 'pageToken' : 'startIndex',
+          );
+        }
 
         const rowsRaw = await db.query<{ row: unknown }>(
           `SELECT row FROM _bq.job_rows
            WHERE project = $1 AND job_id = $2 AND row_index >= $3::BIGINT
            ORDER BY row_index
            LIMIT $4::BIGINT`,
-          [project, jobId, BigInt(startIndex), BigInt(maxResults)],
+          [project, jobId, BigInt(offset), BigInt(maxResults)],
         );
         const rows = rowsRaw.map((r) => {
           const raw = r.row;
           return (typeof raw === 'string' ? JSON.parse(raw) : raw) as RowWire;
         });
 
-        const nextStart = startIndex + rows.length;
+        const nextStart = offset + rows.length;
         const hasMore = nextStart < totalRows;
 
         const body: QueryResultsResponseWire = {
@@ -493,7 +571,7 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
           jobReference: { projectId: project, jobId, location: 'US' },
           totalRows: String(totalRows),
           rows,
-          ...(hasMore && { pageToken: String(nextStart) }),
+          ...(hasMore && { pageToken: encodeQueryPageToken(jobId, nextStart) }),
           jobComplete: meta.state === 'DONE',
           cacheHit: false,
         };

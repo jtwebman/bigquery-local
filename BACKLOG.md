@@ -425,7 +425,7 @@ Scope: parser accepts multiple `--project` flags; metadata is scoped by project.
 ### BL-035 — `dryRun: true` for queries ✅ · Est: 2h · Deps: BL-015
 Scope: when `dryRun` is set, translate + parse without executing, return schema + bytes-processed estimate. Acceptance: `dryRun` returns `jobComplete: true, statistics.totalBytesProcessed` without writing rows.
 
-### BL-036 — Query result `pageToken` semantics ⏳ · Est: 1h · Deps: BL-016
+### BL-036 — Query result `pageToken` semantics ✅ · Est: 1h · Deps: BL-016
 Scope: opaque page tokens encoded as `{ jobId, offset }`; honor `startIndex` + `maxResults`. Acceptance: token round-trips; out-of-range token → 400.
 
 ## Phase 9 — SQL function coverage
