@@ -346,7 +346,12 @@ export async function executeQuery(
   if (statementType === 'SCRIPT') {
     return executeScript(db, project, query, sqlWithCasts, options);
   }
-  if (statementType === 'CREATE_FUNCTION' || statementType === 'DROP_FUNCTION') {
+  if (
+    statementType === 'CREATE_FUNCTION' ||
+    statementType === 'DROP_FUNCTION' ||
+    statementType === 'CREATE_TABLE_FUNCTION' ||
+    statementType === 'DROP_TABLE_FUNCTION'
+  ) {
     return executeFunctionDdl(db, project, query, statementType, options);
   }
 
@@ -621,11 +626,15 @@ async function executeFunctionDdl(
   db: Db,
   project: string,
   originalQuery: string,
-  statementType: 'CREATE_FUNCTION' | 'DROP_FUNCTION',
+  statementType:
+    | 'CREATE_FUNCTION'
+    | 'DROP_FUNCTION'
+    | 'CREATE_TABLE_FUNCTION'
+    | 'DROP_TABLE_FUNCTION',
   options: { readonly jobId?: string },
 ): Promise<QueryExecution> {
   const target = parseFunctionDdl(originalQuery, project);
-  if (statementType === 'CREATE_FUNCTION') {
+  if (statementType === 'CREATE_FUNCTION' || statementType === 'CREATE_TABLE_FUNCTION') {
     await runCreateFunction(db, target);
   } else {
     await runDropFunction(db, target);
@@ -683,7 +692,7 @@ async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<voi
       project: target.project,
       datasetId: target.datasetId,
       routineId: target.functionId,
-      routineType: 'SCALAR_FUNCTION',
+      routineType: target.isTableValued ? 'TABLE_VALUED_FUNCTION' : 'SCALAR_FUNCTION',
       language: 'SQL',
       arguments: target.args.map((a) => ({ name: a.name, dataType: { typeKind: a.typeText } })),
       ...(target.returnType !== undefined && {
@@ -695,11 +704,14 @@ async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<voi
 }
 
 async function runDropFunction(db: Db, target: FunctionDdlTarget): Promise<void> {
-  // TEMP path: drop via DuckDB directly; nothing to reconcile in _bq.routines.
+  // DuckDB has separate DROP keywords for scalar vs table macros; mirror that
+  // with the `TABLE` infix when the caller used `DROP TABLE FUNCTION`.
+  const macroKind = target.isTableValued ? 'MACRO TABLE' : 'MACRO';
   if (target.isTemp || target.datasetId === undefined) {
+    // TEMP path: drop via DuckDB directly; nothing to reconcile in _bq.routines.
     const guard = target.ifExists ? 'IF EXISTS ' : '';
     try {
-      await db.exec(`DROP MACRO ${guard}${quoteIdent(target.functionId)}`);
+      await db.exec(`DROP ${macroKind} ${guard}${quoteIdent(target.functionId)}`);
     } catch (err) {
       throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
     }
@@ -714,7 +726,9 @@ async function runDropFunction(db: Db, target: FunctionDdlTarget): Promise<void>
   }
   const dsName = datasetSchemaName(target.project, target.datasetId);
   try {
-    await db.exec(`DROP MACRO IF EXISTS ${quoteIdent(dsName)}.${quoteIdent(target.functionId)}`);
+    await db.exec(
+      `DROP ${macroKind} IF EXISTS ${quoteIdent(dsName)}.${quoteIdent(target.functionId)}`,
+    );
   } catch (err) {
     throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
   }
@@ -751,7 +765,15 @@ function buildCreateMacroSql(target: FunctionDdlTarget): string {
         target.functionId,
       )}`;
   const argList = target.args.map((a) => quoteIdent(a.name)).join(', ');
-  const body = target.body ?? '';
+  // Bodies can contain backtick table refs and other BQ-isms; run them
+  // through the translator so the macro stores DuckDB-resolvable SQL.
+  const rawBody = target.body ?? '';
+  const body = rawBody === '' ? '' : translate(rawBody, { project: target.project }).sql;
+  // TVF: DuckDB's `AS TABLE <select>` form. The body is a SELECT statement;
+  // the RETURNS TABLE<…> clause is captured in metadata but not enforced.
+  if (target.isTableValued) {
+    return `CREATE ${orReplace}${temp}MACRO ${ifNotExists}${qualifiedName}(${argList}) AS TABLE (${body})`;
+  }
   const wrapped =
     target.returnType !== undefined
       ? `CAST((${body}) AS ${bqTypeTextToDuck(target.returnType)})`

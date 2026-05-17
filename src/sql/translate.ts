@@ -134,6 +134,8 @@ export type StatementType =
   | 'DROP_SCHEMA'
   | 'CREATE_FUNCTION'
   | 'DROP_FUNCTION'
+  | 'CREATE_TABLE_FUNCTION'
+  | 'DROP_TABLE_FUNCTION'
   | 'SCRIPT';
 
 /**
@@ -162,6 +164,16 @@ export function detectStatementType(sql: string): StatementType {
     if (kw === 'VIEW') return 'CREATE_VIEW';
     if (kw === 'SCHEMA') return 'CREATE_SCHEMA';
     if (kw === 'FUNCTION') return 'CREATE_FUNCTION';
+    if (kw === 'TABLE' && kindIdx !== null) {
+      // `TABLE FUNCTION` (TVF) — distinct from plain `CREATE TABLE`.
+      const after = nextNonSkippable(tokens, kindIdx + 1);
+      if (
+        tokens[after]?.kind === 'identifier' &&
+        tokens[after]?.value.toUpperCase() === 'FUNCTION'
+      ) {
+        return 'CREATE_TABLE_FUNCTION';
+      }
+    }
   }
   if (head === 'DROP') {
     const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA', 'FUNCTION']);
@@ -169,6 +181,15 @@ export function detectStatementType(sql: string): StatementType {
     if (kw === 'VIEW') return 'DROP_VIEW';
     if (kw === 'SCHEMA') return 'DROP_SCHEMA';
     if (kw === 'FUNCTION') return 'DROP_FUNCTION';
+    if (kw === 'TABLE' && kindIdx !== null) {
+      const after = nextNonSkippable(tokens, kindIdx + 1);
+      if (
+        tokens[after]?.kind === 'identifier' &&
+        tokens[after]?.value.toUpperCase() === 'FUNCTION'
+      ) {
+        return 'DROP_TABLE_FUNCTION';
+      }
+    }
   }
   if (head === 'WITH') {
     // Skip past the CTE definitions to the trailing statement keyword.
@@ -451,20 +472,28 @@ export interface FunctionDdlArg {
 }
 
 export interface FunctionDdlTarget {
-  readonly kind: 'CREATE_FUNCTION' | 'DROP_FUNCTION';
+  readonly kind:
+    | 'CREATE_FUNCTION'
+    | 'DROP_FUNCTION'
+    | 'CREATE_TABLE_FUNCTION'
+    | 'DROP_TABLE_FUNCTION';
   readonly project: string;
   /** Undefined for TEMP functions, which don't live in a dataset. */
   readonly datasetId: string | undefined;
   readonly functionId: string;
   readonly isTemp: boolean;
+  readonly isTableValued: boolean;
   readonly orReplace: boolean;
   readonly ifNotExists: boolean;
   readonly ifExists: boolean;
   /** Empty for DROP and TEMP without an explicit ARGS list, populated for CREATE. */
   readonly args: readonly FunctionDdlArg[];
-  /** Raw BQ return type text, or undefined when not specified. */
+  /** Raw BQ return type text, or undefined when not specified.
+   *  For TVFs this is the `TABLE<col1 type1, ...>` text (informational only;
+   *  DuckDB infers the schema from the body's SELECT). */
   readonly returnType: string | undefined;
-  /** Body expression text (without the wrapping parens or triple quotes). */
+  /** Body text (a scalar expression, or a SELECT for a TVF), without the
+   *  wrapping parens or triple quotes. */
   readonly body: string | undefined;
 }
 
@@ -501,6 +530,12 @@ export function parseFunctionDdl(sql: string, defaultProject: string): FunctionD
     }
   }
 
+  // BQ TVF: `TABLE FUNCTION` instead of just `FUNCTION`.
+  let isTableValued = false;
+  if (isIdentKeyword(tokens[cursor], 'TABLE')) {
+    isTableValued = true;
+    cursor = nextNonSkippable(tokens, cursor + 1);
+  }
   if (!isIdentKeyword(tokens[cursor], 'FUNCTION')) {
     throw BqError.invalid('Expected FUNCTION keyword after CREATE / DROP.', 'query');
   }
@@ -532,11 +567,12 @@ export function parseFunctionDdl(sql: string, defaultProject: string): FunctionD
 
   if (head === 'DROP') {
     return {
-      kind: 'DROP_FUNCTION',
+      kind: isTableValued ? 'DROP_TABLE_FUNCTION' : 'DROP_FUNCTION',
       project,
       datasetId,
       functionId,
       isTemp,
+      isTableValued,
       orReplace,
       ifNotExists: false,
       ifExists,
@@ -583,11 +619,12 @@ export function parseFunctionDdl(sql: string, defaultProject: string): FunctionD
   }
 
   return {
-    kind: 'CREATE_FUNCTION',
+    kind: isTableValued ? 'CREATE_TABLE_FUNCTION' : 'CREATE_FUNCTION',
     project,
     datasetId,
     functionId,
     isTemp,
+    isTableValued,
     orReplace,
     ifNotExists,
     ifExists: false,
