@@ -430,7 +430,7 @@ Scope: opaque page tokens encoded as `{ jobId, offset }`; honor `startIndex` + `
 
 ## Phase 9 — SQL function coverage
 
-### BL-037 — String function expansion ⏳ · Est: 3h · Deps: BL-014
+### BL-037 — String function expansion ✅ · Est: 3h · Deps: BL-014
 Scope: REGEXP_CONTAINS / EXTRACT / EXTRACT_ALL / REPLACE, FORMAT, LPAD / RPAD, NORMALIZE / NORMALIZE_AND_CASEFOLD, TRANSLATE, REPEAT, REVERSE, OCTET_LENGTH. Acceptance: 1 happy-path test per function.
 
 ### BL-038 — Numeric/math function expansion ⏳ · Est: 2h · Deps: BL-014
