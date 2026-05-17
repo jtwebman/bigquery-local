@@ -272,7 +272,7 @@ arrives.
 
 ## Phase 5 — CLI, library, packaging
 
-### BL-017 — CLI bin ⏳ · Est: 1.5h · Deps: BL-004
+### BL-017 — CLI bin ✅ · Est: 1.5h · Deps: BL-004
 
 **Scope:**
 - `bin/bigquery-local.ts` with shebang `#!/usr/bin/env node`.

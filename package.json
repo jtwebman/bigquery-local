@@ -14,6 +14,9 @@
       "import": "./dist/index.js"
     }
   },
+  "bin": {
+    "bigquery-local": "./bin/bigquery-local.ts"
+  },
   "files": [
     "dist",
     "bin",
