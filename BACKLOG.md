@@ -466,7 +466,7 @@ Scope: MD5, SHA1, SHA256, SHA512, FARM_FINGERPRINT. Acceptance: known-vector tes
 ### BL-048 — Bitwise functions ✅ · Est: 30m · Deps: BL-014
 Scope: BIT_COUNT, `<<`, `>>`, `&`, `|`, `^`, `~`. Acceptance: 1 test per operator.
 
-### BL-049 — Conversion / cast formatting ⏳ · Est: 2h · Deps: BL-014
+### BL-049 — Conversion / cast formatting ✅ · Est: 2h · Deps: BL-014
 Scope: format-aware CAST (`CAST(x AS STRING FORMAT 'YYYY-MM-DD')`), PARSE_DATE / PARSE_TIMESTAMP with format strings, FORMAT() function. Acceptance: format-string spec tests.
 
 ### BL-050 — Net functions ⏳ · Est: 1h · Deps: BL-014
