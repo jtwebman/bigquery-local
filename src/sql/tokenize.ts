@@ -110,7 +110,12 @@ function readToken(sql: string, start: number, out: Token[]): number {
   if (ch === '-' && sql.charAt(start + 1) === '-') return readLineComment(sql, start, out);
   if (ch === '/' && sql.charAt(start + 1) === '*') return readBlockComment(sql, start, out);
   if (ch === '`') return readBacktickIdent(sql, start, out);
-  if (ch === "'" || ch === '"') return readQuotedString(sql, start, 'string', start, true, out);
+  if (ch === "'" || ch === '"') {
+    if (sql.charAt(start + 1) === ch && sql.charAt(start + 2) === ch) {
+      return readTripleQuotedString(sql, start, 'string', start, out);
+    }
+    return readQuotedString(sql, start, 'string', start, true, out);
+  }
   if (ch === '@') return readParameter(sql, start, out);
 
   // r / b / rb / br string prefixes (case-insensitive).
@@ -120,6 +125,9 @@ function readToken(sql: string, start: number, out: Token[]): number {
     if (quoteChar === "'" || quoteChar === '"') {
       const kind = stringKindForPrefix(sql.slice(start, prefixEnd));
       const allowEscapes = kind === 'string' || kind === 'bytes';
+      if (sql.charAt(prefixEnd + 1) === quoteChar && sql.charAt(prefixEnd + 2) === quoteChar) {
+        return readTripleQuotedString(sql, prefixEnd, kind, start, out);
+      }
       return readQuotedString(sql, prefixEnd, kind, start, allowEscapes, out);
     }
   }
@@ -221,6 +229,34 @@ function readQuotedString(
     i += 1;
   }
   throw new TokenizeError('Unterminated string', tokenStart);
+}
+
+/**
+ * BQ triple-quoted strings: `"""..."""` and `'''...'''`. Can span newlines.
+ * Internal single/double quotes don't terminate; only a triple sequence of
+ * the same quote char closes the string. No escape handling — DuckDB
+ * preserves backslashes verbatim, which matches BQ's raw triple-string
+ * behavior for the SQL UDF / JS UDF bodies that primarily use this form.
+ */
+function readTripleQuotedString(
+  sql: string,
+  contentStart: number,
+  kind: TokenKind,
+  tokenStart: number,
+  out: Token[],
+): number {
+  const quote = sql.charAt(contentStart);
+  // Skip the opening `"""` or `'''`.
+  let i = contentStart + 3;
+  while (i < sql.length - 2) {
+    if (sql.charAt(i) === quote && sql.charAt(i + 1) === quote && sql.charAt(i + 2) === quote) {
+      i += 3;
+      out.push({ kind, value: sql.slice(tokenStart, i), start: tokenStart, end: i });
+      return i;
+    }
+    i += 1;
+  }
+  throw new TokenizeError('Unterminated triple-quoted string', tokenStart);
 }
 
 function readParameter(sql: string, start: number, out: Token[]): number {

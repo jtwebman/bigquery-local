@@ -16,10 +16,12 @@ import { datasetSchemaName, ensureDatasetSchema, quoteIdent } from '../routes/ta
 import type { Db, QueryResult } from '../storage/db.ts';
 import {
   deleteDataset,
+  deleteRoutine,
   deleteTable,
   getDataset,
   upsertDataset,
   upsertJob,
+  upsertRoutine,
   upsertTable,
 } from '../storage/meta.ts';
 import {
@@ -34,10 +36,12 @@ import {
 import { BqError } from '../util/errors.ts';
 import { tokenize } from './tokenize.ts';
 import {
+  type FunctionDdlTarget,
   type SchemaDdlTarget,
   type StatementType,
   type ViewDdlTarget,
   detectStatementType,
+  parseFunctionDdl,
   parseSchemaDdl,
   parseViewDdl,
   translate,
@@ -342,6 +346,9 @@ export async function executeQuery(
   if (statementType === 'SCRIPT') {
     return executeScript(db, project, query, sqlWithCasts, options);
   }
+  if (statementType === 'CREATE_FUNCTION' || statementType === 'DROP_FUNCTION') {
+    return executeFunctionDdl(db, project, query, statementType, options);
+  }
 
   let result: QueryResult;
   try {
@@ -604,6 +611,169 @@ async function runDropSchema(db: Db, target: SchemaDdlTarget): Promise<void> {
     ]);
   }
   await deleteDataset(db, target.project, target.datasetId);
+}
+
+// ---------------------------------------------------------------------------
+// DDL: FUNCTION (SQL UDF)
+// ---------------------------------------------------------------------------
+
+async function executeFunctionDdl(
+  db: Db,
+  project: string,
+  originalQuery: string,
+  statementType: 'CREATE_FUNCTION' | 'DROP_FUNCTION',
+  options: { readonly jobId?: string },
+): Promise<QueryExecution> {
+  const target = parseFunctionDdl(originalQuery, project);
+  if (statementType === 'CREATE_FUNCTION') {
+    await runCreateFunction(db, target);
+  } else {
+    await runDropFunction(db, target);
+  }
+  const jobId = options.jobId ?? randomUUID();
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType,
+    query: originalQuery,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: [] },
+    resultTotalRows: 0,
+  });
+  return {
+    jobId,
+    statementType,
+    schema: [],
+    wireRows: [],
+    startedMs: now,
+    endedMs: now,
+    totalRows: 0,
+  };
+}
+
+async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<void> {
+  // Persistent functions live in their dataset; TEMP lives in DuckDB's
+  // session-temp schema (closest analogue to BQ session-scoped TEMP).
+  if (!target.isTemp) {
+    if (target.datasetId === undefined) {
+      throw BqError.invalid(
+        'CREATE FUNCTION requires a dataset-qualified name unless TEMP.',
+        'query',
+      );
+    }
+    const ds = await getDataset(db, target.project, target.datasetId);
+    if (ds === null) {
+      throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
+    }
+    await ensureDatasetSchema(db, target.project, target.datasetId);
+  }
+  const macroSql = buildCreateMacroSql(target);
+  try {
+    await db.exec(macroSql);
+  } catch (err) {
+    throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
+  }
+  // Only persist non-TEMP routines — DuckDB owns the lifecycle of TEMP macros,
+  // and a process-restart drops the in-memory state anyway.
+  if (!target.isTemp && target.datasetId !== undefined && target.body !== undefined) {
+    await upsertRoutine(db, {
+      project: target.project,
+      datasetId: target.datasetId,
+      routineId: target.functionId,
+      routineType: 'SCALAR_FUNCTION',
+      language: 'SQL',
+      arguments: target.args.map((a) => ({ name: a.name, dataType: { typeKind: a.typeText } })),
+      ...(target.returnType !== undefined && {
+        returnType: { typeKind: target.returnType },
+      }),
+      body: target.body,
+    });
+  }
+}
+
+async function runDropFunction(db: Db, target: FunctionDdlTarget): Promise<void> {
+  // TEMP path: drop via DuckDB directly; nothing to reconcile in _bq.routines.
+  if (target.isTemp || target.datasetId === undefined) {
+    const guard = target.ifExists ? 'IF EXISTS ' : '';
+    try {
+      await db.exec(`DROP MACRO ${guard}${quoteIdent(target.functionId)}`);
+    } catch (err) {
+      throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
+    }
+    return;
+  }
+  const existing = await getRoutineSafe(db, target.project, target.datasetId, target.functionId);
+  if (existing === null) {
+    if (target.ifExists) return;
+    throw BqError.notFound(
+      `Routine "${target.project}:${target.datasetId}.${target.functionId}" not found.`,
+    );
+  }
+  const dsName = datasetSchemaName(target.project, target.datasetId);
+  try {
+    await db.exec(`DROP MACRO IF EXISTS ${quoteIdent(dsName)}.${quoteIdent(target.functionId)}`);
+  } catch (err) {
+    throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
+  }
+  await deleteRoutine(db, target.project, target.datasetId, target.functionId);
+}
+
+async function getRoutineSafe(
+  db: Db,
+  project: string,
+  datasetId: string,
+  routineId: string,
+): Promise<unknown | null> {
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT routine_id FROM _bq.routines
+      WHERE project = $1 AND dataset_id = $2 AND routine_id = $3`,
+    [project, datasetId, routineId],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Build the DuckDB `CREATE [OR REPLACE] [TEMP] MACRO [IF NOT EXISTS] ...`
+ * statement for a BQ UDF definition. Argument types are dropped (DuckDB
+ * doesn't enforce them on macros); the RETURNS type is honored by wrapping
+ * the body in `CAST(... AS <duckType>)`.
+ */
+function buildCreateMacroSql(target: FunctionDdlTarget): string {
+  const orReplace = target.orReplace ? 'OR REPLACE ' : '';
+  const temp = target.isTemp ? 'TEMP ' : '';
+  const ifNotExists = target.ifNotExists ? 'IF NOT EXISTS ' : '';
+  const qualifiedName = target.isTemp
+    ? quoteIdent(target.functionId)
+    : `${quoteIdent(datasetSchemaName(target.project, target.datasetId as string))}.${quoteIdent(
+        target.functionId,
+      )}`;
+  const argList = target.args.map((a) => quoteIdent(a.name)).join(', ');
+  const body = target.body ?? '';
+  const wrapped =
+    target.returnType !== undefined
+      ? `CAST((${body}) AS ${bqTypeTextToDuck(target.returnType)})`
+      : `(${body})`;
+  return `CREATE ${orReplace}${temp}MACRO ${ifNotExists}${qualifiedName}(${argList}) AS ${wrapped}`;
+}
+
+/**
+ * Lightweight BQ → DuckDB type-text translation for use in CAST.
+ * Covers the common scalar names and ARRAY<…>. Anything else passes through
+ * verbatim, which works for DuckDB-compatible spellings the user wrote.
+ */
+function bqTypeTextToDuck(text: string): string {
+  let s = text.trim();
+  s = s.replace(/ARRAY\s*<\s*([^>]+)\s*>/gi, '$1[]');
+  s = s.replace(/\bINT64\b/gi, 'BIGINT');
+  s = s.replace(/\bFLOAT64\b/gi, 'DOUBLE');
+  s = s.replace(/\bBOOL\b/gi, 'BOOLEAN');
+  s = s.replace(/\bSTRING\b/gi, 'VARCHAR');
+  s = s.replace(/\bBYTES\b/gi, 'BLOB');
+  s = s.replace(/\bNUMERIC\b/gi, 'DECIMAL(38, 9)');
+  return s;
 }
 
 async function registerViewMetadata(db: Db, target: ViewDdlTarget): Promise<void> {

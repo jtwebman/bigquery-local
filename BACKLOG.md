@@ -593,7 +593,7 @@ Scope: BEGIN / COMMIT / ROLLBACK; align semantics with BQ docs (limited rollback
 
 ## Phase 11 — Functions, procedures, scripting
 
-### BL-063 — SQL UDF (`CREATE FUNCTION`) ⏳ · Est: 3h · Deps: BL-014
+### BL-063 — SQL UDF (`CREATE FUNCTION`) ✅ · Est: 3h · Deps: BL-014
 
 Scope: persistent + temporary SQL UDFs; type signatures stored in `_bq.routines`. Acceptance: defined UDF is callable in subsequent queries.
 
