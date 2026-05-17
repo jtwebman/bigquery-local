@@ -50,10 +50,16 @@ interface JobStatisticsWire {
   readonly startTime?: string;
   readonly endTime?: string;
   readonly totalBytesProcessed: string;
+  readonly numDmlAffectedRows?: string;
   readonly query?: {
     readonly statementType: string;
     readonly totalSlotMs: string;
     readonly schema?: { readonly fields: readonly FieldWire[] };
+    readonly dmlStats?: {
+      readonly insertedRowCount?: string;
+      readonly updatedRowCount?: string;
+      readonly deletedRowCount?: string;
+    };
   };
 }
 
@@ -79,10 +85,29 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
           message: errorObj.message ?? '',
         }
       : undefined;
+  const statementType = meta.statementType ?? 'SELECT';
+  const dmlAffected = meta.dmlAffectedRows;
+  // Real BQ splits affected rows into per-statement buckets in `dmlStats`.
+  // The emulator doesn't track inserted-vs-updated-vs-deleted separately;
+  // the count goes into the bucket that matches the statement type.
+  const dmlStats =
+    dmlAffected !== undefined
+      ? statementType === 'INSERT'
+        ? { insertedRowCount: String(dmlAffected) }
+        : statementType === 'UPDATE'
+          ? { updatedRowCount: String(dmlAffected) }
+          : statementType === 'DELETE'
+            ? { deletedRowCount: String(dmlAffected) }
+            : undefined
+      : undefined;
   return {
     kind: 'bigquery#job',
     id: `${meta.project}:US.${meta.jobId}`,
-    jobReference: { projectId: meta.project, jobId: meta.jobId, location: 'US' },
+    jobReference: {
+      projectId: meta.project,
+      jobId: meta.jobId,
+      location: 'US',
+    },
     configuration: { query: { query: meta.query ?? '' } },
     status: {
       state: meta.state,
@@ -90,15 +115,21 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
     },
     statistics: {
       creationTime: String(meta.createdMs),
-      ...(meta.startedMs !== undefined && { startTime: String(meta.startedMs) }),
+      ...(meta.startedMs !== undefined && {
+        startTime: String(meta.startedMs),
+      }),
       ...(meta.endedMs !== undefined && { endTime: String(meta.endedMs) }),
       totalBytesProcessed: '0',
+      ...(dmlAffected !== undefined && {
+        numDmlAffectedRows: String(dmlAffected),
+      }),
       query: {
-        statementType: meta.statementType ?? 'SELECT',
+        statementType,
         totalSlotMs: '0',
         ...(schemaFields.length > 0 && {
           schema: { fields: schemaFields.map(fieldToWire) },
         }),
+        ...(dmlStats !== undefined && { dmlStats }),
       },
     },
   };
@@ -437,7 +468,7 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
               endTime: String(now),
               totalBytesProcessed: '0',
               query: {
-                statementType: 'SELECT',
+                statementType: dry.statementType,
                 totalSlotMs: '0',
                 ...(dry.schema.length > 0 && {
                   schema: { fields: dry.schema.map(fieldToWire) },
@@ -456,7 +487,10 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
           /* node:coverage ignore next 4 */
           throw BqError.internalError(`Job ${exec.jobId} was created but could not be re-read.`);
         }
-        return { status: 200, body: jobMetaToResource(meta) } satisfies RouteResponse;
+        return {
+          status: 200,
+          body: jobMetaToResource(meta),
+        } satisfies RouteResponse;
       },
     },
 
@@ -470,7 +504,10 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
         if (meta === null) {
           throw BqError.notFound(`Job "${project}:${jobId}" not found.`);
         }
-        return { status: 200, body: jobMetaToResource(meta) } satisfies RouteResponse;
+        return {
+          status: 200,
+          body: jobMetaToResource(meta),
+        } satisfies RouteResponse;
       },
     },
 

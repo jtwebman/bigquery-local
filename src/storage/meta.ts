@@ -74,6 +74,7 @@ const DDL_STATEMENTS: readonly string[] = [
     ended_at TIMESTAMP,
     result_schema JSON,
     result_total_rows BIGINT,
+    dml_affected_rows BIGINT,
     PRIMARY KEY (project, job_id)
   )`,
   `CREATE TABLE IF NOT EXISTS _bq.job_rows (
@@ -257,7 +258,10 @@ export async function listDatasets(
   db: Db,
   project: string,
   options: { readonly offset: number; readonly limit: number },
-): Promise<{ readonly datasets: readonly DatasetMeta[]; readonly nextOffset: number | null }> {
+): Promise<{
+  readonly datasets: readonly DatasetMeta[];
+  readonly nextOffset: number | null;
+}> {
   const rows = await db.query<Record<string, unknown>>(
     `SELECT
        project, dataset_id, etag, location, friendly_name, description,
@@ -285,7 +289,10 @@ export async function listDatasets(
     ...optionalJson<'labels', Record<string, string>>('labels', row['labels']),
     ...optionalNumber('defaultTableExpirationMs', row['default_table_expiration_ms']),
   }));
-  return { datasets, nextOffset: hasMore ? options.offset + options.limit : null };
+  return {
+    datasets,
+    nextOffset: hasMore ? options.offset + options.limit : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +441,10 @@ export async function listTables(
   project: string,
   datasetId: string,
   options: { readonly offset: number; readonly limit: number },
-): Promise<{ readonly tables: readonly TableMeta[]; readonly nextOffset: number | null }> {
+): Promise<{
+  readonly tables: readonly TableMeta[];
+  readonly nextOffset: number | null;
+}> {
   const rows = await db.query<Record<string, unknown>>(
     `SELECT
        project, dataset_id, table_id, type, etag, "schema", description,
@@ -465,7 +475,10 @@ export async function listTables(
     ...optionalJson<'partitioning', unknown>('partitioning', row['partitioning']),
     ...optionalJson<'clustering', unknown>('clustering', row['clustering']),
   }));
-  return { tables, nextOffset: hasMore ? options.offset + options.limit : null };
+  return {
+    tables,
+    nextOffset: hasMore ? options.offset + options.limit : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +500,7 @@ export interface JobMetaInput {
   readonly endedMs?: number;
   readonly resultSchema?: unknown;
   readonly resultTotalRows?: number;
+  readonly dmlAffectedRows?: number;
 }
 
 export interface JobMeta extends JobMetaInput {
@@ -495,7 +509,7 @@ export interface JobMeta extends JobMetaInput {
 
 const SELECT_JOB = `SELECT
   project, job_id, state, statement_type, error, query, params, types,
-  result_schema, result_total_rows,
+  result_schema, result_total_rows, dml_affected_rows,
   epoch_ms(created_at) AS created_ms,
   epoch_ms(started_at) AS started_ms,
   epoch_ms(ended_at) AS ended_ms
@@ -520,6 +534,7 @@ export async function getJob(db: Db, project: string, jobId: string): Promise<Jo
     ...optionalNumber('endedMs', row['ended_ms']),
     ...optionalJson<'resultSchema', unknown>('resultSchema', row['result_schema']),
     ...optionalNumber('resultTotalRows', row['result_total_rows']),
+    ...optionalNumber('dmlAffectedRows', row['dml_affected_rows']),
   };
 }
 
@@ -532,13 +547,14 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
   await db.exec(
     `INSERT INTO _bq.jobs (
       project, job_id, state, statement_type, error, query, params, types,
-      created_at, started_at, ended_at, result_schema, result_total_rows
+      created_at, started_at, ended_at, result_schema, result_total_rows,
+      dml_affected_rows
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8,
       epoch_ms($9::BIGINT),
       CASE WHEN $10 IS NULL THEN NULL ELSE epoch_ms($10::BIGINT) END,
       CASE WHEN $11 IS NULL THEN NULL ELSE epoch_ms($11::BIGINT) END,
-      $12, $13
+      $12, $13, $14
     )
     ON CONFLICT (project, job_id) DO UPDATE SET
       state = EXCLUDED.state,
@@ -550,7 +566,8 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
       started_at = EXCLUDED.started_at,
       ended_at = EXCLUDED.ended_at,
       result_schema = EXCLUDED.result_schema,
-      result_total_rows = EXCLUDED.result_total_rows`,
+      result_total_rows = EXCLUDED.result_total_rows,
+      dml_affected_rows = EXCLUDED.dml_affected_rows`,
     [
       input.project,
       input.jobId,
@@ -565,6 +582,7 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
       endedAtParam,
       jsonOrNull(input.resultSchema),
       bigintOrNull(input.resultTotalRows),
+      bigintOrNull(input.dmlAffectedRows),
     ],
   );
   return {
@@ -590,7 +608,10 @@ export async function listJobs(
     readonly minCreatedMs?: number;
     readonly maxCreatedMs?: number;
   },
-): Promise<{ readonly jobs: readonly JobMeta[]; readonly nextOffset: number | null }> {
+): Promise<{
+  readonly jobs: readonly JobMeta[];
+  readonly nextOffset: number | null;
+}> {
   const where: string[] = ['project = $1'];
   const params: unknown[] = [project];
   let next = 2;
@@ -619,7 +640,7 @@ export async function listJobs(
 
   const sql = `SELECT
        project, job_id, state, statement_type, error, query, params, types,
-       result_schema, result_total_rows,
+       result_schema, result_total_rows, dml_affected_rows,
        epoch_ms(created_at) AS created_ms,
        epoch_ms(started_at) AS started_ms,
        epoch_ms(ended_at) AS ended_ms
@@ -645,6 +666,7 @@ export async function listJobs(
     ...optionalNumber('endedMs', row['ended_ms']),
     ...optionalJson<'resultSchema', unknown>('resultSchema', row['result_schema']),
     ...optionalNumber('resultTotalRows', row['result_total_rows']),
+    ...optionalNumber('dmlAffectedRows', row['dml_affected_rows']),
   }));
   return { jobs, nextOffset: hasMore ? options.offset + options.limit : null };
 }

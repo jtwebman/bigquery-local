@@ -24,7 +24,7 @@ import {
   normalizeBqType,
 } from '../storage/types.ts';
 import { BqError } from '../util/errors.ts';
-import { translate } from './translate.ts';
+import { type StatementType, detectStatementType, translate } from './translate.ts';
 
 // ---------------------------------------------------------------------------
 // Parsed query parameter
@@ -56,7 +56,9 @@ export function fieldToWire(field: BqField): FieldWire {
     name: field.name,
     type: field.type,
     ...(field.mode !== undefined && { mode: field.mode }),
-    ...(field.fields !== undefined && { fields: field.fields.map(fieldToWire) }),
+    ...(field.fields !== undefined && {
+      fields: field.fields.map(fieldToWire),
+    }),
   };
 }
 
@@ -104,7 +106,12 @@ export function parseQueryParameter(raw: unknown, path: string): QueryParameterP
       const entryObj = asObject(entry, `${path}.parameterValue.arrayValues[${i}]`);
       return expectString(entryObj['value'], `${path}.parameterValue.arrayValues[${i}].value`);
     });
-    return { name, type: elementType, arrayElementType: elementType, arrayScalars };
+    return {
+      name,
+      type: elementType,
+      arrayElementType: elementType,
+      arrayScalars,
+    };
   }
 
   const scalarType = normalizeBqType(expectString(typeObj['type'], `${path}.parameterType.type`));
@@ -278,11 +285,14 @@ function rowsToWire(
 
 export interface QueryExecution {
   readonly jobId: string;
+  readonly statementType: StatementType;
   readonly schema: readonly BqField[];
   readonly wireRows: readonly RowWire[];
   readonly startedMs: number;
   readonly endedMs: number;
   readonly totalRows: number;
+  /** Rows touched by an INSERT/UPDATE/DELETE/MERGE. Undefined for SELECT. */
+  readonly dmlAffectedRows?: number;
 }
 
 /**
@@ -300,6 +310,7 @@ export async function executeQuery(
   parameters: readonly QueryParameterParsed[],
   options: { readonly jobId?: string } = {},
 ): Promise<QueryExecution> {
+  const statementType = detectStatementType(query);
   const translated = translate(query, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
@@ -311,11 +322,41 @@ export async function executeQuery(
     throw BqError.invalid(err instanceof Error ? err.message : 'Query execution failed.', 'query');
   }
 
-  const schema = buildResultSchema(result.columnNames, result.columnTypes);
-  const wireRows = rowsToWire(result.rows, schema);
   const jobId = options.jobId ?? randomUUID();
   const startedMs = Date.now();
   const endedMs = startedMs;
+
+  if (statementType !== 'SELECT') {
+    // DuckDB DML returns a single row { Count: BIGINT }. BQ's wire shape for
+    // DML has no schema and no rows — just `numDmlAffectedRows` in stats.
+    const affected = readDmlCount(result);
+    await upsertJob(db, {
+      project,
+      jobId,
+      state: 'DONE',
+      statementType,
+      query,
+      params: parameters,
+      startedMs,
+      endedMs,
+      resultSchema: { fields: [] },
+      resultTotalRows: 0,
+      dmlAffectedRows: affected,
+    });
+    return {
+      jobId,
+      statementType,
+      schema: [],
+      wireRows: [],
+      startedMs,
+      endedMs,
+      totalRows: 0,
+      dmlAffectedRows: affected,
+    };
+  }
+
+  const schema = buildResultSchema(result.columnNames, result.columnTypes);
+  const wireRows = rowsToWire(result.rows, schema);
 
   await upsertJob(db, {
     project,
@@ -338,6 +379,7 @@ export async function executeQuery(
 
   return {
     jobId,
+    statementType: 'SELECT',
     schema,
     wireRows,
     startedMs,
@@ -346,11 +388,22 @@ export async function executeQuery(
   };
 }
 
+function readDmlCount(result: QueryResult): number {
+  const first = result.rows[0];
+  if (first === undefined) return 0;
+  const raw = first['Count'] ?? first[result.columnNames[0] ?? ''];
+  if (typeof raw === 'bigint') return Number(raw);
+  if (typeof raw === 'number') return raw;
+  if (typeof raw === 'string') return Number(raw);
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Dry run
 // ---------------------------------------------------------------------------
 
 export interface DryRunResult {
+  readonly statementType: StatementType;
   readonly schema: readonly BqField[];
 }
 
@@ -375,9 +428,26 @@ export async function executeQueryDryRun(
   query: string,
   parameters: readonly QueryParameterParsed[],
 ): Promise<DryRunResult> {
+  const statementType = detectStatementType(query);
   const translated = translate(query, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
+
+  if (statementType !== 'SELECT') {
+    // DESCRIBE doesn't parse DML in DuckDB; EXPLAIN plans the statement
+    // without mutating rows, which still surfaces unknown tables / columns /
+    // type mismatches as proper errors here.
+    try {
+      await db.query(`EXPLAIN ${sqlWithCasts}`, values);
+    } catch (err) {
+      throw BqError.invalid(
+        err instanceof Error ? err.message : 'Query validation failed.',
+        'query',
+      );
+    }
+    return { statementType, schema: [] };
+  }
+
   // DuckDB accepts DESCRIBE on a query string; the parameter bindings flow
   // through the same prepared-statement path the executor uses.
   const describeSql = `DESCRIBE ${sqlWithCasts}`;
@@ -395,5 +465,5 @@ export async function executeQueryDryRun(
     return duckTypeToBq(type, name);
   });
 
-  return { schema };
+  return { statementType, schema };
 }

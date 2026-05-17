@@ -121,6 +121,72 @@ export function translate(sql: string, options: TranslateOptions): TranslateResu
   return { sql: out, paramOrder };
 }
 
+export type StatementType = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'MERGE';
+
+/**
+ * Classifies a BQ SQL string by its leading keyword. Skips whitespace,
+ * comments, and a leading `WITH … AS (…)` CTE block — a `WITH` that ends
+ * in an INSERT/UPDATE/DELETE still classifies as DML.
+ */
+export function detectStatementType(sql: string): StatementType {
+  const tokens = tokenize(sql);
+  let i = 0;
+  while (i < tokens.length && isSkippable(tokens[i] as Token)) i += 1;
+  const first = tokens[i];
+  if (first === undefined) return 'SELECT';
+  if (first.kind !== 'identifier') return 'SELECT';
+  const head = first.value.toUpperCase();
+  if (head === 'INSERT') return 'INSERT';
+  if (head === 'UPDATE') return 'UPDATE';
+  if (head === 'DELETE') return 'DELETE';
+  if (head === 'MERGE') return 'MERGE';
+  if (head === 'WITH') {
+    // Skip past the CTE definitions to the trailing statement keyword.
+    const after = skipCteBlock(tokens, i + 1);
+    if (after !== null) {
+      const trailing = tokens[after];
+      if (trailing?.kind === 'identifier') {
+        const tail = trailing.value.toUpperCase();
+        if (tail === 'INSERT') return 'INSERT';
+        if (tail === 'UPDATE') return 'UPDATE';
+        if (tail === 'DELETE') return 'DELETE';
+        if (tail === 'MERGE') return 'MERGE';
+      }
+    }
+  }
+  return 'SELECT';
+}
+
+function isSkippable(tok: Token): boolean {
+  return tok.kind === 'whitespace' || tok.kind === 'line-comment' || tok.kind === 'block-comment';
+}
+
+function skipCteBlock(tokens: readonly Token[], start: number): number | null {
+  let i = start;
+  let depth = 0;
+  while (i < tokens.length) {
+    const tok = tokens[i] as Token;
+    if (tok.kind === 'punctuation') {
+      if (tok.value === '(') depth += 1;
+      else if (tok.value === ')') depth -= 1;
+    }
+    if (depth === 0 && tok.kind === 'identifier') {
+      const word = tok.value.toUpperCase();
+      if (
+        word === 'SELECT' ||
+        word === 'INSERT' ||
+        word === 'UPDATE' ||
+        word === 'DELETE' ||
+        word === 'MERGE'
+      ) {
+        return i;
+      }
+    }
+    i += 1;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Core walk
 // ---------------------------------------------------------------------------
