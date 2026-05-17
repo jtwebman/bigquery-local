@@ -555,7 +555,7 @@ Scope: full DML pass-through to DuckDB. Acceptance: each statement type has end-
 
 Scope: full MERGE statement support; map to DuckDB upsert idioms where needed. Acceptance: BigQuery's MERGE examples pass.
 
-### BL-054 — DDL: VIEW ⏳ · Est: 2h · Deps: BL-011
+### BL-054 — DDL: VIEW ✅ · Est: 2h · Deps: BL-011
 
 Scope: `CREATE VIEW`, `DROP VIEW`; stored as DuckDB view + metadata. Acceptance: view appears in `_bq.tables` with `type='VIEW'`; SELECT against it works.
 

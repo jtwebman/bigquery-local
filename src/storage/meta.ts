@@ -58,6 +58,7 @@ const DDL_STATEMENTS: readonly string[] = [
     expires_at TIMESTAMP,
     partitioning JSON,
     clustering JSON,
+    view_query VARCHAR,
     PRIMARY KEY (project, dataset_id, table_id)
   )`,
   `CREATE TABLE IF NOT EXISTS _bq.jobs (
@@ -310,6 +311,8 @@ export interface TableMetaInput {
   readonly expirationMs?: number;
   readonly partitioning?: unknown;
   readonly clustering?: unknown;
+  /** Raw view body when `type === 'VIEW'`. */
+  readonly viewQuery?: string;
 }
 
 export interface TableMeta extends TableMetaInput {
@@ -320,7 +323,7 @@ export interface TableMeta extends TableMetaInput {
 
 const SELECT_TABLE = `SELECT
   project, dataset_id, table_id, type, etag, "schema", description,
-  num_rows, partitioning, clustering,
+  num_rows, partitioning, clustering, view_query,
   epoch_ms(created_at) AS created_ms,
   epoch_ms(updated_at) AS updated_ms,
   epoch_ms(expires_at) AS expiration_ms
@@ -350,6 +353,7 @@ export async function getTable(
     ...optionalNumber('expirationMs', row['expiration_ms']),
     ...optionalJson<'partitioning', unknown>('partitioning', row['partitioning']),
     ...optionalJson<'clustering', unknown>('clustering', row['clustering']),
+    ...optional('viewQuery', row['view_query'] as string | null),
   };
 }
 
@@ -373,12 +377,13 @@ export async function upsertTable(
   await db.exec(
     `INSERT INTO _bq.tables (
       project, dataset_id, table_id, type, etag, "schema", description,
-      num_rows, created_at, updated_at, expires_at, partitioning, clustering
+      num_rows, created_at, updated_at, expires_at, partitioning, clustering,
+      view_query
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7,
       $8, epoch_ms($9::BIGINT), epoch_ms($10::BIGINT),
       CASE WHEN $11 IS NULL THEN NULL ELSE epoch_ms($11::BIGINT) END,
-      $12, $13
+      $12, $13, $14
     )
     ON CONFLICT (project, dataset_id, table_id) DO UPDATE SET
       type = EXCLUDED.type,
@@ -389,7 +394,8 @@ export async function upsertTable(
       updated_at = EXCLUDED.updated_at,
       expires_at = EXCLUDED.expires_at,
       partitioning = EXCLUDED.partitioning,
-      clustering = EXCLUDED.clustering`,
+      clustering = EXCLUDED.clustering,
+      view_query = EXCLUDED.view_query`,
     [
       input.project,
       input.datasetId,
@@ -404,6 +410,7 @@ export async function upsertTable(
       expiresAtParam,
       jsonOrNull(input.partitioning),
       jsonOrNull(input.clustering),
+      input.viewQuery ?? null,
     ],
   );
   return {
@@ -448,7 +455,7 @@ export async function listTables(
   const rows = await db.query<Record<string, unknown>>(
     `SELECT
        project, dataset_id, table_id, type, etag, "schema", description,
-       num_rows, partitioning, clustering,
+       num_rows, partitioning, clustering, view_query,
        epoch_ms(created_at) AS created_ms,
        epoch_ms(updated_at) AS updated_ms,
        epoch_ms(expires_at) AS expiration_ms
@@ -474,6 +481,7 @@ export async function listTables(
     ...optionalNumber('expirationMs', row['expiration_ms']),
     ...optionalJson<'partitioning', unknown>('partitioning', row['partitioning']),
     ...optionalJson<'clustering', unknown>('clustering', row['clustering']),
+    ...optional('viewQuery', row['view_query'] as string | null),
   }));
   return {
     tables,

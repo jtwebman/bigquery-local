@@ -12,8 +12,9 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { datasetSchemaName, ensureDatasetSchema, quoteIdent } from '../routes/tables.ts';
 import type { Db, QueryResult } from '../storage/db.ts';
-import { upsertJob } from '../storage/meta.ts';
+import { deleteTable, getDataset, upsertJob, upsertTable } from '../storage/meta.ts';
 import {
   type BqField,
   type BqMode,
@@ -24,7 +25,13 @@ import {
   normalizeBqType,
 } from '../storage/types.ts';
 import { BqError } from '../util/errors.ts';
-import { type StatementType, detectStatementType, translate } from './translate.ts';
+import {
+  type StatementType,
+  type ViewDdlTarget,
+  detectStatementType,
+  parseViewDdl,
+  translate,
+} from './translate.ts';
 
 // ---------------------------------------------------------------------------
 // Parsed query parameter
@@ -315,6 +322,10 @@ export async function executeQuery(
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 
+  if (statementType === 'CREATE_VIEW' || statementType === 'DROP_VIEW') {
+    return executeViewDdl(db, project, query, sqlWithCasts, statementType, options);
+  }
+
   let result: QueryResult;
   try {
     result = await db.queryWithSchema(sqlWithCasts, values);
@@ -396,6 +407,83 @@ function readDmlCount(result: QueryResult): number {
   if (typeof raw === 'number') return raw;
   if (typeof raw === 'string') return Number(raw);
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// DDL: VIEW
+// ---------------------------------------------------------------------------
+
+async function executeViewDdl(
+  db: Db,
+  project: string,
+  originalQuery: string,
+  translatedSql: string,
+  statementType: 'CREATE_VIEW' | 'DROP_VIEW',
+  options: { readonly jobId?: string },
+): Promise<QueryExecution> {
+  const target = parseViewDdl(originalQuery, project);
+  // Dataset must exist (mirrors REST tables.insert behavior).
+  const dataset = await getDataset(db, target.project, target.datasetId);
+  if (dataset === null) {
+    throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
+  }
+  await ensureDatasetSchema(db, target.project, target.datasetId);
+
+  try {
+    await db.exec(translatedSql);
+  } catch (err) {
+    throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
+  }
+
+  if (statementType === 'CREATE_VIEW') {
+    await registerViewMetadata(db, target);
+  } else {
+    await deleteTable(db, target.project, target.datasetId, target.viewId);
+  }
+
+  const jobId = options.jobId ?? randomUUID();
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType,
+    query: originalQuery,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: [] },
+    resultTotalRows: 0,
+  });
+
+  return {
+    jobId,
+    statementType,
+    schema: [],
+    wireRows: [],
+    startedMs: now,
+    endedMs: now,
+    totalRows: 0,
+  };
+}
+
+async function registerViewMetadata(db: Db, target: ViewDdlTarget): Promise<void> {
+  const dsName = datasetSchemaName(target.project, target.datasetId);
+  const described = await db.query<Record<string, unknown>>(
+    `DESCRIBE ${quoteIdent(dsName)}.${quoteIdent(target.viewId)}`,
+  );
+  const fields = described.map((row) => {
+    const name = String(row['column_name']);
+    const type = String(row['column_type']);
+    return duckTypeToBq(type, name);
+  });
+  await upsertTable(db, {
+    project: target.project,
+    datasetId: target.datasetId,
+    tableId: target.viewId,
+    type: 'VIEW',
+    schema: { fields },
+    ...(target.viewQuery !== undefined && { viewQuery: target.viewQuery }),
+  });
 }
 
 // ---------------------------------------------------------------------------
