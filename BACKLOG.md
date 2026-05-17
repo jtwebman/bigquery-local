@@ -404,7 +404,7 @@ Scope: `GET /projects/{p}/datasets` with `pageToken`, `maxResults`. Acceptance: 
 ### BL-028 — Tables list endpoint with pagination ✅ · Est: 1.5h · Deps: BL-011
 Scope: `GET /projects/{p}/datasets/{d}/tables` with pagination. Acceptance: matches Datasets list semantics.
 
-### BL-029 — Jobs list endpoint with filters ⏳ · Est: 2h · Deps: BL-016
+### BL-029 — Jobs list endpoint with filters ✅ · Est: 2h · Deps: BL-016
 Scope: `GET /projects/{p}/jobs` with `stateFilter`, `minCreationTime`, `maxCreationTime`, `projection`. Acceptance: filters narrow results correctly.
 
 ### BL-030 — `jobs.cancel` + `jobs.delete` ⏳ · Est: 1h · Deps: BL-016
