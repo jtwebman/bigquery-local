@@ -412,6 +412,35 @@ function handleIdentifier(
         tok.value,
       );
 
+    case 'OFFSET':
+    case 'SAFE_OFFSET':
+      // BQ: `arr[OFFSET(n)]` is 0-indexed; SAFE_OFFSET returns NULL on
+      // out-of-range. DuckDB subscripts are 1-indexed and silently NULL on
+      // out-of-range, so both BQ forms reduce to `n + 1` after the rewrite.
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (n) => `(${n} + 1)`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'ORDINAL':
+      // BQ: `arr[ORDINAL(n)]` is 1-indexed — matches DuckDB directly.
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (n) => `(${n})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
     case 'PARSE_JSON':
       // BQ: PARSE_JSON(str) → JSON. DuckDB: CAST(str AS JSON).
       return rewriteOneArg(
