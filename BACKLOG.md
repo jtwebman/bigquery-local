@@ -336,7 +336,7 @@ arrives.
 
 ## Phase 7 — Distribution
 
-### BL-022 — Dockerfile (multi-stage, multi-arch) ⏳ · Est: 1.5h · Deps: BL-017
+### BL-022 — Dockerfile (multi-stage, multi-arch) ✅ · Est: 1.5h · Deps: BL-017
 
 **Scope:**
 - Multi-stage `Dockerfile` on `node:24-alpine`:
