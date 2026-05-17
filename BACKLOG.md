@@ -559,7 +559,7 @@ Scope: full MERGE statement support; map to DuckDB upsert idioms where needed. A
 
 Scope: `CREATE VIEW`, `DROP VIEW`; stored as DuckDB view + metadata. Acceptance: view appears in `_bq.tables` with `type='VIEW'`; SELECT against it works.
 
-### BL-055 — DDL: SCHEMA (CREATE/DROP) ⏳ · Est: 1h · Deps: BL-010
+### BL-055 — DDL: SCHEMA (CREATE/DROP) ✅ · Est: 1h · Deps: BL-010
 
 Scope: SQL DDL surface for dataset metadata (parity with REST). Acceptance: `CREATE SCHEMA test` creates a dataset visible via REST GET.
 
