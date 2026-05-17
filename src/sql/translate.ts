@@ -45,6 +45,30 @@ export interface TranslateOptions {
   readonly project: string;
 }
 
+/**
+ * BQ function name → DuckDB function name, for the cases where the names
+ * differ but the call signatures match closely enough that a name swap is
+ * the whole rewrite.
+ *
+ * Functions whose BQ and DuckDB names *match* (case-insensitive — DuckDB
+ * is case-insensitive on function names) don't need an entry here; the
+ * translator's default branch passes them through verbatim.
+ *
+ * Functions that need *more* than a rename (e.g. argument reshuffle,
+ * wrapper call) live as explicit `case` branches in `handleIdentifier`.
+ */
+const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
+  ['JSON_VALUE', 'json_extract_string'],
+  ['SAFE_CAST', 'try_cast'],
+  // BL-037 — strings:
+  ['REGEXP_CONTAINS', 'regexp_matches'],
+  ['FORMAT', 'printf'],
+  ['NORMALIZE', 'nfc_normalize'],
+  // DuckDB's `length()` is char count; `strlen()` is byte count, matching
+  // BigQuery's OCTET_LENGTH for STRING.
+  ['OCTET_LENGTH', 'strlen'],
+]);
+
 /** A small list of BQ functions we explicitly call out as unsupported, so
  * the error is "BigQuery feature not supported in v0" rather than a vague
  * DuckDB "function does not exist". Grow this as we hit real cases. */
@@ -94,6 +118,14 @@ function translateRange(
         break;
       case 'parameter':
         out.push(rewriteParameter(tok, paramOrder));
+        i += 1;
+        break;
+      case 'raw-string':
+        // BQ raw string `r'\d+'` → plain DuckDB string `'\d+'`. DuckDB's
+        // default string literal doesn't interpret backslash escapes
+        // (unlike PostgreSQL's E'...'), so dropping the prefix preserves
+        // BQ's no-escape semantics.
+        out.push(tok.value.replace(/^[rR]/, ''));
         i += 1;
         break;
       case 'identifier':
@@ -213,26 +245,79 @@ function handleIdentifier(
     case 'TIMESTAMP_ADD':
       return rewriteTimestampArith(tokens, i, parenIdx, endIdx, '+', out, paramOrder, project);
 
-    case 'JSON_VALUE':
-      out.push('json_extract_string');
-      return i + 1;
+    case 'NORMALIZE_AND_CASEFOLD':
+      // BQ has it natively; DuckDB has nfc_normalize() and lower(), so we
+      // synthesize the composition: NORMALIZE_AND_CASEFOLD(x[, form])
+      // becomes lower(nfc_normalize(x[, form])).
+      return wrapCall(tokens, parenIdx, endIdx, 'lower(nfc_normalize', out, paramOrder, project);
 
-    case 'SAFE_CAST':
-      out.push('try_cast');
-      return i + 1;
+    case 'REGEXP_REPLACE':
+      // DuckDB's regexp_replace replaces only the FIRST match by default.
+      // BigQuery replaces ALL. Add a 'g' (global) options arg so the
+      // semantics line up.
+      return rewriteRegexpReplace(tokens, parenIdx, endIdx, out, paramOrder, project);
 
-    default:
+    default: {
       if (UNSUPPORTED_FUNCTIONS.has(upper)) {
         throw BqError.unsupportedFeature(
           `BigQuery feature not supported in v0: ${tok.value}`,
           tok.value,
         );
       }
+      const renamed = FUNCTION_RENAMES.get(upper);
+      if (renamed !== undefined) {
+        out.push(renamed);
+        return i + 1;
+      }
       // Pass-through (covers STARTS_WITH / ENDS_WITH and every other
       // function whose name DuckDB happens to accept).
       out.push(tok.value);
       return i + 1;
+    }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Wrap-a-call helper: emit `prefix(<recurse on args>)` where `prefix` already
+// includes opening parens (e.g. `lower(nfc_normalize` for two-deep wrapping).
+// ---------------------------------------------------------------------------
+
+function wrapCall(
+  tokens: readonly Token[],
+  openParenIdx: number,
+  endIdx: number,
+  prefix: string,
+  out: string[],
+  paramOrder: string[],
+  project: string,
+): number {
+  const close = findMatchingClose(tokens, openParenIdx, endIdx);
+  const inner = translateRange(tokens, openParenIdx + 1, close, paramOrder, project);
+  // `prefix` already contains the *outer* wrapping calls' opening parens
+  // (e.g. `lower(nfc_normalize` has one). We add one more `(` for the
+  // innermost call, then close all of them. The original `)` (at `close`)
+  // is consumed — we return `close + 1`.
+  const fullPrefix = `${prefix}(`;
+  const opens = (fullPrefix.match(/\(/g) ?? []).length;
+  out.push(`${fullPrefix}${inner}${')'.repeat(opens)}`);
+  return close + 1;
+}
+
+/** Rewrite BQ `REGEXP_REPLACE(s, pattern, replacement)` →
+ *  DuckDB `regexp_replace(s, pattern, replacement, 'g')`. The trailing
+ *  `'g'` switches DuckDB to global (replace-all), matching BQ's behavior. */
+function rewriteRegexpReplace(
+  tokens: readonly Token[],
+  openParenIdx: number,
+  endIdx: number,
+  out: string[],
+  paramOrder: string[],
+  project: string,
+): number {
+  const close = findMatchingClose(tokens, openParenIdx, endIdx);
+  const inner = translateRange(tokens, openParenIdx + 1, close, paramOrder, project).trim();
+  out.push(`regexp_replace(${inner}, 'g')`);
+  return close + 1;
 }
 
 // ---------------------------------------------------------------------------
