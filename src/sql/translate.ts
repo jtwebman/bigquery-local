@@ -97,7 +97,7 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
  * DuckDB "function does not exist". Grow this as we hit real cases. */
 const UNSUPPORTED_FUNCTIONS = new Set([
   'FARM_FINGERPRINT',
-  'APPROX_COUNT_DISTINCT',
+  // APPROX_COUNT_DISTINCT is supported (BL-045) — pass-through to DuckDB.
   'APPROX_QUANTILES',
   'GENERATE_UUID',
   'NET.IP_FROM_STRING',
