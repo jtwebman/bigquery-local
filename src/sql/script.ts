@@ -330,8 +330,7 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
     // Alias the bound value only when we're at the outermost SELECT's
     // projection list — anywhere else (VALUES, WHERE, function args, …)
     // an `AS alias` is a syntax error.
-    const aliased =
-      depth === 0 && inSelectList && isBareSelectListItem(tokens, prevIdx, nextIdx);
+    const aliased = depth === 0 && inSelectList && isBareSelectListItem(tokens, prevIdx, nextIdx);
     parts.push(aliased ? `${placeholder} AS ${quoteAlias(tok.value)}` : placeholder);
   }
   // Suppress an unused-var lint warning while still keeping `beforeFirstStmt`
