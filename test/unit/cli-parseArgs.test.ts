@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 
-import { parseArgs } from '../../bin/bigquery-local.ts';
+import { parseArgs } from '../../src/cli.ts';
 
 test('parseArgs returns defaults for empty argv', () => {
   const { options, exit } = parseArgs([]);

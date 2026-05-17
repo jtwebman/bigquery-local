@@ -16,10 +16,11 @@
  * are used the moment a logging layer lands. `--data-from-yaml` is
  * reserved for seed-data loading.
  */
+import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import pkg from '../package.json' with { type: 'json' };
-import { createGrpcServer, createServer } from '../src/index.ts';
+import { createGrpcServer, createServer } from './index.ts';
 
 const VERSION = pkg.version;
 
@@ -152,8 +153,12 @@ async function main(): Promise<void> {
 }
 
 // Only auto-run when invoked directly (so unit tests can import `parseArgs`
-// without booting the server as a side effect).
-const entryUrl = pathToFileURL(process.argv[1] ?? '').href;
+// without booting the server as a side effect). `process.argv[1]` may be a
+// symlink — when npm installs the package it creates `node_modules/.bin/<name>`
+// pointing at `dist/cli.js`, and `import.meta.url` is the *resolved* file URL.
+// Resolve the symlink before comparing.
+const entryPath = process.argv[1] ?? '';
+const entryUrl = entryPath ? pathToFileURL(realpathSync(entryPath)).href : '';
 if (import.meta.url === entryUrl) {
   void main();
 }

@@ -1,6 +1,6 @@
 {
   "name": "bigquery-local",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Node.js + DuckDB local emulator for the Google BigQuery REST API. Drop-in for testing, CI, and local dev — with working PATCH.",
   "type": "module",
   "engines": {
@@ -19,11 +19,10 @@
     }
   },
   "bin": {
-    "bigquery-local": "./bin/bigquery-local.ts"
+    "bigquery-local": "./dist/cli.js"
   },
   "files": [
     "dist",
-    "bin",
     "LICENSE",
     "README.md"
   ],

@@ -363,7 +363,7 @@ arrives.
 
 ---
 
-### BL-024 — npm publish path ⏳ · Est: 1h · Deps: BL-018
+### BL-024 — npm publish path ✅ · Est: 1h · Deps: BL-018
 
 **Scope:**
 - Add `"build": "tsc"` and `"prepublishOnly": "npm run build"` scripts.

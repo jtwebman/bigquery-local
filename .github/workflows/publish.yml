@@ -18,6 +18,9 @@ concurrency:
 
 permissions:
   contents: read
+  # Required so `npm publish --provenance` can mint an OIDC token and the
+  # registry can record a signed attestation of the build environment.
+  id-token: write
 
 env:
   # See ci.yml for context.
@@ -69,3 +72,36 @@ jobs:
           # Cache layers across runs to speed up tag-only changes.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  npm:
+    name: npm publish
+    runs-on: ubuntu-latest
+    # Only after Docker is up, so Docker Hub and npm are always in lockstep —
+    # if one fails the other doesn't ship either.
+    needs: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm
+        # Auth via npm Trusted Publishers (OIDC) — no NPM_TOKEN secret.
+        # The package's Trusted Publishers config on npmjs.com names this
+        # repo + workflow file; npm verifies the GitHub OIDC token at
+        # publish time. `id-token: write` (above) is what allows that.
+        # `--provenance` attaches a signed attestation tied to this run.
+        # `--access public` is required because npm defaults to private
+        # on the first publish of an unscoped package created via Actions.
+        run: npm publish --provenance --access public
