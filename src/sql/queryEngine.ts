@@ -34,6 +34,7 @@ import {
   normalizeBqType,
 } from '../storage/types.ts';
 import { BqError } from '../util/errors.ts';
+import { type ScriptResult, executeBqScript } from './script.ts';
 import { tokenize } from './tokenize.ts';
 import {
   type FunctionDdlTarget,
@@ -344,7 +345,7 @@ export async function executeQuery(
     return executeSchemaDdl(db, project, query, statementType, options);
   }
   if (statementType === 'SCRIPT') {
-    return executeScript(db, project, query, sqlWithCasts, options);
+    return executeScript(db, project, query, options);
   }
   if (
     statementType === 'CREATE_FUNCTION' ||
@@ -499,28 +500,29 @@ async function executeScript(
   db: Db,
   project: string,
   originalQuery: string,
-  translatedSql: string,
   options: { readonly jobId?: string },
 ): Promise<QueryExecution> {
-  // Multi-statement script: BEGIN [TRANSACTION] ; … ; COMMIT|ROLLBACK ;
-  // DuckDB executes the whole string in one go. If a statement fails
-  // mid-script the transaction stays open — explicitly ROLLBACK so the
-  // shared connection isn't left in a half-applied state where the next
-  // query sees uncommitted inserts. The synchronous response carries no
-  // rows (real BQ models per-statement child jobs we don't represent
-  // in v0).
+  // BQ multi-statement script. The interpreter (src/sql/script.ts) walks
+  // DECLARE/SET/IF/BEGIN constructs and dispatches plain SQL to DuckDB. For
+  // `BEGIN TRANSACTION; … COMMIT;` scripts (which have no scripting
+  // constructs) it just runs each statement in order — semantics match
+  // BL-062. On a mid-script failure we still explicitly ROLLBACK so the
+  // shared connection doesn't carry over an open transaction.
+  let result: ScriptResult;
   try {
-    await db.exec(translatedSql);
+    result = await executeBqScript(db, project, originalQuery);
   } catch (err) {
     try {
       await db.exec('ROLLBACK');
     } catch {
-      // No transaction was open (e.g. the BEGIN itself failed) — nothing to undo.
+      // No transaction was open — nothing to undo.
     }
+    if (err instanceof BqError) throw err;
     throw BqError.invalid(err instanceof Error ? err.message : 'Script execution failed.', 'query');
   }
   const jobId = options.jobId ?? randomUUID();
   const now = Date.now();
+  const wireRows = rowsToWire(result.rows, result.schema);
   await upsertJob(db, {
     project,
     jobId,
@@ -529,17 +531,23 @@ async function executeScript(
     query: originalQuery,
     startedMs: now,
     endedMs: now,
-    resultSchema: { fields: [] },
-    resultTotalRows: 0,
+    resultSchema: { fields: result.schema },
+    resultTotalRows: result.rows.length,
   });
+  for (let i = 0; i < wireRows.length; i += 1) {
+    await db.exec(
+      'INSERT INTO _bq.job_rows (project, job_id, row_index, row) VALUES ($1, $2, $3::BIGINT, $4::JSON)',
+      [project, jobId, BigInt(i), JSON.stringify(wireRows[i])],
+    );
+  }
   return {
     jobId,
     statementType: 'SCRIPT',
-    schema: [],
-    wireRows: [],
+    schema: result.schema,
+    wireRows,
     startedMs: now,
     endedMs: now,
-    totalRows: 0,
+    totalRows: result.rows.length,
   };
 }
 

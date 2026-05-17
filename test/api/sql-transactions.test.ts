@@ -136,12 +136,13 @@ test('BEGIN ... INSERT ... COMMIT persists the changes', async () => {
 // Bare BEGIN (no TRANSACTION keyword) is also accepted
 // ---------------------------------------------------------------------------
 
-test('bare BEGIN ... COMMIT works without the TRANSACTION keyword', async () => {
+test('COMMIT TRANSACTION is the explicit commit form (alternative spelling)', async () => {
+  // BQ accepts both COMMIT and COMMIT TRANSACTION. Verify the long form works.
   const t = await freshTable();
   await postQuery(`
-    BEGIN;
+    BEGIN TRANSACTION;
     INSERT INTO \`${DATASET}.${t}\` VALUES (1, 'a');
-    COMMIT;
+    COMMIT TRANSACTION;
   `);
   assert.equal(await countRows(t), 1);
 });
