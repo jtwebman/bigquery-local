@@ -6,6 +6,7 @@
  * is compatible) issue `ALTER TABLE … ADD COLUMN` against the real
  * DuckDB table.
  *
+ *   GET    /projects/{p}/datasets/{d}/tables             list (paginated)
  *   POST   /projects/{p}/datasets/{d}/tables             create
  *   GET    /projects/{p}/datasets/{d}/tables/{t}         read
  *   PATCH  /projects/{p}/datasets/{d}/tables/{t}         partial update
@@ -40,6 +41,7 @@ import {
   deleteTable,
   getDataset,
   getTable,
+  listTables,
   upsertTable,
 } from '../storage/meta.ts';
 import {
@@ -361,11 +363,103 @@ async function ensureDatasetSchema(db: Db, datasetId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// List endpoint — pagination
+// ---------------------------------------------------------------------------
+
+const LIST_DEFAULT_PAGE_SIZE = 50;
+const LIST_MAX_PAGE_SIZE = 1000;
+
+function parseMaxResults(value: string | undefined): number {
+  if (value === undefined) return LIST_DEFAULT_PAGE_SIZE;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw BqError.invalid('maxResults must be a positive integer.', 'maxResults');
+  }
+  return Math.min(parsed, LIST_MAX_PAGE_SIZE);
+}
+
+function parsePageToken(value: string | undefined): number {
+  if (value === undefined || value === '') return 0;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+  }
+  return parsed;
+}
+
+interface TableListEntryWire {
+  readonly kind: 'bigquery#table';
+  readonly id: string;
+  readonly tableReference: TableReferenceWire;
+  readonly type: string;
+  readonly creationTime: string;
+  readonly expirationTime?: string;
+}
+
+interface TableListWire {
+  readonly kind: 'bigquery#tableList';
+  readonly etag: string;
+  readonly tables: readonly TableListEntryWire[];
+  readonly totalItems: number;
+  readonly nextPageToken?: string;
+}
+
+function metaToListEntry(meta: TableMeta): TableListEntryWire {
+  // Like real BigQuery's tableList — strip schema, description, numRows
+  // from the list response. Those land on the individual GET.
+  return {
+    kind: 'bigquery#table',
+    id: `${meta.project}:${meta.datasetId}.${meta.tableId}`,
+    tableReference: {
+      projectId: meta.project,
+      datasetId: meta.datasetId,
+      tableId: meta.tableId,
+    },
+    type: meta.type,
+    creationTime: String(meta.createdMs),
+    ...(meta.expirationMs !== undefined && { expirationTime: String(meta.expirationMs) }),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
 
 export function createTableRoutes(db: Db): readonly RouteDefinition[] {
   return [
+    {
+      method: 'GET',
+      path: '/projects/{p}/datasets/{d}/tables',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const datasetId = req.params['d'] as string;
+        // Confirm parent dataset exists — without this, "no tables" and
+        // "no dataset" would be indistinguishable to the client.
+        const datasetMeta = await getDataset(db, project, datasetId);
+        if (datasetMeta === null) {
+          throw BqError.notFound(`Dataset "${project}:${datasetId}" not found.`);
+        }
+        const maxResults = parseMaxResults(req.query['maxResults']);
+        const offset = parsePageToken(req.query['pageToken']);
+        const { tables, nextOffset } = await listTables(db, project, datasetId, {
+          offset,
+          limit: maxResults,
+        });
+        const body: TableListWire = {
+          kind: 'bigquery#tableList',
+          etag: `${project}:${datasetId}:${offset}:${maxResults}:${tables.length}`,
+          tables: tables.map(metaToListEntry),
+          // BigQuery's totalItems is the total count across all pages.
+          // For an offset-based emulator this is the offset + this-page +
+          // remaining (approximate when we have nextOffset, exact otherwise).
+          // To keep this honest we report only what we know: offset + page len.
+          // Clients that need totals should paginate to the end.
+          totalItems: offset + tables.length,
+          ...(nextOffset !== null && { nextPageToken: String(nextOffset) }),
+        };
+        return { status: 200, body } satisfies RouteResponse;
+      },
+    },
     {
       method: 'POST',
       path: '/projects/{p}/datasets/{d}/tables',

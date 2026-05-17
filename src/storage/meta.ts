@@ -251,6 +251,43 @@ export async function deleteDataset(
   return true;
 }
 
+/** Paginated list of datasets in a project, ordered by `dataset_id`.
+ * `offset` is a non-negative integer; callers translate `pageToken` to it. */
+export async function listDatasets(
+  db: Db,
+  project: string,
+  options: { readonly offset: number; readonly limit: number },
+): Promise<{ readonly datasets: readonly DatasetMeta[]; readonly nextOffset: number | null }> {
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT
+       project, dataset_id, etag, location, friendly_name, description,
+       labels, default_table_expiration_ms,
+       epoch_ms(created_at) AS created_ms,
+       epoch_ms(updated_at) AS updated_ms
+     FROM _bq.datasets
+     WHERE project = $1
+     ORDER BY dataset_id
+     LIMIT $2::BIGINT OFFSET $3::BIGINT`,
+    [project, BigInt(options.limit + 1), BigInt(options.offset)],
+  );
+  // Read one extra to know if there's a next page without a separate count query.
+  const hasMore = rows.length > options.limit;
+  const sliced = hasMore ? rows.slice(0, options.limit) : rows;
+  const datasets = sliced.map((row) => ({
+    project: row['project'] as string,
+    datasetId: row['dataset_id'] as string,
+    etag: row['etag'] as string,
+    createdMs: toNumber(row['created_ms']),
+    updatedMs: toNumber(row['updated_ms']),
+    ...optional('location', row['location'] as string | null),
+    ...optional('friendlyName', row['friendly_name'] as string | null),
+    ...optional('description', row['description'] as string | null),
+    ...optionalJson<'labels', Record<string, string>>('labels', row['labels']),
+    ...optionalNumber('defaultTableExpirationMs', row['default_table_expiration_ms']),
+  }));
+  return { datasets, nextOffset: hasMore ? options.offset + options.limit : null };
+}
+
 // ---------------------------------------------------------------------------
 // Tables
 // ---------------------------------------------------------------------------
@@ -386,6 +423,49 @@ export async function deleteTable(
     [project, datasetId, tableId],
   );
   return true;
+}
+
+/** Paginated list of tables in a dataset, ordered by `table_id`.
+ * Mirrors `listDatasets`. The route layer is responsible for confirming
+ * the parent dataset exists (so an empty list isn't ambiguous with a
+ * missing dataset). */
+export async function listTables(
+  db: Db,
+  project: string,
+  datasetId: string,
+  options: { readonly offset: number; readonly limit: number },
+): Promise<{ readonly tables: readonly TableMeta[]; readonly nextOffset: number | null }> {
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT
+       project, dataset_id, table_id, type, etag, "schema", description,
+       num_rows, partitioning, clustering,
+       epoch_ms(created_at) AS created_ms,
+       epoch_ms(updated_at) AS updated_ms,
+       epoch_ms(expires_at) AS expiration_ms
+     FROM _bq.tables
+     WHERE project = $1 AND dataset_id = $2
+     ORDER BY table_id
+     LIMIT $3::BIGINT OFFSET $4::BIGINT`,
+    [project, datasetId, BigInt(options.limit + 1), BigInt(options.offset)],
+  );
+  const hasMore = rows.length > options.limit;
+  const sliced = hasMore ? rows.slice(0, options.limit) : rows;
+  const tables = sliced.map((row) => ({
+    project: row['project'] as string,
+    datasetId: row['dataset_id'] as string,
+    tableId: row['table_id'] as string,
+    type: row['type'] as string,
+    etag: row['etag'] as string,
+    createdMs: toNumber(row['created_ms']),
+    updatedMs: toNumber(row['updated_ms']),
+    ...optionalJson<'schema', unknown>('schema', row['schema']),
+    ...optional('description', row['description'] as string | null),
+    ...optionalNumber('numRows', row['num_rows']),
+    ...optionalNumber('expirationMs', row['expiration_ms']),
+    ...optionalJson<'partitioning', unknown>('partitioning', row['partitioning']),
+    ...optionalJson<'clustering', unknown>('clustering', row['clustering']),
+  }));
+  return { tables, nextOffset: hasMore ? options.offset + options.limit : null };
 }
 
 // ---------------------------------------------------------------------------

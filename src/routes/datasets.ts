@@ -3,13 +3,11 @@
  *
  * Implements the per-dataset CRUD surface that BigQuery clients expect:
  *
+ *   GET    /projects/{p}/datasets            list (paginated)
  *   POST   /projects/{p}/datasets            create
  *   GET    /projects/{p}/datasets/{d}        read
  *   PATCH  /projects/{p}/datasets/{d}        partial update (honors If-Match)
  *   DELETE /projects/{p}/datasets/{d}        delete (honors If-Match)
- *
- * The collection list (`GET /projects/{p}/datasets`) with pagination is
- * tracked separately in BACKLOG BL-027.
  *
  * Request bodies and responses use BigQuery's wire format:
  * `{ kind: "bigquery#dataset", datasetReference: { datasetId, projectId },
@@ -25,6 +23,7 @@ import {
   type DatasetMetaInput,
   deleteDataset,
   getDataset,
+  listDatasets,
   upsertDataset,
 } from '../storage/meta.ts';
 import type { RouteDefinition, RouteRequest, RouteResponse } from '../types.ts';
@@ -214,11 +213,92 @@ function ifMatchHeader(req: RouteRequest): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// List endpoint — pagination
+// ---------------------------------------------------------------------------
+
+/** Per BigQuery's docs and observed prod behavior: default 50, hard cap 1000.
+ * The shape `{ datasets: [...], nextPageToken?: "..." }` mirrors the real API. */
+const LIST_DEFAULT_PAGE_SIZE = 50;
+const LIST_MAX_PAGE_SIZE = 1000;
+
+function parseMaxResults(value: string | undefined): number {
+  if (value === undefined) return LIST_DEFAULT_PAGE_SIZE;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw BqError.invalid('maxResults must be a positive integer.', 'maxResults');
+  }
+  return Math.min(parsed, LIST_MAX_PAGE_SIZE);
+}
+
+function parsePageToken(value: string | undefined): number {
+  if (value === undefined || value === '') return 0;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+  }
+  return parsed;
+}
+
+interface DatasetListEntryWire {
+  readonly kind: 'bigquery#dataset';
+  readonly id: string;
+  readonly datasetReference: DatasetReferenceWire;
+  readonly friendlyName?: string;
+  readonly location?: string;
+  readonly labels?: Readonly<Record<string, string>>;
+}
+
+interface DatasetListWire {
+  readonly kind: 'bigquery#datasetList';
+  readonly etag: string;
+  readonly datasets: readonly DatasetListEntryWire[];
+  readonly nextPageToken?: string;
+}
+
+function metaToListEntry(meta: DatasetMeta): DatasetListEntryWire {
+  // Real BigQuery's datasetList intentionally drops description, etag,
+  // defaultTableExpirationMs, creationTime, lastModifiedTime — those land on
+  // the individual GET. Mirror that so clients that round-trip get the same
+  // shape they'd get from real BQ.
+  return {
+    kind: 'bigquery#dataset',
+    id: `${meta.project}:${meta.datasetId}`,
+    datasetReference: { datasetId: meta.datasetId, projectId: meta.project },
+    ...(meta.friendlyName !== undefined && { friendlyName: meta.friendlyName }),
+    ...(meta.location !== undefined && { location: meta.location }),
+    ...(meta.labels !== undefined && { labels: meta.labels }),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
 
 export function createDatasetRoutes(db: Db): readonly RouteDefinition[] {
   return [
+    {
+      method: 'GET',
+      path: '/projects/{p}/datasets',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const maxResults = parseMaxResults(req.query['maxResults']);
+        const offset = parsePageToken(req.query['pageToken']);
+        const { datasets, nextOffset } = await listDatasets(db, project, {
+          offset,
+          limit: maxResults,
+        });
+        const body: DatasetListWire = {
+          kind: 'bigquery#datasetList',
+          // BigQuery's datasetList includes an etag at the list level — there's
+          // no natural per-list etag locally, so hash the page identity into
+          // something stable for that response.
+          etag: `${project}:${offset}:${maxResults}:${datasets.length}`,
+          datasets: datasets.map(metaToListEntry),
+          ...(nextOffset !== null && { nextPageToken: String(nextOffset) }),
+        };
+        return { status: 200, body } satisfies RouteResponse;
+      },
+    },
     {
       method: 'POST',
       path: '/projects/{p}/datasets',
