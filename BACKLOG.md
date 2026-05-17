@@ -551,7 +551,7 @@ Scope: lexer recognizes `SAFE.<func>(...)`; translator wraps the call so errors 
 
 Scope: full DML pass-through to DuckDB. Acceptance: each statement type has end-to-end tests.
 
-### BL-053 — MERGE ⏳ · Est: 4h · Deps: BL-052
+### BL-053 — MERGE ✅ · Est: 4h · Deps: BL-052
 
 Scope: full MERGE statement support; map to DuckDB upsert idioms where needed. Acceptance: BigQuery's MERGE examples pass.
 
