@@ -1,5 +1,9 @@
 # bigquery-local
 
+[![Docker Hub](https://img.shields.io/docker/v/jtwebman/bigquery-local?label=Docker%20Hub&sort=semver)](https://hub.docker.com/r/jtwebman/bigquery-local)
+[![Image size](https://img.shields.io/docker/image-size/jtwebman/bigquery-local/latest?label=image%20size)](https://hub.docker.com/r/jtwebman/bigquery-local)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A Node.js, Docker-friendly local emulator for the Google BigQuery REST
 API, backed by [DuckDB](https://duckdb.org/). Aims to be a **full local
 stand-in for BigQuery** for testing, CI, and local development — any
@@ -12,7 +16,8 @@ Not production-ready, but the architecture stays close to real BigQuery
 on purpose — so this can also be a **migration on-ramp** for projects
 that want to move off BigQuery onto DuckDB.
 
-> **Status:** pre-release. v0 is in active development — see
+> **Status:** v0.1.0 — first published release. Available on
+> [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local). See
 > `plan.md` for the v0 plan + full-BigQuery scope appendix, and
 > `BACKLOG.md` for the work items.
 
@@ -26,14 +31,14 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 
 | Resource / endpoint | Status |
 |---|---|
-| `GET /discovery/v1/apis/bigquery/v2/rest` | ⏳ |
-| Datasets — `GET`, `POST`, **`PATCH`**, `DELETE` | ⏳ |
-| Tables — `GET`, `POST`, **`PATCH`**, `DELETE` | ⏳ |
-| `POST .../tables/{t}/insertAll` (streaming inserts) | ⏳ |
-| `POST /projects/{p}/queries` (sync query) | ⏳ |
-| `POST /projects/{p}/jobs` (jobs.insert) | ⏳ |
-| `GET /projects/{p}/jobs/{j}` | ⏳ |
-| `GET /projects/{p}/queries/{j}` (getQueryResults) | ⏳ |
+| `GET /discovery/v1/apis/bigquery/v2/rest` | ✅ |
+| Datasets — `GET`, `POST`, **`PATCH`**, `DELETE` | ✅ |
+| Tables — `GET`, `POST`, **`PATCH`**, `DELETE` | ✅ |
+| `POST .../tables/{t}/insertAll` (streaming inserts) | ✅ |
+| `POST /projects/{p}/queries` (sync query) | ✅ |
+| `POST /projects/{p}/jobs` (jobs.insert) | ✅ |
+| `GET /projects/{p}/jobs/{j}` | ✅ |
+| `GET /projects/{p}/queries/{j}` (getQueryResults) | ✅ |
 | List datasets / tables / jobs (paginated) | 🔭 |
 | `jobs.cancel`, `jobs.delete` | 🔭 |
 | `tabledata.list` | 🔭 |
@@ -48,20 +53,21 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 
 | Feature | Status |
 |---|---|
-| `SELECT` / `JOIN` (INNER/LEFT/RIGHT/FULL/CROSS) / `WHERE` / `ORDER BY` / `GROUP BY` / `HAVING` / `LIMIT` / `OFFSET` | ⏳ |
-| Named parameters (`@name`) with `parameterMode=NAMED` | ⏳ |
-| `INSERT INTO … SELECT …` | ⏳ |
-| `INSERT` / `UPDATE` / `DELETE` (single-table) | ⏳ |
-| Backtick-quoted refs: `` `dataset.table` ``, `` `project.dataset.table` `` | ⏳ |
-| `UNNEST(@arr)` (DuckDB-native) | ⏳ |
-| `JSON_VALUE`, `JSON_EXTRACT_*` (incl. quoted JSON path segments) | ⏳ |
-| `TIMESTAMP_ADD`, `TIMESTAMP_SUB`, `CURRENT_TIMESTAMP`, `INTERVAL n {DAY,HOUR,...}` | ⏳ |
-| `STARTS_WITH`, `ENDS_WITH` | ⏳ |
-| `IS NOT NULL`, `COALESCE`, `IFNULL`, `NULLIF`, `LEAST`, `GREATEST` | ⏳ |
-| Subqueries (correlated, scalar, `EXISTS`, `IN`, `ANY`/`SOME`/`ALL`) | ⏳ |
-| `WITH` / `WITH RECURSIVE` (CTE) | ⏳ |
-| Set ops: `UNION`, `INTERSECT`, `EXCEPT` (ALL / DISTINCT) | ⏳ |
-| `SAFE_CAST` → `try_cast` | ⏳ |
+| `SELECT` / `JOIN` (INNER/LEFT/RIGHT/FULL/CROSS) / `WHERE` / `ORDER BY` / `GROUP BY` / `HAVING` / `LIMIT` / `OFFSET` | ✅ |
+| Named parameters (`@name`) with `parameterMode=NAMED` | ✅ |
+| Backtick-quoted refs: `` `dataset.table` ``, `` `project.dataset.table` `` | ✅ |
+| `UNNEST(@arr)` (DuckDB-native) | ✅ |
+| `JSON_VALUE` (with quoted JSON path segments) | ✅ |
+| `TIMESTAMP_ADD`, `TIMESTAMP_SUB`, `CURRENT_TIMESTAMP`, `INTERVAL n {DAY,HOUR,...}` | ✅ |
+| `STARTS_WITH`, `ENDS_WITH` | ✅ |
+| `IS NOT NULL`, `COALESCE`, `IFNULL`, `NULLIF`, `LEAST`, `GREATEST` | ✅ |
+| Subqueries (correlated, scalar, `EXISTS`, `IN`, `ANY`/`SOME`/`ALL`) | ✅ |
+| `WITH` / `WITH RECURSIVE` (CTE) | ✅ |
+| Set ops: `UNION`, `INTERSECT`, `EXCEPT` (ALL / DISTINCT) | ✅ |
+| `SAFE_CAST` → `try_cast` | ✅ |
+| `INSERT INTO … SELECT …` | 🚧 |
+| `INSERT` / `UPDATE` / `DELETE` (single-table) | 🚧 |
+| `JSON_EXTRACT_*` family | 🚧 |
 | Window / analytic functions (`OVER`) | 🔭 |
 | `QUALIFY`, `PIVOT` / `UNPIVOT`, `TABLESAMPLE` | 🔭 |
 | `MERGE` | 🔭 |
@@ -77,14 +83,14 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 
 | BQ type | Status | Stored as |
 |---|---|---|
-| `STRING`, `BYTES`, `INT64`, `FLOAT64`, `BOOL` | ⏳ | `VARCHAR`, `BLOB`, `BIGINT`, `DOUBLE`, `BOOLEAN` |
-| `TIMESTAMP`, `DATETIME`, `DATE`, `TIME` | ⏳ | DuckDB native temporal types |
-| `NUMERIC` | ⏳ | `DECIMAL(38,9)` |
-| `BIGNUMERIC` | ⏳ | `VARCHAR` (decimal string; DuckDB max precision is 38) |
-| `JSON` | ⏳ | DuckDB `JSON` |
-| `ARRAY<T>` / `REPEATED` mode | ⏳ | DuckDB `T[]` (LIST) |
-| `STRUCT<…>` / `RECORD` | ⏳ | DuckDB `STRUCT(…)` |
-| `GEOGRAPHY` | ⏳ | `VARCHAR` (WKT round-trip; no `ST_*` functions) |
+| `STRING`, `BYTES`, `INT64`, `FLOAT64`, `BOOL` | ✅ | `VARCHAR`, `BLOB`, `BIGINT`, `DOUBLE`, `BOOLEAN` |
+| `TIMESTAMP`, `DATETIME`, `DATE`, `TIME` | ✅ | DuckDB native temporal types |
+| `NUMERIC` | ✅ | `DECIMAL(38,9)` |
+| `BIGNUMERIC` | ✅ | `VARCHAR` (decimal string; DuckDB max precision is 38) |
+| `JSON` | ✅ | DuckDB `JSON` |
+| `ARRAY<T>` / `REPEATED` mode | ✅ | DuckDB `T[]` (LIST) |
+| `STRUCT<…>` / `RECORD` | ✅ | DuckDB `STRUCT(…)` |
+| `GEOGRAPHY` | ✅ | `VARCHAR` (WKT round-trip; no `ST_*` functions) |
 | `INTERVAL` | 🔭 | |
 | `RANGE<T>` | 🔭 | |
 
@@ -92,39 +98,36 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 
 | Mode | Status |
 |---|---|
-| `NULLABLE` | ⏳ |
-| `REQUIRED` | ⏳ |
-| `REPEATED` | ⏳ (via DuckDB LIST) |
+| `NULLABLE` | ✅ |
+| `REQUIRED` | ✅ |
+| `REPEATED` | ✅ (via DuckDB LIST) |
 
 ### Operational
 
 | Capability | Status |
 |---|---|
-| REST on port 9050 | ⏳ |
+| REST on port 9050 | ✅ |
 | gRPC port 9060 (bound, returns UNIMPLEMENTED) | ✅ |
 | `--project`, `--port`, `--grpc-port`, `--database`, `--log-level`, `--log-format` | ✅ |
 | Multi-arch Docker image (`linux/amd64` + `linux/arm64`) | ✅ |
-| Persistent file store (`--database=path.duckdb`) and `:memory:` mode | ⏳ |
-| No auth required; accepts any/no credentials | ⏳ |
-| Multi-project (repeatable `--project`) | 🔭 |
+| Persistent file store (`--database=path.duckdb`) and `:memory:` mode | ✅ |
+| No auth required; accepts any/no credentials | ✅ |
+| Multi-tenant: one server serves any project id (URL-scoped) | ✅ |
 
 ---
 
 ## Quick start
 
-### Docker
+### Docker (available now)
 
 ```bash
-docker run --rm -p 9050:9050 \
-  jtwebman/bigquery-local:latest \
-  --project=local --port=9050
+docker run --rm -p 9050:9050 -p 9060:9060 \
+  jtwebman/bigquery-local:latest
 ```
 
-### Node
-
-```bash
-npx bigquery-local --project=local --port=9050 --database=./bq.duckdb
-```
+The default port is `9050`. The container also exposes `9060` for the
+gRPC placeholder (every RPC returns `UNIMPLEMENTED` — see the
+[gRPC](#grpc) section below).
 
 ### Pointing the BigQuery Node client at it
 
@@ -138,27 +141,22 @@ const bigQuery = new BigQuery({
 ```
 
 No credentials needed. The emulator accepts any (or no) auth header.
+One container serves any project id — projects are isolated by URL
+path, the same way real BigQuery does it.
 
-### Embedding it in your tests
+### Library / `npx` (next release)
 
-`bigquery-local` is also a Node library. Spin one up in-process —
-no Docker, no global port — and tear it down in `afterAll`:
+The library entrypoint and `npx bigquery-local` are landing in the
+next release (npm publish — backlog item BL-024). The published API
+is already locked in:
 
 ```ts
 import { createServer } from 'bigquery-local';
-import { BigQuery } from '@google-cloud/bigquery';
 
 const server = await createServer({ database: ':memory:' });
 await server.listen(0); // 0 = pick a random free port
 
-// One server, any project — projects are isolated by URL path,
-// the same way real BigQuery does it.
-const bigQuery = new BigQuery({
-  projectId: 'test',
-  apiEndpoint: server.url,
-});
-
-// ...run your tests against `bigQuery`...
+// ...point any BigQuery client at server.url, across any project ids...
 
 await server.close(); // closes the HTTP listener and the DB
 ```
@@ -168,21 +166,33 @@ await server.close(); // closes the HTTP listener and the DB
 ## CLI
 
 ```
-Usage: bigquery-local [flags]
+Usage: bigquery-local [options]
 
-Required:
-  --project=<id>             BigQuery project id. Repeatable.
-
-Optional:
-  --port=<n>                 REST port (default 9050)
-  --grpc-port=<n>            gRPC port (default 9060)
-  --database=<path>          DuckDB file path; in-memory if omitted
-  --log-level=<l>            debug | info | warn | error  (default: info)
-  --log-format=<f>           console | json  (default: console)
-  --data-from-yaml=<path>    YAML seed file (planned; parsed but no-op in v0)
-  -v, --version
-  -h, --help
+Options:
+  --project=<id>         Default project id (informational; routes accept any).
+  --port=<n>             REST API port (default: 9050; 0 = pick a free port).
+  --grpc-port=<n>        gRPC port (default: 9060). Returns UNIMPLEMENTED to all RPCs.
+  --database=<path>      DuckDB file path (default: ":memory:").
+  --log-level=<level>    debug | info | warn | error (default: info).
+  --log-format=<fmt>     json | text (default: text).
+  --data-from-yaml=<f>   Seed data file (reserved; not yet implemented).
+  -v, --version          Print version and exit.
+  -h, --help             Print this help text and exit.
 ```
+
+`--project` is informational — the server is multi-tenant by URL path,
+so any project id a client uses just works. There's no need to declare
+projects up front.
+
+### gRPC
+
+The container also binds the gRPC port (default `9060`). Every RPC
+returns `UNIMPLEMENTED` (gRPC status 12), which is the canonical wire
+shape every conforming gRPC client expects for synchronous errors.
+This means a client like `@google-cloud/bigquery-storage` pointed at
+this port gets a clean error instead of a hung connection — useful
+when you have shared client code that constructs both REST and
+Storage Read API handles.
 
 ---
 
@@ -219,16 +229,24 @@ type stripping — no transpile step.
 
 ```bash
 npm install
-npm run typecheck   # tsc --noEmit
-npm run lint        # biome check
-node --test
-node bin/bigquery-local.ts --project=local --port=9050
+npm run typecheck       # tsc --noEmit
+npm run lint            # biome lint
+npm run format:check    # biome format
+npm test                # node --conditions=src --test
+npm run test:coverage   # ≥ 90% lines / branches / functions
+
+node bin/bigquery-local.ts --port=0
 ```
 
-CI runs `tsc --noEmit`, `biome check`, and `node --test` on Linux
-and macOS, Node 24+. `noExplicitAny` is enforced; `tsconfig.json`
-sets `erasableSyntaxOnly` so no syntax that would require runtime
-transformation can slip in.
+CI runs the full toolchain on **Ubuntu, macOS, and Windows × Node 24
+and Node 26** — six jobs per PR. `noExplicitAny` is enforced;
+`tsconfig.json` sets `erasableSyntaxOnly` so no syntax that would
+require runtime transformation can slip in.
+
+The library entrypoint resolves from `src/index.ts` in dev (via the
+`src` export condition + `node --conditions=src`) and from
+`dist/index.js` after publish — same import specifier in both worlds,
+no rebuild step needed during local iteration.
 
 ---
 

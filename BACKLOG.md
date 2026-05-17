@@ -375,7 +375,7 @@ arrives.
 
 ---
 
-### BL-025 — README polish for first publish ⏳ · Est: 1h · Deps: BL-024, BL-022
+### BL-025 — README polish for first publish ✅ · Est: 1h · Deps: BL-024, BL-022
 
 **Scope:** Bring `README.md` to ship-quality: install via Docker + npm, embedded usage example using `createServer`, CLI reference, feature-status table reflecting **actually-implemented** features (flip ⏳ → ✅ where appropriate), pointers to `plan.md` and `BACKLOG.md`.
 
