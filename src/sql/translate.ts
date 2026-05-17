@@ -70,6 +70,10 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   // BL-038 — numeric/math:
   ['IS_INF', 'isinf'],
   ['IS_NAN', 'isnan'],
+  // BL-040 — date/time (2): straight renames.
+  ['UNIX_MILLIS', 'epoch_ms'],
+  ['UNIX_MICROS', 'epoch_us'],
+  ['LAST_DAY', 'last_day'],
 ]);
 
 /** A small list of BQ functions we explicitly call out as unsupported, so
@@ -346,6 +350,74 @@ function handleIdentifier(
         tok.value,
       );
 
+    case 'GENERATE_DATE_ARRAY':
+      // BQ: GENERATE_DATE_ARRAY(start, end[, INTERVAL step part])
+      // DuckDB: generate_series returns TIMESTAMP[]; cast each to DATE.
+      return rewriteGenerateArray(
+        tokens,
+        parenIdx,
+        endIdx,
+        '::DATE',
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'GENERATE_TIMESTAMP_ARRAY':
+      // Already TIMESTAMP[]; no cast needed.
+      return rewriteGenerateArray(
+        tokens,
+        parenIdx,
+        endIdx,
+        '',
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'DATE_FROM_UNIX_DATE':
+      // BQ: DATE_FROM_UNIX_DATE(int_days_since_epoch) → DATE.
+      // DuckDB has no direct function; compose via INTERVAL.
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (x) => `CAST(DATE '1970-01-01' + INTERVAL (${x}) DAY AS DATE)`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'UNIX_DATE':
+      // BQ: UNIX_DATE(date) → INT64 days since 1970-01-01.
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (x) => `date_diff('day', DATE '1970-01-01', ${x})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'UNIX_SECONDS':
+      // DuckDB's `epoch(ts)` returns DOUBLE; cast to BIGINT so the wire
+      // type is INT64 (matching BigQuery's UNIX_SECONDS return type).
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (x) => `CAST(epoch(${x}) AS BIGINT)`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
     case 'DATE_DIFF':
     case 'TIMESTAMP_DIFF':
     case 'DATETIME_DIFF':
@@ -411,6 +483,56 @@ function wrapCall(
   const fullPrefix = `${prefix}(`;
   const opens = (fullPrefix.match(/\(/g) ?? []).length;
   out.push(`${fullPrefix}${inner}${')'.repeat(opens)}`);
+  return close + 1;
+}
+
+/** Generic 1-arg function rewrite. Recursively translates the arg, then
+ * composes via `template(x)`. */
+function rewriteOneArg(
+  tokens: readonly Token[],
+  openParenIdx: number,
+  endIdx: number,
+  template: (x: string) => string,
+  out: string[],
+  paramOrder: string[],
+  project: string,
+  funcName: string,
+): number {
+  const close = findMatchingClose(tokens, openParenIdx, endIdx);
+  // No commas allowed at top level — exactly one arg.
+  if (findTopLevelComma(tokens, openParenIdx + 1, close) !== null) {
+    throw BqError.invalid(`${funcName} requires exactly one argument.`, funcName);
+  }
+  const x = translateRange(tokens, openParenIdx + 1, close, paramOrder, project).trim();
+  out.push(template(x));
+  return close + 1;
+}
+
+/** GENERATE_DATE_ARRAY / GENERATE_TIMESTAMP_ARRAY rewrite. Emits
+ *  `generate_series(start, end[, step])[::DATE[]]`. */
+function rewriteGenerateArray(
+  tokens: readonly Token[],
+  openParenIdx: number,
+  endIdx: number,
+  /** Trailing element-cast (e.g. `::DATE`) or empty. The emit applies it
+   * to each element via list_transform. */
+  elementCast: string,
+  out: string[],
+  paramOrder: string[],
+  project: string,
+  funcName: string,
+): number {
+  const close = findMatchingClose(tokens, openParenIdx, endIdx);
+  // Translate the inner range as-is — start, end, optional INTERVAL step.
+  const inner = translateRange(tokens, openParenIdx + 1, close, paramOrder, project).trim();
+  if (inner === '') {
+    throw BqError.invalid(`${funcName} requires at least (start, end).`, funcName);
+  }
+  if (elementCast === '') {
+    out.push(`generate_series(${inner})`);
+  } else {
+    out.push(`list_transform(generate_series(${inner}), x -> CAST(x AS ${elementCast.slice(2)}))`);
+  }
   return close + 1;
 }
 
