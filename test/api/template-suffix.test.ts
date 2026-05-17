@@ -84,7 +84,7 @@ async function insertAll(
 
 async function countRows(tableId: string): Promise<number> {
   const rows = await db.query<{ n: bigint }>(
-    `SELECT COUNT(*)::BIGINT AS n FROM "${DATASET}"."${tableId}"`,
+    `SELECT COUNT(*)::BIGINT AS n FROM "${PROJECT}__${DATASET}"."${tableId}"`,
   );
   return Number(rows[0]?.n ?? 0n);
 }

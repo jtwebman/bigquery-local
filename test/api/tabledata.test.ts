@@ -96,7 +96,7 @@ test('insertAll persists rows visible via SELECT *', async () => {
   assert.equal(status, 200);
   assert.deepEqual(json, { kind: 'bigquery#tableDataInsertAllResponse' });
   const rows = await db.query<{ id: bigint; name: string }>(
-    `SELECT id, name FROM "${DATASET}"."${tableId}" ORDER BY id`,
+    `SELECT id, name FROM "${PROJECT}__${DATASET}"."${tableId}" ORDER BY id`,
   );
   assert.deepEqual(rows, [
     { id: 1n, name: 'alice' },
@@ -109,7 +109,7 @@ test('insertAll with empty rows array succeeds with no inserts', async () => {
   const { status, json } = await insertAll(tableId, { rows: [] });
   assert.equal(status, 200);
   assert.deepEqual(json, { kind: 'bigquery#tableDataInsertAllResponse' });
-  const rows = await db.query(`SELECT * FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query(`SELECT * FROM "${PROJECT}__${DATASET}"."${tableId}"`);
   assert.equal(rows.length, 0);
 });
 
@@ -141,7 +141,7 @@ test('insertAll round-trips all v0 types together', async () => {
   assert.equal(status, 200);
   assert.deepEqual(json, { kind: 'bigquery#tableDataInsertAllResponse' });
   const rows = await db.query<Record<string, unknown>>(
-    `SELECT s, i, f, b, d::VARCHAR AS d, t, tags FROM "${DATASET}"."${tableId}"`,
+    `SELECT s, i, f, b, d::VARCHAR AS d, t, tags FROM "${PROJECT}__${DATASET}"."${tableId}"`,
   );
   assert.equal(rows.length, 1);
   const row = rows[0];
@@ -213,7 +213,7 @@ test('insertAll with an unknown field and ignoreUnknownValues=false reports inva
   assert.equal(body.insertErrors?.[0]?.errors[0]?.reason, 'invalid');
   assert.equal(body.insertErrors?.[0]?.errors[0]?.location, 'extra');
   // With skipInvalidRows=false (default), the entire batch is rolled back.
-  const rows = await db.query(`SELECT * FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query(`SELECT * FROM "${PROJECT}__${DATASET}"."${tableId}"`);
   assert.equal(rows.length, 0);
 });
 
@@ -226,7 +226,7 @@ test('insertAll with ignoreUnknownValues=true silently drops unknown fields', as
   assert.equal(status, 200);
   const body = json as InsertAllResponse;
   assert.equal(body.insertErrors, undefined);
-  const rows = await db.query<{ a: string }>(`SELECT a FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query<{ a: string }>(`SELECT a FROM "${PROJECT}__${DATASET}"."${tableId}"`);
   assert.deepEqual(
     rows.map((r) => r.a),
     ['ok'],
@@ -255,7 +255,7 @@ test('skipInvalidRows=true keeps valid rows and reports failures per-row', async
   assert.equal(body.insertErrors?.length, 1);
   assert.equal(body.insertErrors?.[0]?.index, 1);
   const rows = await db.query<{ id: bigint; name: string }>(
-    `SELECT id, name FROM "${DATASET}"."${tableId}" ORDER BY id`,
+    `SELECT id, name FROM "${PROJECT}__${DATASET}"."${tableId}" ORDER BY id`,
   );
   assert.deepEqual(rows, [
     { id: 1n, name: 'good-1' },
@@ -278,7 +278,7 @@ test('skipInvalidRows=false rolls back the entire batch on any failure', async (
   assert.equal(status, 200);
   const body = json as InsertAllResponse;
   assert.equal(body.insertErrors?.length, 1);
-  const rows = await db.query(`SELECT * FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query(`SELECT * FROM "${PROJECT}__${DATASET}"."${tableId}"`);
   assert.equal(rows.length, 0);
 });
 
@@ -299,7 +299,9 @@ test('missing REQUIRED field causes a runtime error on insert', async () => {
   assert.equal(body.insertErrors?.length, 1);
   assert.equal(body.insertErrors?.[0]?.index, 1);
   // Valid row still inserted.
-  const rows = await db.query<{ id: bigint }>(`SELECT id FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query<{ id: bigint }>(
+    `SELECT id FROM "${PROJECT}__${DATASET}"."${tableId}"`,
+  );
   assert.equal(rows.length, 1);
   assert.equal(rows[0]?.id, 1n);
 });
@@ -312,7 +314,7 @@ test('all-rows-invalid transactional path: zero inserted, full error report', as
   assert.equal(status, 200);
   const body = json as InsertAllResponse;
   assert.equal(body.insertErrors?.length, 2);
-  const rows = await db.query(`SELECT * FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query(`SELECT * FROM "${PROJECT}__${DATASET}"."${tableId}"`);
   assert.equal(rows.length, 0);
 });
 
@@ -329,7 +331,9 @@ test('insertAll accepts insertId on rows (no dedup yet, but valid input)', async
     ],
   });
   assert.equal(status, 200);
-  const rows = await db.query<{ a: string }>(`SELECT a FROM "${DATASET}"."${tableId}" ORDER BY a`);
+  const rows = await db.query<{ a: string }>(
+    `SELECT a FROM "${PROJECT}__${DATASET}"."${tableId}" ORDER BY a`,
+  );
   assert.deepEqual(
     rows.map((r) => r.a),
     ['one', 'two'],
@@ -392,7 +396,7 @@ test('insertAll per-row encoding error: INT64 column receives a non-numeric valu
   const body = json as InsertAllResponse;
   assert.equal(body.insertErrors?.length, 1);
   assert.equal(body.insertErrors?.[0]?.index, 1);
-  const rows = await db.query<{ n: bigint }>(`SELECT n FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query<{ n: bigint }>(`SELECT n FROM "${PROJECT}__${DATASET}"."${tableId}"`);
   assert.equal(rows.length, 1);
 });
 
@@ -417,6 +421,6 @@ test('insertAll skipInvalidRows=false rollback on a *runtime* DB error (NOT NULL
   // Row at index 1 is the offender; index 0 was rolled back, index 2 never ran.
   assert.equal(body.insertErrors?.length, 1);
   assert.equal(body.insertErrors?.[0]?.index, 1);
-  const rows = await db.query(`SELECT * FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query(`SELECT * FROM "${PROJECT}__${DATASET}"."${tableId}"`);
   assert.equal(rows.length, 0, 'all rows rolled back, including the earlier successful one');
 });

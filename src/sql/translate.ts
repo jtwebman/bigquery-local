@@ -5,9 +5,13 @@
  * of the SQL unchanged and rewrite a fixed set of BQ-isms that DuckDB
  * doesn't accept verbatim:
  *
- *   `proj.dataset.table` (backtick)   →  "dataset"."table"
- *   `dataset.table`                   →  "dataset"."table"
+ *   `proj.dataset.table` (backtick)   →  "<proj>__<dataset>"."<table>"
+ *   `dataset.table`                   →  "<current-proj>__<dataset>"."<table>"
  *   `name`                            →  "name"
+ *
+ * The "current project" comes from the request's URL path (`/projects/{p}/…`).
+ * `dataset_schema_name(project, dataset) = project__dataset` keeps two
+ * projects with the same dataset id from colliding at the DuckDB layer.
  *   @paramName                        →  $N (positional; paramOrder lists names)
  *   CURRENT_TIMESTAMP()               →  CURRENT_TIMESTAMP
  *   TIMESTAMP_SUB(x, INTERVAL n U)    →  (x - INTERVAL n U)
@@ -34,6 +38,13 @@ export interface TranslateResult {
   readonly paramOrder: readonly string[];
 }
 
+export interface TranslateOptions {
+  /** The request's URL project — used to qualify 2-part backtick refs
+   * (`dataset.table`) into the project-scoped DuckDB schema. Required;
+   * single-project translators are no longer correct. */
+  readonly project: string;
+}
+
 /** A small list of BQ functions we explicitly call out as unsupported, so
  * the error is "BigQuery feature not supported in v0" rather than a vague
  * DuckDB "function does not exist". Grow this as we hit real cases. */
@@ -52,10 +63,10 @@ const UNSUPPORTED_FUNCTIONS = new Set([
   'VECTOR_SEARCH',
 ]);
 
-export function translate(sql: string): TranslateResult {
+export function translate(sql: string, options: TranslateOptions): TranslateResult {
   const tokens = tokenize(sql);
   const paramOrder: string[] = [];
-  const out = translateRange(tokens, 0, tokens.length, paramOrder);
+  const out = translateRange(tokens, 0, tokens.length, paramOrder, options.project);
   return { sql: out, paramOrder };
 }
 
@@ -68,6 +79,7 @@ function translateRange(
   startIdx: number,
   endIdx: number,
   paramOrder: string[],
+  project: string,
 ): string {
   const out: string[] = [];
   let i = startIdx;
@@ -77,7 +89,7 @@ function translateRange(
 
     switch (tok.kind) {
       case 'backtick-identifier':
-        out.push(rewriteBacktick(tok));
+        out.push(rewriteBacktick(tok, project));
         i += 1;
         break;
       case 'parameter':
@@ -85,7 +97,7 @@ function translateRange(
         i += 1;
         break;
       case 'identifier':
-        i = handleIdentifier(tokens, i, endIdx, out, paramOrder);
+        i = handleIdentifier(tokens, i, endIdx, out, paramOrder, project);
         break;
       default:
         out.push(tok.value);
@@ -100,15 +112,22 @@ function translateRange(
 // Backticks → DuckDB quoted identifiers
 // ---------------------------------------------------------------------------
 
-function rewriteBacktick(tok: Token): string {
-  // `proj.dataset.table` → "dataset"."table"
-  // `dataset.table`      → "dataset"."table"
-  // `name`               → "name"
+function rewriteBacktick(tok: Token, currentProject: string): string {
+  // `proj.dataset.table` → "<proj>__<dataset>"."<table>"
+  // `dataset.table`      → "<currentProject>__<dataset>"."<table>"
+  // `name`               → "name"   (column refs, aliases — unchanged)
   const inner = tok.value.slice(1, -1); // strip backticks
   const parts = inner.split('.').filter((p) => p !== '');
-  // If we have a three-part name, drop the project — v0 is single-project.
-  const useParts = parts.length === 3 ? parts.slice(1) : parts;
-  return useParts.map((p) => `"${p.replace(/"/g, '""')}"`).join('.');
+  const q = (s: string): string => `"${s.replace(/"/g, '""')}"`;
+  if (parts.length === 3) {
+    const [proj, ds, tbl] = parts as [string, string, string];
+    return `${q(`${proj}__${ds}`)}.${q(tbl)}`;
+  }
+  if (parts.length === 2) {
+    const [ds, tbl] = parts as [string, string];
+    return `${q(`${currentProject}__${ds}`)}.${q(tbl)}`;
+  }
+  return parts.map(q).join('.');
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +154,7 @@ function handleIdentifier(
   endIdx: number,
   out: string[],
   paramOrder: string[],
+  project: string,
 ): number {
   const tok = tokens[i];
   if (tok === undefined) return i + 1;
@@ -188,10 +208,10 @@ function handleIdentifier(
     }
 
     case 'TIMESTAMP_SUB':
-      return rewriteTimestampArith(tokens, i, parenIdx, endIdx, '-', out, paramOrder);
+      return rewriteTimestampArith(tokens, i, parenIdx, endIdx, '-', out, paramOrder, project);
 
     case 'TIMESTAMP_ADD':
-      return rewriteTimestampArith(tokens, i, parenIdx, endIdx, '+', out, paramOrder);
+      return rewriteTimestampArith(tokens, i, parenIdx, endIdx, '+', out, paramOrder, project);
 
     case 'JSON_VALUE':
       out.push('json_extract_string');
@@ -227,6 +247,7 @@ function rewriteTimestampArith(
   op: '-' | '+',
   out: string[],
   paramOrder: string[],
+  project: string,
 ): number {
   const close = findMatchingClose(tokens, openParenIdx, endIdx);
   const commaIdx = findTopLevelComma(tokens, openParenIdx + 1, close);
@@ -238,7 +259,7 @@ function rewriteTimestampArith(
     );
   }
   // Arg 1 is an arbitrary expression — recurse to apply any nested rewrites.
-  const arg1 = translateRange(tokens, openParenIdx + 1, commaIdx, paramOrder).trim();
+  const arg1 = translateRange(tokens, openParenIdx + 1, commaIdx, paramOrder, project).trim();
   // Arg 2 is the INTERVAL clause; pass through verbatim (trimmed).
   const arg2 = sliceTokens(tokens, commaIdx + 1, close).trim();
   out.push(`(${arg1} ${op} ${arg2})`);

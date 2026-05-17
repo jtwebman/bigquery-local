@@ -328,8 +328,24 @@ function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-function qualifiedTableName(datasetId: string, tableId: string): string {
-  return `${quoteIdent(datasetId)}.${quoteIdent(tableId)}`;
+/** DuckDB schema name for a BQ project+dataset pair.
+ *
+ * BQ scopes everything by project; DuckDB doesn't. We collapse the
+ * (project, dataset) tuple into a single DuckDB schema name so two
+ * projects with the same dataset id can coexist without colliding on
+ * CREATE TABLE. The `__` separator is unambiguous because BQ project
+ * and dataset ids are restricted to `[A-Za-z0-9_-]` (and project ids
+ * never contain `__` after the first character).
+ *
+ * Exported so test helpers can query the underlying table directly. */
+export function datasetSchemaName(project: string, datasetId: string): string {
+  return `${project}__${datasetId}`;
+}
+
+/** Project-scoped qualified table name for DuckDB.
+ * Exported alongside `datasetSchemaName` for the same reason. */
+export function qualifiedTableName(project: string, datasetId: string, tableId: string): string {
+  return `${quoteIdent(datasetSchemaName(project, datasetId))}.${quoteIdent(tableId)}`;
 }
 
 /** Full DuckDB column definition: quoted name + type + (NOT NULL when
@@ -342,6 +358,7 @@ function columnDefinition(field: BqField): string {
 }
 
 export function buildCreateTableSql(
+  project: string,
   datasetId: string,
   tableId: string,
   fields: readonly BqField[],
@@ -349,19 +366,28 @@ export function buildCreateTableSql(
 ): string {
   const columns = fields.map(columnDefinition).join(', ');
   const guard = options.ifNotExists === true ? 'IF NOT EXISTS ' : '';
-  return `CREATE TABLE ${guard}${qualifiedTableName(datasetId, tableId)} (${columns})`;
+  return `CREATE TABLE ${guard}${qualifiedTableName(project, datasetId, tableId)} (${columns})`;
 }
 
-function buildAddColumnSql(datasetId: string, tableId: string, field: BqField): string {
-  return `ALTER TABLE ${qualifiedTableName(datasetId, tableId)} ADD COLUMN ${columnDefinition(field)}`;
+function buildAddColumnSql(
+  project: string,
+  datasetId: string,
+  tableId: string,
+  field: BqField,
+): string {
+  return `ALTER TABLE ${qualifiedTableName(project, datasetId, tableId)} ADD COLUMN ${columnDefinition(field)}`;
 }
 
-function buildDropTableSql(datasetId: string, tableId: string): string {
-  return `DROP TABLE IF EXISTS ${qualifiedTableName(datasetId, tableId)}`;
+function buildDropTableSql(project: string, datasetId: string, tableId: string): string {
+  return `DROP TABLE IF EXISTS ${qualifiedTableName(project, datasetId, tableId)}`;
 }
 
-export async function ensureDatasetSchema(db: Db, datasetId: string): Promise<void> {
-  await db.exec(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(datasetId)}`);
+export async function ensureDatasetSchema(
+  db: Db,
+  project: string,
+  datasetId: string,
+): Promise<void> {
+  await db.exec(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(datasetSchemaName(project, datasetId))}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -485,8 +511,8 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
         }
         const fields = parsed.schema?.fields ?? [];
         // Ensure the dataset's DuckDB schema exists, then create the data table.
-        await ensureDatasetSchema(db, datasetId);
-        await db.exec(buildCreateTableSql(datasetId, tableId, fields));
+        await ensureDatasetSchema(db, project, datasetId);
+        await db.exec(buildCreateTableSql(project, datasetId, tableId, fields));
         // Persist metadata.
         const input: TableMetaInput = {
           project,
@@ -537,7 +563,7 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
         if (parsed.schema !== undefined) {
           const added = diffSchemaForPatch(existingFields, parsed.schema.fields);
           for (const field of added) {
-            await db.exec(buildAddColumnSql(datasetId, tableId, field));
+            await db.exec(buildAddColumnSql(project, datasetId, tableId, field));
           }
           nextFields = parsed.schema.fields;
         }
@@ -574,7 +600,7 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
           throw BqError.notFound(`Table "${project}:${datasetId}.${tableId}" not found.`);
         }
         // Drop the underlying DuckDB table (idempotent).
-        await db.exec(buildDropTableSql(datasetId, tableId));
+        await db.exec(buildDropTableSql(project, datasetId, tableId));
         return { status: 204 };
       },
     },

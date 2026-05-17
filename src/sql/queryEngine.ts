@@ -300,7 +300,7 @@ export async function executeQuery(
   parameters: readonly QueryParameterParsed[],
   options: { readonly jobId?: string } = {},
 ): Promise<QueryExecution> {
-  const translated = translate(query);
+  const translated = translate(query, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 
@@ -371,10 +371,11 @@ export interface DryRunResult {
  */
 export async function executeQueryDryRun(
   db: Db,
+  project: string,
   query: string,
   parameters: readonly QueryParameterParsed[],
 ): Promise<DryRunResult> {
-  const translated = translate(query);
+  const translated = translate(query, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
   // DuckDB accepts DESCRIBE on a query string; the parameter bindings flow

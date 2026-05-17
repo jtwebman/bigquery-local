@@ -417,7 +417,7 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
           // Plan-only: validate + schema, no execution, no row persistence.
           // The job is *not* stored, so GET /jobs/{j} on this jobId would 404.
           // That matches real BQ — dry-run jobs aren't queryable after the fact.
-          const dry = await executeQueryDryRun(db, parsed.query, parsed.parameters);
+          const dry = await executeQueryDryRun(db, project, parsed.query, parsed.parameters);
           const now = Date.now();
           const jobId = parsed.jobIdHint ?? randomUUID();
           // Hand-build the response so we don't go through jobMetaToResource

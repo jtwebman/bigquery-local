@@ -88,7 +88,7 @@ export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
           // Plan-only path: validate + schema, no execution, no persistence.
           // BQ still emits a jobReference here so the client gets a stable
           // shape; the jobId is fresh-each-time and not stored.
-          const dry = await executeQueryDryRun(db, parsed.query, parsed.parameters);
+          const dry = await executeQueryDryRun(db, project, parsed.query, parsed.parameters);
           const body: QueryResponseWire = {
             kind: 'bigquery#queryResponse',
             schema: { fields: dry.schema.map(fieldToWire) },

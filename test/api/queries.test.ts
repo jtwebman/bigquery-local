@@ -158,9 +158,12 @@ test('queries: backtick-qualified table reference resolves correctly', async () 
   );
 });
 
-test('queries: 3-part backtick (with project prefix) also resolves', async () => {
+test('queries: 3-part backtick targets the explicit project (cross-project read)', async () => {
+  // 3-part `proj.ds.tbl` overrides the request URL's project, so a query
+  // sent through /projects/queries-test can read /projects/PROJECT/.../...
+  // explicitly. Use the URL's project here since that's where the data lives.
   const { status, json } = await runQuery({
-    query: `SELECT id FROM \`some-project.${DATASET}.${TABLE}\` ORDER BY id`,
+    query: `SELECT id FROM \`${PROJECT}.${DATASET}.${TABLE}\` ORDER BY id`,
   });
   assert.equal(status, 200);
   const body = json as QueryResponse;
