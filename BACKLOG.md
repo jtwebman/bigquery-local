@@ -460,7 +460,7 @@ Scope: APPROX_COUNT_DISTINCT, APPROX_QUANTILES, APPROX_TOP_COUNT, HLL_COUNT.INIT
 ### BL-046 — Statistical aggregate ✅ · Est: 1.5h · Deps: BL-014
 Scope: CORR, COVAR_POP, COVAR_SAMP, STDDEV_POP, STDDEV_SAMP, VAR_POP, VAR_SAMP. Acceptance: 1 test per function, ±1e-9 tolerance.
 
-### BL-047 — Hash & fingerprint functions ⏳ · Est: 1h · Deps: BL-014
+### BL-047 — Hash ### BL-047 — Hash & fingerprint functions ⏳ fingerprint functions ✅ · Est: 1h · Deps: BL-014
 Scope: MD5, SHA1, SHA256, SHA512, FARM_FINGERPRINT. Acceptance: known-vector tests for each.
 
 ### BL-048 — Bitwise functions ⏳ · Est: 30m · Deps: BL-014

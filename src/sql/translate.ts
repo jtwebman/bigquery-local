@@ -96,7 +96,11 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
  * the error is "BigQuery feature not supported in v0" rather than a vague
  * DuckDB "function does not exist". Grow this as we hit real cases. */
 const UNSUPPORTED_FUNCTIONS = new Set([
+  // FARM_FINGERPRINT uses FarmHash specifically; DuckDB's hash() is a
+  // different algorithm and would not return matching values.
   'FARM_FINGERPRINT',
+  // DuckDB has no SHA512.
+  'SHA512',
   // APPROX_COUNT_DISTINCT is supported (BL-045) — pass-through to DuckDB.
   'APPROX_QUANTILES',
   'GENERATE_UUID',
