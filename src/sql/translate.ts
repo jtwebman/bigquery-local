@@ -128,7 +128,9 @@ export type StatementType =
   | 'DELETE'
   | 'MERGE'
   | 'CREATE_VIEW'
-  | 'DROP_VIEW';
+  | 'DROP_VIEW'
+  | 'CREATE_SCHEMA'
+  | 'DROP_SCHEMA';
 
 /**
  * Classifies a BQ SQL string by its leading keyword. Skips whitespace,
@@ -150,15 +152,15 @@ export function detectStatementType(sql: string): StatementType {
   if (head === 'CREATE') {
     // Look ahead past OR REPLACE, TEMP|TEMPORARY for the object kind.
     const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA']);
-    if (kindIdx !== null && tokens[kindIdx]?.value.toUpperCase() === 'VIEW') {
-      return 'CREATE_VIEW';
-    }
+    const kw = kindIdx !== null ? tokens[kindIdx]?.value.toUpperCase() : undefined;
+    if (kw === 'VIEW') return 'CREATE_VIEW';
+    if (kw === 'SCHEMA') return 'CREATE_SCHEMA';
   }
   if (head === 'DROP') {
     const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA']);
-    if (kindIdx !== null && tokens[kindIdx]?.value.toUpperCase() === 'VIEW') {
-      return 'DROP_VIEW';
-    }
+    const kw = kindIdx !== null ? tokens[kindIdx]?.value.toUpperCase() : undefined;
+    if (kw === 'VIEW') return 'DROP_VIEW';
+    if (kw === 'SCHEMA') return 'DROP_SCHEMA';
   }
   if (head === 'WITH') {
     // Skip past the CTE definitions to the trailing statement keyword.
@@ -301,6 +303,124 @@ function parseTableTarget(
     );
   }
   throw BqError.invalid(`Unexpected token "${tok.value}" where a view name was expected.`, 'query');
+}
+
+/**
+ * Resolves `CREATE SCHEMA [IF NOT EXISTS] <name>` / `DROP SCHEMA
+ * [IF EXISTS] <name> [CASCADE]` into its (project, datasetId) target.
+ * Names may be backtick-quoted (`\`project.dataset\``) or bare
+ * (`project.dataset` / `dataset`).
+ */
+export interface SchemaDdlTarget {
+  readonly kind: 'CREATE_SCHEMA' | 'DROP_SCHEMA';
+  readonly project: string;
+  readonly datasetId: string;
+  readonly ifExists: boolean;
+  readonly ifNotExists: boolean;
+  readonly cascade: boolean;
+}
+
+export function parseSchemaDdl(sql: string, defaultProject: string): SchemaDdlTarget {
+  const tokens = tokenize(sql);
+  let i = 0;
+  while (i < tokens.length && isSkippable(tokens[i] as Token)) i += 1;
+  const first = tokens[i];
+  if (first === undefined || first.kind !== 'identifier') {
+    throw BqError.invalid('Expected a CREATE SCHEMA or DROP SCHEMA statement.', 'query');
+  }
+  const head = first.value.toUpperCase();
+  if (head !== 'CREATE' && head !== 'DROP') {
+    throw BqError.invalid('Expected a CREATE SCHEMA or DROP SCHEMA statement.', 'query');
+  }
+  const schemaKw = findNextKeyword(tokens, i + 1, ['SCHEMA']);
+  if (schemaKw === null) {
+    throw BqError.invalid('Expected SCHEMA keyword after CREATE / DROP.', 'query');
+  }
+  let j = nextNonSkippable(tokens, schemaKw + 1);
+  let ifNotExists = false;
+  let ifExists = false;
+  if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'IF') {
+    j = nextNonSkippable(tokens, j + 1);
+    if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'NOT') {
+      j = nextNonSkippable(tokens, j + 1);
+      if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'EXISTS') {
+        ifNotExists = true;
+        j = nextNonSkippable(tokens, j + 1);
+      }
+    } else if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'EXISTS') {
+      ifExists = true;
+      j = nextNonSkippable(tokens, j + 1);
+    }
+  }
+  const { project, datasetId } = parseSchemaName(tokens, j, defaultProject);
+  // Walk past the schema name to look for CASCADE.
+  const after = advancePastTarget(tokens, j);
+  let cascade = false;
+  for (let k = after; k < tokens.length; k += 1) {
+    const tok = tokens[k] as Token;
+    if (tok.kind === 'identifier' && tok.value.toUpperCase() === 'CASCADE') {
+      cascade = true;
+      break;
+    }
+  }
+  return {
+    kind: head === 'CREATE' ? 'CREATE_SCHEMA' : 'DROP_SCHEMA',
+    project,
+    datasetId,
+    ifExists,
+    ifNotExists,
+    cascade,
+  };
+}
+
+function parseSchemaName(
+  tokens: readonly Token[],
+  start: number,
+  defaultProject: string,
+): { project: string; datasetId: string } {
+  const tok = tokens[start];
+  if (tok === undefined) {
+    throw BqError.invalid('Expected a schema name.', 'query');
+  }
+  if (tok.kind === 'backtick-identifier') {
+    const inner = tok.value.slice(1, -1);
+    const parts = inner.split('.');
+    if (parts.length === 2) {
+      return { project: parts[0] as string, datasetId: parts[1] as string };
+    }
+    if (parts.length === 1) {
+      return { project: defaultProject, datasetId: parts[0] as string };
+    }
+    throw BqError.invalid(
+      `Unsupported schema reference \`${inner}\` — expected dataset or project.dataset.`,
+      'query',
+    );
+  }
+  if (tok.kind === 'identifier') {
+    const parts: string[] = [tok.value];
+    let i = nextNonSkippable(tokens, start + 1);
+    while (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === '.') {
+      const next = nextNonSkippable(tokens, i + 1);
+      const id = tokens[next];
+      if (id?.kind !== 'identifier') break;
+      parts.push(id.value);
+      i = nextNonSkippable(tokens, next + 1);
+    }
+    if (parts.length === 2) {
+      return { project: parts[0] as string, datasetId: parts[1] as string };
+    }
+    if (parts.length === 1) {
+      return { project: defaultProject, datasetId: parts[0] as string };
+    }
+    throw BqError.invalid(
+      `Schema reference "${parts.join('.')}" must be a dataset or project.dataset.`,
+      'query',
+    );
+  }
+  throw BqError.invalid(
+    `Unexpected token "${tok.value}" where a schema name was expected.`,
+    'query',
+  );
 }
 
 function advancePastTarget(tokens: readonly Token[], start: number): number {

@@ -14,7 +14,14 @@ import { randomUUID } from 'node:crypto';
 
 import { datasetSchemaName, ensureDatasetSchema, quoteIdent } from '../routes/tables.ts';
 import type { Db, QueryResult } from '../storage/db.ts';
-import { deleteTable, getDataset, upsertJob, upsertTable } from '../storage/meta.ts';
+import {
+  deleteDataset,
+  deleteTable,
+  getDataset,
+  upsertDataset,
+  upsertJob,
+  upsertTable,
+} from '../storage/meta.ts';
 import {
   type BqField,
   type BqMode,
@@ -26,9 +33,11 @@ import {
 } from '../storage/types.ts';
 import { BqError } from '../util/errors.ts';
 import {
+  type SchemaDdlTarget,
   type StatementType,
   type ViewDdlTarget,
   detectStatementType,
+  parseSchemaDdl,
   parseViewDdl,
   translate,
 } from './translate.ts';
@@ -325,6 +334,9 @@ export async function executeQuery(
   if (statementType === 'CREATE_VIEW' || statementType === 'DROP_VIEW') {
     return executeViewDdl(db, project, query, sqlWithCasts, statementType, options);
   }
+  if (statementType === 'CREATE_SCHEMA' || statementType === 'DROP_SCHEMA') {
+    return executeSchemaDdl(db, project, query, statementType, options);
+  }
 
   let result: QueryResult;
   try {
@@ -464,6 +476,81 @@ async function executeViewDdl(
     endedMs: now,
     totalRows: 0,
   };
+}
+
+async function executeSchemaDdl(
+  db: Db,
+  project: string,
+  originalQuery: string,
+  statementType: 'CREATE_SCHEMA' | 'DROP_SCHEMA',
+  options: { readonly jobId?: string },
+): Promise<QueryExecution> {
+  const target = parseSchemaDdl(originalQuery, project);
+  if (statementType === 'CREATE_SCHEMA') {
+    await runCreateSchema(db, target);
+  } else {
+    await runDropSchema(db, target);
+  }
+
+  const jobId = options.jobId ?? randomUUID();
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType,
+    query: originalQuery,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: [] },
+    resultTotalRows: 0,
+  });
+  return {
+    jobId,
+    statementType,
+    schema: [],
+    wireRows: [],
+    startedMs: now,
+    endedMs: now,
+    totalRows: 0,
+  };
+}
+
+async function runCreateSchema(db: Db, target: SchemaDdlTarget): Promise<void> {
+  const existing = await getDataset(db, target.project, target.datasetId);
+  if (existing !== null) {
+    if (target.ifNotExists) return;
+    throw BqError.duplicate(`Dataset "${target.project}:${target.datasetId}" already exists.`);
+  }
+  await upsertDataset(db, { project: target.project, datasetId: target.datasetId });
+  await ensureDatasetSchema(db, target.project, target.datasetId);
+}
+
+async function runDropSchema(db: Db, target: SchemaDdlTarget): Promise<void> {
+  const existing = await getDataset(db, target.project, target.datasetId);
+  if (existing === null) {
+    if (target.ifExists) return;
+    throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
+  }
+  // For CASCADE, surface the actual DuckDB error (e.g. "schema not empty")
+  // before any metadata removal happens — otherwise a half-cleared state
+  // would survive a failed DROP. So: DROP first in DuckDB, reconcile metadata
+  // only on success.
+  const schemaName = datasetSchemaName(target.project, target.datasetId);
+  const cascadeKw = target.cascade ? ' CASCADE' : '';
+  try {
+    await db.exec(`DROP SCHEMA IF EXISTS ${quoteIdent(schemaName)}${cascadeKw}`);
+  } catch (err) {
+    throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
+  }
+  // CASCADE took the underlying tables with it; mirror that in _bq.tables.
+  if (target.cascade) {
+    await db.exec('DELETE FROM _bq.tables WHERE project = $1 AND dataset_id = $2', [
+      target.project,
+      target.datasetId,
+    ]);
+  }
+  await deleteDataset(db, target.project, target.datasetId);
 }
 
 async function registerViewMetadata(db: Db, target: ViewDdlTarget): Promise<void> {
