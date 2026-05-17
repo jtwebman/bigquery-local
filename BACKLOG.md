@@ -413,7 +413,7 @@ Scope: terminate / remove a job record. Acceptance: cancelled job's state become
 ### BL-031 — `tabledata.list` paginated ✅ · Est: 2h · Deps: BL-012
 Scope: `GET /projects/{p}/datasets/{d}/tables/{t}/data` with pagination, `selectedFields`. Acceptance: paginates correctly; `selectedFields` projects.
 
-### BL-032 — `insertAll` insertId-based dedup ⏳ · Est: 2h · Deps: BL-012
+### BL-032 — `insertAll` insertId-based dedup ✅ · Est: 2h · Deps: BL-012
 Scope: maintain a per-table insertId LRU; skip duplicate inserts within the dedup window. Acceptance: same `insertId` twice → second is a no-op.
 
 ### BL-033 — `insertAll` templateSuffix tables ⏳ · Est: 2h · Deps: BL-012
