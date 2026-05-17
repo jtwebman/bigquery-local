@@ -219,6 +219,29 @@ function handleIdentifier(
   if (tok === undefined) return i + 1;
   const upper = tok.value.toUpperCase();
 
+  // `SAFE.<FN>(args)` — BQ's SAFE prefix wraps any scalar function so errors
+  // return NULL. DuckDB has `try(expr)` with the same semantics; emit
+  // `try(<FN>(args))` after recursing through the args.
+  if (upper === 'SAFE') {
+    const dotIdx = skipWhitespace(tokens, i + 1, endIdx);
+    if (dotIdx !== null) {
+      const dotTok = tokens[dotIdx];
+      if (dotTok?.kind === 'punctuation' && dotTok.value === '.') {
+        const fnIdx = skipWhitespace(tokens, dotIdx + 1, endIdx);
+        const fnTok = fnIdx !== null ? tokens[fnIdx] : undefined;
+        if (fnTok?.kind === 'identifier' && fnIdx !== null) {
+          const openParen = findFollowingOpenParen(tokens, fnIdx + 1, endIdx);
+          if (openParen !== null) {
+            const close = findMatchingClose(tokens, openParen, endIdx);
+            const innerArgs = translateRange(tokens, openParen + 1, close, paramOrder, project);
+            out.push(`try(${fnTok.value}(${innerArgs}))`);
+            return close + 1;
+          }
+        }
+      }
+    }
+  }
+
   // `NET.<FN>(…)` — the BQ Net library. DuckDB has no equivalents, so we
   // surface a precise unsupported error rather than passing through and
   // letting DuckDB say "function does not exist". The dotted name tokenizes
