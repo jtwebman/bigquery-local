@@ -439,7 +439,7 @@ Scope: TRUNC, MOD, ABS, SIGN, CEIL, FLOOR, ROUND, POWER, EXP, LN, LOG, LOG10, SQ
 ### BL-039 — Date/time function expansion (1) ✅ · Est: 3h · Deps: BL-014
 Scope: DATE_TRUNC / TIMESTAMP_TRUNC / DATETIME_TRUNC, FORMAT_TIMESTAMP / FORMAT_DATE, PARSE_TIMESTAMP / PARSE_DATE, EXTRACT, DATE_DIFF / TIMESTAMP_DIFF. Acceptance: format strings match BQ spec (%Y %m %d %H %M %S %z).
 
-### BL-040 — Date/time function expansion (2) ⏳ · Est: 2h · Deps: BL-039
+### BL-040 — Date/time function expansion (2) ✅ · Est: 2h · Deps: BL-039
 Scope: GENERATE_DATE_ARRAY / GENERATE_TIMESTAMP_ARRAY, LAST_DAY, DATE_FROM_UNIX_DATE, UNIX_DATE, UNIX_SECONDS / MILLIS / MICROS. Acceptance: 1 test per function.
 
 ### BL-041 — JSON function expansion ⏳ · Est: 2h · Deps: BL-014
