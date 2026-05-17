@@ -87,7 +87,7 @@ async function insertAll(
 
 async function countRows(tableId: string): Promise<number> {
   const rows = await db.query<{ n: bigint }>(
-    `SELECT COUNT(*)::BIGINT AS n FROM "${DATASET}"."${tableId}"`,
+    `SELECT COUNT(*)::BIGINT AS n FROM "${PROJECT}__${DATASET}"."${tableId}"`,
   );
   return Number(rows[0]?.n ?? 0n);
 }
@@ -117,7 +117,7 @@ test('same insertId within one batch: only the first inserts', async () => {
   ]);
   assert.equal(r.insertErrors, undefined);
   assert.equal(await countRows(t), 1);
-  const stored = await db.query<{ v: string }>(`SELECT v FROM "${DATASET}"."${t}"`);
+  const stored = await db.query<{ v: string }>(`SELECT v FROM "${PROJECT}__${DATASET}"."${t}"`);
   assert.equal(stored[0]?.v, 'a');
 });
 
@@ -175,7 +175,9 @@ test('mixed batch: deduped rows are dropped, others insert normally', async () =
   ]);
   assert.equal(r.insertErrors, undefined);
   assert.equal(await countRows(t), 3);
-  const all = await db.query<{ v: string }>(`SELECT v FROM "${DATASET}"."${t}" ORDER BY v`);
+  const all = await db.query<{ v: string }>(
+    `SELECT v FROM "${PROJECT}__${DATASET}"."${t}" ORDER BY v`,
+  );
   assert.deepEqual(
     all.map((r) => r.v),
     ['first', 'no-id', 'should-stay'],

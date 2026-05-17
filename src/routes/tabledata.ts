@@ -38,7 +38,7 @@
 import type { Db } from '../storage/db.ts';
 import { getTable, upsertTable } from '../storage/meta.ts';
 import type { TableMeta } from '../storage/meta.ts';
-import { buildCreateTableSql, ensureDatasetSchema } from './tables.ts';
+import { buildCreateTableSql, ensureDatasetSchema, qualifiedTableName } from './tables.ts';
 import {
   type BqField,
   bqInsertExpression,
@@ -160,7 +160,7 @@ function tableSchemaFields(meta: TableMeta): readonly BqField[] {
 function buildInsertSql(meta: TableMeta, fields: readonly BqField[]): string {
   const cols = fields.map((f) => quoteIdent(f.name)).join(', ');
   const placeholders = fields.map((f, i) => bqInsertExpression(i + 1, f)).join(', ');
-  return `INSERT INTO ${quoteIdent(meta.datasetId)}.${quoteIdent(meta.tableId)} (${cols}) VALUES (${placeholders})`;
+  return `INSERT INTO ${qualifiedTableName(meta.project, meta.datasetId, meta.tableId)} (${cols}) VALUES (${placeholders})`;
 }
 
 interface RowOutcome {
@@ -360,7 +360,7 @@ export function createTabledataRoutes(
 
         // Count first so totalRows is the table's true row count, not the page.
         // Small price for an emulator; the real BQ uses table metadata.
-        const qualified = `${quoteIdent(datasetId)}.${quoteIdent(tableId)}`;
+        const qualified = qualifiedTableName(project, datasetId, tableId);
         const countRows = await db.query<{ n: bigint }>(
           `SELECT COUNT(*)::BIGINT AS n FROM ${qualified}`,
         );
@@ -427,11 +427,13 @@ export function createTabledataRoutes(
             targetMeta = existingTarget;
           } else {
             const baseFields = tableSchemaFields(baseMeta);
-            await ensureDatasetSchema(db, datasetId);
+            await ensureDatasetSchema(db, project, datasetId);
             // IF NOT EXISTS for safe concurrent-create — two parallel inserts
             // racing on the same suffix won't error one of them.
             await db.exec(
-              buildCreateTableSql(datasetId, targetTableId, baseFields, { ifNotExists: true }),
+              buildCreateTableSql(project, datasetId, targetTableId, baseFields, {
+                ifNotExists: true,
+              }),
             );
             targetMeta = await upsertTable(db, {
               project,

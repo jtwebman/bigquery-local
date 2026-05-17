@@ -6,7 +6,7 @@ import { parseArgs } from '../../src/cli.ts';
 test('parseArgs returns defaults for empty argv', () => {
   const { options, exit } = parseArgs([]);
   assert.equal(exit, undefined);
-  assert.equal(options.project, 'local');
+  assert.deepEqual(options.projects, ['local']);
   assert.equal(options.port, 9050);
   assert.equal(options.grpcPort, 9060);
   assert.equal(options.database, ':memory:');
@@ -45,7 +45,7 @@ test('parseArgs accepts every documented flag', () => {
     '--log-format=json',
     '--data-from-yaml=./seed.yaml',
   ]);
-  assert.equal(options.project, 'alpha');
+  assert.deepEqual(options.projects, ['alpha']);
   assert.equal(options.port, 0);
   assert.equal(options.grpcPort, 12345);
   assert.equal(options.database, '/tmp/bq.duckdb');
@@ -72,4 +72,20 @@ test('parseArgs throws on non-integer port', () => {
 
 test('parseArgs throws on negative grpc-port', () => {
   assert.throws(() => parseArgs(['--grpc-port=-1']), /must be a non-negative integer/);
+});
+
+test('parseArgs collects repeated --project flags in order', () => {
+  const { options } = parseArgs(['--project=foo', '--project=bar', '--project=baz']);
+  assert.deepEqual(options.projects, ['foo', 'bar', 'baz']);
+});
+
+test('parseArgs --project replaces the default on first use, then appends', () => {
+  // Without any flag: default `['local']`. First `--project=foo` replaces it
+  // (so we don't end up with `['local', 'foo']`). Subsequent flags append.
+  const { options } = parseArgs(['--project=foo', '--project=bar']);
+  assert.deepEqual(options.projects, ['foo', 'bar']);
+});
+
+test('parseArgs rejects an empty --project value', () => {
+  assert.throws(() => parseArgs(['--project=']), /--project requires a non-empty value/);
 });

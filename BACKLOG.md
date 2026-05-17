@@ -419,7 +419,7 @@ Scope: maintain a per-table insertId LRU; skip duplicate inserts within the dedu
 ### BL-033 — `insertAll` templateSuffix tables ✅ · Est: 2h · Deps: BL-012
 Scope: when request includes `templateSuffix`, auto-create `<base>_<suffix>` table from base schema. Acceptance: insertAll against a template suffix creates the target table on first hit.
 
-### BL-034 — Multi-project: repeatable `--project` ⏳ · Est: 1h · Deps: BL-017, BL-008
+### BL-034 — Multi-project: repeatable `--project` ✅ · Est: 1h · Deps: BL-017, BL-008
 Scope: parser accepts multiple `--project` flags; metadata is scoped by project. Acceptance: two projects with same dataset name don't collide.
 
 ### BL-035 — `dryRun: true` for queries ✅ · Est: 2h · Deps: BL-015

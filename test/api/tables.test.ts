@@ -136,9 +136,12 @@ test('POST creates a real DuckDB table that accepts INSERT', async () => {
     },
   });
   // Sanity-check the underlying DuckDB table by inserting + querying directly.
-  await db.exec(`INSERT INTO "${DATASET}"."${tableId}" VALUES ($1::BIGINT, $2)`, [1n, 'alice']);
+  await db.exec(`INSERT INTO "${PROJECT}__${DATASET}"."${tableId}" VALUES ($1::BIGINT, $2)`, [
+    1n,
+    'alice',
+  ]);
   const rows = await db.query<{ id: bigint; name: string }>(
-    `SELECT id, name FROM "${DATASET}"."${tableId}"`,
+    `SELECT id, name FROM "${PROJECT}__${DATASET}"."${tableId}"`,
   );
   assert.equal(rows.length, 1);
   assert.equal(rows[0]?.name, 'alice');
@@ -278,9 +281,11 @@ test('PATCH adds new columns and reflects them in the underlying DuckDB table', 
   // The DuckDB table actually has the new columns — INSERT into all three
   // succeeds.
   await db.exec(
-    `INSERT INTO "${DATASET}"."${tableId}" (id, name, tags) VALUES (1::BIGINT, 'alice', '["a","b"]'::JSON::VARCHAR[])`,
+    `INSERT INTO "${PROJECT}__${DATASET}"."${tableId}" (id, name, tags) VALUES (1::BIGINT, 'alice', '["a","b"]'::JSON::VARCHAR[])`,
   );
-  const rows = await db.query<{ tags: string[] }>(`SELECT tags FROM "${DATASET}"."${tableId}"`);
+  const rows = await db.query<{ tags: string[] }>(
+    `SELECT tags FROM "${PROJECT}__${DATASET}"."${tableId}"`,
+  );
   assert.deepEqual(rows[0]?.tags, ['a', 'b']);
 });
 
@@ -426,7 +431,7 @@ test('DELETE removes the table from metadata and DuckDB', async () => {
   assert.equal(get.status, 404);
   // The underlying DuckDB table is gone too.
   await assert.rejects(
-    () => db.query(`SELECT * FROM "${DATASET}"."${tableId}"`),
+    () => db.query(`SELECT * FROM "${PROJECT}__${DATASET}"."${tableId}"`),
     /does not exist|not found|catalog/i,
   );
 });

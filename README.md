@@ -49,6 +49,7 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 | `insertAll` insertId dedup (60s window, per-table) | ✅ |
 | `dryRun: true` on queries + jobs (DuckDB `DESCRIBE`-backed) | ✅ |
 | `insertAll` `templateSuffix` (auto-create target on first hit) | ✅ |
+| Multi-project isolation (same dataset+table id in two projects) | ✅ |
 | `jobs.cancel`, `jobs.delete` | 🔭 |
 | `tabledata.list` | 🔭 |
 | `--data-from-yaml` initial seed | 🔭 |

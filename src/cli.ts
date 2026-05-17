@@ -28,6 +28,7 @@ const USAGE = `Usage: bigquery-local [options]
 
 Options:
   --project=<id>         Default project id (informational; routes accept any).
+                         Repeatable: --project=foo --project=bar declares both.
   --port=<n>             REST API port (default: 9050; 0 = pick a free port).
   --grpc-port=<n>        gRPC port (default: 9060). Returns UNIMPLEMENTED to all RPCs.
   --database=<path>      DuckDB file path (default: ":memory:").
@@ -39,7 +40,10 @@ Options:
 `;
 
 interface CliOptions {
-  project: string;
+  /** Declared project ids. Informational — the server accepts any project
+   * id at request time, scoped by URL path. Declaring projects here is
+   * mainly for human-readable startup logging. Defaults to `['local']`. */
+  projects: string[];
   port: number;
   grpcPort: number;
   database: string;
@@ -48,15 +52,17 @@ interface CliOptions {
   dataFromYaml: string | undefined;
 }
 
-const DEFAULTS: CliOptions = {
-  project: 'local',
-  port: 9050,
-  grpcPort: 9060,
-  database: ':memory:',
-  logLevel: 'info',
-  logFormat: 'text',
-  dataFromYaml: undefined,
-};
+function defaults(): CliOptions {
+  return {
+    projects: ['local'],
+    port: 9050,
+    grpcPort: 9060,
+    database: ':memory:',
+    logLevel: 'info',
+    logFormat: 'text',
+    dataFromYaml: undefined,
+  };
+}
 
 function parseInt10(raw: string, flag: string): number {
   const n = Number(raw);
@@ -67,7 +73,10 @@ function parseInt10(raw: string, flag: string): number {
 }
 
 export function parseArgs(argv: readonly string[]): { options: CliOptions; exit?: string } {
-  const options: CliOptions = { ...DEFAULTS };
+  const options = defaults();
+  // Track whether the user explicitly set `--project`. The first time we see
+  // it, we *replace* the default `['local']`; subsequent times we append.
+  let projectSeen = false;
   for (const arg of argv) {
     if (arg === '-h' || arg === '--help') return { options, exit: USAGE };
     if (arg === '-v' || arg === '--version') return { options, exit: `${VERSION}\n` };
@@ -82,7 +91,15 @@ export function parseArgs(argv: readonly string[]): { options: CliOptions; exit?
     const value = arg.slice(eq + 1);
     switch (key) {
       case 'project':
-        options.project = value;
+        if (value === '') {
+          throw new Error('--project requires a non-empty value.');
+        }
+        if (!projectSeen) {
+          options.projects = [value];
+          projectSeen = true;
+        } else {
+          options.projects.push(value);
+        }
         break;
       case 'port':
         options.port = parseInt10(value, '--port');
@@ -127,8 +144,9 @@ async function main(): Promise<void> {
   await server.listen(options.port);
   const grpcServer = createGrpcServer();
   await grpcServer.listen(options.grpcPort);
+  // `projects` is informational — comma-joined for the human-readable banner.
   process.stdout.write(
-    `bigquery-local ${VERSION} listening on ${server.url} (project=${options.project}, database=${options.database})\n`,
+    `bigquery-local ${VERSION} listening on ${server.url} (projects=${options.projects.join(',')}, database=${options.database})\n`,
   );
   process.stdout.write(`bigquery-local ${VERSION} gRPC on ${grpcServer.url} (UNIMPLEMENTED)\n`);
 
