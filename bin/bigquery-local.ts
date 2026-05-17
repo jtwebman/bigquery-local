@@ -18,9 +18,10 @@
  */
 import { pathToFileURL } from 'node:url';
 
+import pkg from '../package.json' with { type: 'json' };
 import { createGrpcServer, createServer } from '../src/index.ts';
 
-const VERSION = '0.0.1';
+const VERSION = pkg.version;
 
 const USAGE = `Usage: bigquery-local [options]
 

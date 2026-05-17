@@ -351,7 +351,7 @@ arrives.
 
 ---
 
-### BL-023 — Publish workflow ⏳ · Est: 1h · Deps: BL-022
+### BL-023 — Publish workflow ✅ · Est: 1h · Deps: BL-022
 
 **Scope:**
 - `.github/workflows/publish.yml`, triggered on tag `v*`.

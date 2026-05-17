@@ -232,6 +232,27 @@ transformation can slip in.
 
 ---
 
+## Releasing
+
+Releases are tag-driven. To cut `v<X.Y.Z>`:
+
+```bash
+# 1. Bump package.json on a release PR and merge it.
+# 2. From main, tag and push:
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The push of a `v*` tag triggers `.github/workflows/publish.yml`, which:
+
+- verifies the tag matches `package.json`,
+- builds `linux/amd64` + `linux/arm64`,
+- pushes `jtwebman/bigquery-local:<version>` and `:latest` to Docker Hub.
+
+Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
+
+---
+
 ## License
 
 MIT
