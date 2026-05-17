@@ -451,7 +451,7 @@ Scope: ARRAY_AGG, GENERATE_ARRAY, ARRAY_TO_STRING, ARRAY_CONCAT, ARRAY_LENGTH, A
 ### BL-043 — Aggregate function expansion ✅ · Est: 2h · Deps: BL-014
 Scope: STRING_AGG, ANY_VALUE, LOGICAL_AND / LOGICAL_OR, BIT_AND / BIT_OR / BIT_XOR, COUNTIF, MIN/MAX over arrays, ARRAY_CONCAT_AGG. Acceptance: 1 test per function.
 
-### BL-044 — Window/analytic functions ⏳ · Est: 3h · Deps: BL-014
+### BL-044 — Window/analytic functions ✅ · Est: 3h · Deps: BL-014
 Scope: ROW_NUMBER, RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE + frame syntax. Acceptance: tests cover PARTITION BY + ORDER BY + frame.
 
 ### BL-045 — Approximate aggregation ⏳ · Est: 4h · Deps: BL-014
