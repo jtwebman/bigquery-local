@@ -339,6 +339,9 @@ export async function executeQuery(
   if (statementType === 'CREATE_SCHEMA' || statementType === 'DROP_SCHEMA') {
     return executeSchemaDdl(db, project, query, statementType, options);
   }
+  if (statementType === 'SCRIPT') {
+    return executeScript(db, project, query, sqlWithCasts, options);
+  }
 
   let result: QueryResult;
   try {
@@ -472,6 +475,54 @@ async function executeViewDdl(
   return {
     jobId,
     statementType,
+    schema: [],
+    wireRows: [],
+    startedMs: now,
+    endedMs: now,
+    totalRows: 0,
+  };
+}
+
+async function executeScript(
+  db: Db,
+  project: string,
+  originalQuery: string,
+  translatedSql: string,
+  options: { readonly jobId?: string },
+): Promise<QueryExecution> {
+  // Multi-statement script: BEGIN [TRANSACTION] ; … ; COMMIT|ROLLBACK ;
+  // DuckDB executes the whole string in one go. If a statement fails
+  // mid-script the transaction stays open — explicitly ROLLBACK so the
+  // shared connection isn't left in a half-applied state where the next
+  // query sees uncommitted inserts. The synchronous response carries no
+  // rows (real BQ models per-statement child jobs we don't represent
+  // in v0).
+  try {
+    await db.exec(translatedSql);
+  } catch (err) {
+    try {
+      await db.exec('ROLLBACK');
+    } catch {
+      // No transaction was open (e.g. the BEGIN itself failed) — nothing to undo.
+    }
+    throw BqError.invalid(err instanceof Error ? err.message : 'Script execution failed.', 'query');
+  }
+  const jobId = options.jobId ?? randomUUID();
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType: 'SCRIPT',
+    query: originalQuery,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: [] },
+    resultTotalRows: 0,
+  });
+  return {
+    jobId,
+    statementType: 'SCRIPT',
     schema: [],
     wireRows: [],
     startedMs: now,

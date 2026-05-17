@@ -131,7 +131,8 @@ export type StatementType =
   | 'CREATE_VIEW'
   | 'DROP_VIEW'
   | 'CREATE_SCHEMA'
-  | 'DROP_SCHEMA';
+  | 'DROP_SCHEMA'
+  | 'SCRIPT';
 
 /**
  * Classifies a BQ SQL string by its leading keyword. Skips whitespace,
@@ -151,6 +152,7 @@ export function detectStatementType(sql: string): StatementType {
   if (head === 'DELETE') return 'DELETE';
   if (head === 'MERGE') return 'MERGE';
   if (head === 'TRUNCATE') return 'TRUNCATE_TABLE';
+  if (head === 'BEGIN' || head === 'START') return 'SCRIPT';
   if (head === 'CREATE') {
     // Look ahead past OR REPLACE, TEMP|TEMPORARY for the object kind.
     const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA']);
