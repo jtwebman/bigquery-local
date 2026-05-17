@@ -410,7 +410,7 @@ Scope: `GET /projects/{p}/jobs` with `stateFilter`, `minCreationTime`, `maxCreat
 ### BL-030 — `jobs.cancel` + `jobs.delete` ✅ · Est: 1h · Deps: BL-016
 Scope: terminate / remove a job record. Acceptance: cancelled job's state becomes `DONE` with `errorResult.reason='stopped'`; delete removes row.
 
-### BL-031 — `tabledata.list` paginated ⏳ · Est: 2h · Deps: BL-012
+### BL-031 — `tabledata.list` paginated ✅ · Est: 2h · Deps: BL-012
 Scope: `GET /projects/{p}/datasets/{d}/tables/{t}/data` with pagination, `selectedFields`. Acceptance: paginates correctly; `selectedFields` projects.
 
 ### BL-032 — `insertAll` insertId-based dedup ⏳ · Est: 2h · Deps: BL-012
