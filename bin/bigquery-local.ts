@@ -2,19 +2,23 @@
 /**
  * bigquery-local CLI entry point.
  *
- * Boots an HTTP server that speaks the BigQuery REST API on `--port`, backed
- * by a DuckDB instance at `--database` (defaults to in-memory). The server
- * runs until SIGTERM/SIGINT, at which point it stops accepting new connections,
- * lets in-flight requests finish, then closes the database handle.
+ * Boots two listeners:
+ *   - REST API on `--port` (default 9050), backed by DuckDB at `--database`
+ *     (default `:memory:`). Speaks the BigQuery REST API.
+ *   - gRPC on `--grpc-port` (default 9060). Every RPC returns
+ *     `UNIMPLEMENTED` (status 12) — enough that the official
+ *     `@google-cloud/bigquery-storage` client gets a clean error rather
+ *     than a hang.
  *
- * `--grpc-port` is parsed and forwarded for the future Storage Read API
- * binding (BL-019); at v0 it is unused. `--log-level` and `--log-format` are
- * also parsed for forward-compat — they are used the moment a logging layer
- * lands. `--data-from-yaml` is reserved for seed-data loading.
+ * Both run until SIGTERM/SIGINT, then shut down in parallel.
+ *
+ * `--log-level` and `--log-format` are parsed for forward-compat — they
+ * are used the moment a logging layer lands. `--data-from-yaml` is
+ * reserved for seed-data loading.
  */
 import { pathToFileURL } from 'node:url';
 
-import { createServer } from '../src/index.ts';
+import { createGrpcServer, createServer } from '../src/index.ts';
 
 const VERSION = '0.0.1';
 
@@ -23,7 +27,7 @@ const USAGE = `Usage: bigquery-local [options]
 Options:
   --project=<id>         Default project id (informational; routes accept any).
   --port=<n>             REST API port (default: 9050; 0 = pick a free port).
-  --grpc-port=<n>        Storage Read API port placeholder (default: 9060).
+  --grpc-port=<n>        gRPC port (default: 9060). Returns UNIMPLEMENTED to all RPCs.
   --database=<path>      DuckDB file path (default: ":memory:").
   --log-level=<level>    debug | info | warn | error (default: info).
   --log-format=<fmt>     json | text (default: text).
@@ -119,9 +123,12 @@ async function main(): Promise<void> {
 
   const server = await createServer({ database: options.database });
   await server.listen(options.port);
+  const grpcServer = createGrpcServer();
+  await grpcServer.listen(options.grpcPort);
   process.stdout.write(
     `bigquery-local ${VERSION} listening on ${server.url} (project=${options.project}, database=${options.database})\n`,
   );
+  process.stdout.write(`bigquery-local ${VERSION} gRPC on ${grpcServer.url} (UNIMPLEMENTED)\n`);
 
   let shuttingDown = false;
   const shutdown = (signal: NodeJS.Signals): void => {
@@ -130,7 +137,7 @@ async function main(): Promise<void> {
     process.stdout.write(`Received ${signal}, shutting down...\n`);
     void (async () => {
       try {
-        await server.close();
+        await Promise.all([server.close(), grpcServer.close()]);
         process.exit(0);
       } catch (err) {
         /* node:coverage ignore next 3 */
