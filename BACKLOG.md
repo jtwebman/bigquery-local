@@ -445,7 +445,7 @@ Scope: GENERATE_DATE_ARRAY / GENERATE_TIMESTAMP_ARRAY, LAST_DAY, DATE_FROM_UNIX_
 ### BL-041 — JSON function expansion ✅ · Est: 2h · Deps: BL-014
 Scope: JSON_QUERY, JSON_QUERY_ARRAY, JSON_VALUE_ARRAY, JSON_TYPE, JSON_KEYS, TO_JSON, TO_JSON_STRING, PARSE_JSON, BOOL/INT64/FLOAT64/STRING/SAFE_TO_* JSON conversions. Acceptance: tests cover happy path + null path for each.
 
-### BL-042 — Array function expansion ⏳ · Est: 2h · Deps: BL-014
+### BL-042 — Array function expansion ✅ · Est: 2h · Deps: BL-014
 Scope: ARRAY_AGG, GENERATE_ARRAY, ARRAY_TO_STRING, ARRAY_CONCAT, ARRAY_LENGTH, ARRAY_REVERSE, OFFSET / ORDINAL / SAFE_OFFSET subscripts, FLATTEN. Acceptance: 1 test per function.
 
 ### BL-043 — Aggregate function expansion ⏳ · Est: 2h · Deps: BL-014

@@ -74,6 +74,10 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['UNIX_MILLIS', 'epoch_ms'],
   ['UNIX_MICROS', 'epoch_us'],
   ['LAST_DAY', 'last_day'],
+  // BL-042 — arrays: BQ GENERATE_ARRAY/FLATTEN don't exist in DuckDB by
+  // those names; the semantics map directly.
+  ['GENERATE_ARRAY', 'generate_series'],
+  ['FLATTEN', 'flatten'],
   // BL-041 — JSON:
   ['JSON_QUERY', 'json_extract'],
   ['JSON_QUERY_ARRAY', 'json_extract'],
@@ -406,6 +410,35 @@ function handleIdentifier(
         parenIdx,
         endIdx,
         (x) => `date_diff('day', DATE '1970-01-01', ${x})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'OFFSET':
+    case 'SAFE_OFFSET':
+      // BQ: `arr[OFFSET(n)]` is 0-indexed; SAFE_OFFSET returns NULL on
+      // out-of-range. DuckDB subscripts are 1-indexed and silently NULL on
+      // out-of-range, so both BQ forms reduce to `n + 1` after the rewrite.
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (n) => `(${n} + 1)`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'ORDINAL':
+      // BQ: `arr[ORDINAL(n)]` is 1-indexed — matches DuckDB directly.
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (n) => `(${n})`,
         out,
         paramOrder,
         project,
