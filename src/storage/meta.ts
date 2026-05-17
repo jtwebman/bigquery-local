@@ -648,3 +648,34 @@ export async function listJobs(
   }));
   return { jobs, nextOffset: hasMore ? options.offset + options.limit : null };
 }
+
+/** Cancel a job. If it's PENDING or RUNNING, transition it to DONE with an
+ * `error` payload of `{ reason: 'stopped' }`. Already-DONE jobs are returned
+ * as-is (matching real BigQuery, where cancelling a finished job is a no-op).
+ * Returns null if the job doesn't exist. */
+export async function cancelJob(db: Db, project: string, jobId: string): Promise<JobMeta | null> {
+  const existing = await getJob(db, project, jobId);
+  if (existing === null) return null;
+  if (existing.state === 'DONE') return existing;
+  const now = Date.now();
+  const error = { reason: 'stopped', message: 'Job cancelled by request.' };
+  await db.exec(
+    `UPDATE _bq.jobs
+        SET state = 'DONE',
+            error = $1::JSON,
+            ended_at = epoch_ms($2::BIGINT)
+      WHERE project = $3 AND job_id = $4`,
+    [JSON.stringify(error), BigInt(now), project, jobId],
+  );
+  return { ...existing, state: 'DONE', error, endedMs: now };
+}
+
+/** Remove a job record. Returns `true` if a row was deleted, `false` if the
+ * job didn't exist. Also drops any persisted result rows (see job_rows). */
+export async function deleteJob(db: Db, project: string, jobId: string): Promise<boolean> {
+  const existing = await getJob(db, project, jobId);
+  if (existing === null) return false;
+  await db.exec('DELETE FROM _bq.job_rows WHERE project = $1 AND job_id = $2', [project, jobId]);
+  await db.exec('DELETE FROM _bq.jobs WHERE project = $1 AND job_id = $2', [project, jobId]);
+  return true;
+}
