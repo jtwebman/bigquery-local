@@ -149,6 +149,30 @@ test('translate: ENDS_WITH passes through', () => {
 // Unsupported BigQuery features
 // ---------------------------------------------------------------------------
 
+test('translate: bareword reference to an unsupported function also throws', () => {
+  // Even without parens (so DuckDB would otherwise treat it as a column ref),
+  // we surface a friendly "feature not supported" error.
+  assert.throws(
+    () => translate('SELECT GENERATE_UUID FROM t'),
+    (err: unknown) => err instanceof BqError && err.reason === 'unsupportedFeature',
+  );
+});
+
+test('translate: CURRENT_TIMESTAMP() with comments inside the parens still rewrites', () => {
+  // Exercises `areArgsEmpty`'s comment-skipping branch.
+  const { sql } = translate('SELECT CURRENT_TIMESTAMP(/* a */ -- inline\n) FROM t');
+  assert.match(sql, /CURRENT_TIMESTAMP/);
+  assert.doesNotMatch(sql, /\(/); // no parens remain after rewrite
+});
+
+test('translate: CURRENT_TIMESTAMP with a real arg is passed through unchanged', () => {
+  // Exercises `areArgsEmpty`'s "saw a non-whitespace token, return false" branch.
+  // CURRENT_TIMESTAMP doesn't take args, so we pass it through and let DuckDB
+  // complain — better than silently dropping the arg.
+  const { sql } = translate('SELECT CURRENT_TIMESTAMP(weird_arg)');
+  assert.match(sql, /CURRENT_TIMESTAMP\(\s*weird_arg\s*\)/);
+});
+
 test('translate: FARM_FINGERPRINT throws unsupportedFeature', () => {
   assert.throws(
     () => translate('SELECT FARM_FINGERPRINT(col) FROM t'),

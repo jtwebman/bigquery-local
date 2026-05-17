@@ -129,3 +129,40 @@ test('two concurrent servers can serve different projects on the same instance',
     await server.close();
   }
 });
+
+test('server handles parallel requests across projects without races', async () => {
+  // Real concern: bigquery-local runs every route handler through a single
+  // DuckDB connection. Node's HTTP server happily fires many in-flight at
+  // once. If we don't serialize correctly, you'd see lost rows, weird wire
+  // shapes, or rejected promises. Drive 20 parallel POSTs at the same
+  // server and verify every one succeeds and returns sane data.
+  const server = await createServer({});
+  await server.listen(0);
+  try {
+    const projectIds = Array.from({ length: 20 }, (_, i) => `parallel-${i}`);
+    // Create datasets in parallel.
+    await Promise.all(
+      projectIds.map((projectId) =>
+        fetch(`${server.url}/projects/${projectId}/datasets`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ datasetReference: { datasetId: 'ds' } }),
+        }).then((r) => assert.equal(r.status, 200, `create ${projectId}`)),
+      ),
+    );
+    // List back: each project's metadata is its own — confirm by GET.
+    const results = await Promise.all(
+      projectIds.map((projectId) =>
+        fetch(`${server.url}/projects/${projectId}/datasets/ds`).then((r) => r.json()),
+      ),
+    );
+    for (const [i, body] of results.entries()) {
+      const ref = (body as { datasetReference: { projectId: string; datasetId: string } })
+        .datasetReference;
+      assert.equal(ref.projectId, projectIds[i]);
+      assert.equal(ref.datasetId, 'ds');
+    }
+  } finally {
+    await server.close();
+  }
+});

@@ -358,3 +358,59 @@ test('bqInsertExpression for STRUCT produces JSON cast to STRUCT type', () => {
   });
   assert.equal(expr, '$1::JSON::STRUCT("a" BIGINT)');
 });
+
+// ---------------------------------------------------------------------------
+// Coverage gaps surfaced by BL-021: the JSON-encoder error / dispatch paths
+// ---------------------------------------------------------------------------
+
+test('bqValueToDuck: REPEATED FLOAT64 array gets coerced to numbers in JSON', () => {
+  // Exercises `structuredEncodeForJson` FLOAT64 branch.
+  const field: BqField = { name: 'nums', type: 'FLOAT64', mode: 'REPEATED' };
+  const out = bqValueToDuck(['1.5', '2', 3], field);
+  assert.equal(out, '[1.5,2,3]');
+});
+
+test('bqValueToDuck: REPEATED JSON parses each string element', () => {
+  // Exercises `structuredEncodeForJson` JSON branch.
+  const field: BqField = { name: 'docs', type: 'JSON', mode: 'REPEATED' };
+  const out = bqValueToDuck(['{"a":1}', '{"b":2}'], field) as string;
+  // The outer encoder wraps with JSON.stringify, but inner values are parsed.
+  assert.deepEqual(JSON.parse(out), [{ a: 1 }, { b: 2 }]);
+});
+
+test('bqValueToDuck: REPEATED with a non-array value throws', () => {
+  const field: BqField = { name: 'xs', type: 'STRING', mode: 'REPEATED' };
+  assert.throws(() => bqValueToDuck('not-an-array', field), /Expected array for REPEATED/);
+});
+
+test('duckTypeToBq throws on an unmapped DuckDB type', () => {
+  // `STRUCT` without an opening paren falls through to the unmapped-type path.
+  assert.throws(() => duckTypeToBq('STRUCT something-without-parens', 'x'), /Unmapped DuckDB type/);
+});
+
+test('duckTypeToBq throws on STRUCT(…  with no closing paren', () => {
+  // Reaches parseStructFields; trailing `)` missing → Malformed STRUCT type.
+  assert.throws(() => duckTypeToBq('STRUCT(foo BIGINT', 'x'), /Malformed STRUCT type/);
+});
+
+test('duckValueToBq: NUMERIC integer-valued number gets a trailing .0', () => {
+  // Exercises `trimDecimal` integer branch (the `.0` append). DuckDB returns
+  // small DECIMALs as a JS number; trimDecimal makes sure integer-valued
+  // NUMERIC still serializes as a decimal string ("1.0", not "1").
+  const field: BqField = { name: 'amount', type: 'NUMERIC' };
+  assert.equal(duckValueToBq(1, field), '1.0');
+});
+
+test('bqValueToDuck: STRUCT containing a REPEATED sub-field rejects non-array sub-value', () => {
+  // Exercises `structuredEncodeForJson` REPEATED-non-array branch (the
+  // nested case, reached via STRUCT recursion rather than directly).
+  const field: BqField = {
+    name: 's',
+    type: 'STRUCT',
+    fields: [{ name: 'tags', type: 'STRING', mode: 'REPEATED' }],
+  };
+  assert.throws(
+    () => bqValueToDuck({ tags: 'not-an-array' }, field),
+    /Expected array for REPEATED field "tags"/,
+  );
+});

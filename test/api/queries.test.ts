@@ -366,3 +366,205 @@ test('queries: DuckDB-level error (bad column) surfaces as 400 invalid', async (
   const err = (await res.json()) as GoogleErrorBody;
   assert.equal(err.error.errors[0]?.reason, 'invalid');
 });
+
+test('queries: POST body that is not a JSON object returns 400', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(['not-an-object']),
+  });
+  assert.equal(res.status, 400);
+  const err = (await res.json()) as GoogleErrorBody;
+  assert.equal(err.error.errors[0]?.reason, 'invalid');
+});
+
+test('queries: POST body without a `query` field returns 400', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ notQuery: 'SELECT 1' }),
+  });
+  assert.equal(res.status, 400);
+});
+
+// ---------------------------------------------------------------------------
+// Parameter type coverage — make sure every scalar BqType binds correctly.
+// ---------------------------------------------------------------------------
+
+test('queries: BOOL scalar parameter binds true', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT @b AS got',
+      queryParameters: [
+        {
+          name: 'b',
+          parameterType: { type: 'BOOL' },
+          parameterValue: { value: 'true' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as QueryResponse;
+  assert.equal(body.rows[0]?.f[0]?.v, true);
+});
+
+test('queries: FLOAT64 scalar parameter binds as a number', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT @x + 1.5 AS got',
+      queryParameters: [
+        {
+          name: 'x',
+          parameterType: { type: 'FLOAT64' },
+          parameterValue: { value: '2.25' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as QueryResponse;
+  assert.equal(body.rows[0]?.f[0]?.v, 3.75);
+});
+
+test('queries: STRUCT scalar parameter rejected with unsupportedFeature', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT @s AS got',
+      queryParameters: [
+        {
+          name: 's',
+          parameterType: { type: 'STRUCT' },
+          parameterValue: { value: '{}' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('queries: ARRAY<BOOL> binds via UNNEST', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT unnest FROM UNNEST(@flags)',
+      queryParameters: [
+        {
+          name: 'flags',
+          parameterType: { type: 'ARRAY', arrayType: { type: 'BOOL' } },
+          parameterValue: { arrayValues: [{ value: 'true' }, { value: 'false' }] },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as QueryResponse;
+  assert.deepEqual(
+    body.rows.map((r) => r.f[0]?.v),
+    [true, false],
+  );
+});
+
+test('queries: ARRAY<FLOAT64> elements come back as numbers', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT unnest FROM UNNEST(@nums) ORDER BY unnest',
+      queryParameters: [
+        {
+          name: 'nums',
+          parameterType: { type: 'ARRAY', arrayType: { type: 'FLOAT64' } },
+          parameterValue: { arrayValues: [{ value: '2.5' }, { value: '1.5' }] },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as QueryResponse;
+  assert.deepEqual(
+    body.rows.map((r) => r.f[0]?.v),
+    [1.5, 2.5],
+  );
+});
+
+test('queries: ARRAY<STRUCT> rejected with unsupportedFeature', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT unnest FROM UNNEST(@arr)',
+      queryParameters: [
+        {
+          name: 'arr',
+          parameterType: { type: 'ARRAY', arrayType: { type: 'STRUCT' } },
+          parameterValue: { arrayValues: [{ value: '{}' }] },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('queries: DATETIME parameter casts cleanly for INTERVAL arithmetic', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT @t - INTERVAL 1 DAY AS day_ago',
+      queryParameters: [
+        {
+          name: 't',
+          parameterType: { type: 'DATETIME' },
+          parameterValue: { value: '2026-05-16 12:00:00' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as QueryResponse;
+  assert.match(String(body.rows[0]?.f[0]?.v ?? ''), /2026-05-15/);
+});
+
+test('queries: DATE parameter casts cleanly for INTERVAL arithmetic', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT @d + INTERVAL 7 DAY AS week_later',
+      queryParameters: [
+        {
+          name: 'd',
+          parameterType: { type: 'DATE' },
+          parameterValue: { value: '2026-05-16' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+});
+
+test('queries: TIME parameter casts cleanly', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT @t AS got',
+      queryParameters: [
+        {
+          name: 't',
+          parameterType: { type: 'TIME' },
+          parameterValue: { value: '12:34:56' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+});
