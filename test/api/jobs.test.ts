@@ -231,40 +231,51 @@ test('GET /queries/{j} returns all rows when total <= page size', async () => {
   );
 });
 
-test('GET /queries/{j}?maxResults=2 returns the first 2 with a pageToken', async () => {
+test('GET /queries/{j}?maxResults=2 returns the first 2 with an opaque pageToken', async () => {
   const jobId = await runQueryForRows(`SELECT id FROM \`${DATASET}.${TABLE}\` ORDER BY id`);
   const res = await fetch(`${server.url}/projects/${PROJECT}/queries/${jobId}?maxResults=2`);
   assert.equal(res.status, 200);
   const body = (await res.json()) as QueryResultsResponse;
   assert.equal(body.rows.length, 2);
-  assert.equal(body.pageToken, '2');
+  // Token is opaque (no longer a bare integer string).
+  assert.ok(body.pageToken !== undefined && body.pageToken.length > 0);
+  assert.ok(!/^\d+$/.test(body.pageToken));
   assert.deepEqual(
     body.rows.map((r) => r.f[0]?.v),
     ['a', 'b'],
   );
 });
 
-test('GET /queries/{j}?pageToken=2&maxResults=2 returns the next slice', async () => {
+test('GET /queries/{j} round-trips a pageToken to the next slice', async () => {
   const jobId = await runQueryForRows(`SELECT id FROM \`${DATASET}.${TABLE}\` ORDER BY id`);
-  const res = await fetch(
-    `${server.url}/projects/${PROJECT}/queries/${jobId}?pageToken=2&maxResults=2`,
+  const r1 = await fetch(`${server.url}/projects/${PROJECT}/queries/${jobId}?maxResults=2`);
+  const b1 = (await r1.json()) as QueryResultsResponse;
+  // Use the returned token verbatim — that's the whole point of "opaque".
+  const r2 = await fetch(
+    `${server.url}/projects/${PROJECT}/queries/${jobId}?pageToken=${encodeURIComponent(b1.pageToken ?? '')}&maxResults=2`,
   );
-  const body = (await res.json()) as QueryResultsResponse;
+  const b2 = (await r2.json()) as QueryResultsResponse;
   assert.deepEqual(
-    body.rows.map((r) => r.f[0]?.v),
+    b2.rows.map((r) => r.f[0]?.v),
     ['c', 'd'],
   );
-  assert.equal(body.pageToken, '4');
 });
 
-test('GET /queries/{j}?pageToken on the last page omits pageToken', async () => {
+test('GET /queries/{j} the last-page pageToken from the API yields the final slice with no further token', async () => {
   const jobId = await runQueryForRows(`SELECT id FROM \`${DATASET}.${TABLE}\` ORDER BY id`);
-  const res = await fetch(
-    `${server.url}/projects/${PROJECT}/queries/${jobId}?pageToken=4&maxResults=2`,
+  // Page 1 → 2 rows + token. Page 2 → 2 rows + token. Page 3 → 1 row + no token.
+  const r1 = await fetch(`${server.url}/projects/${PROJECT}/queries/${jobId}?maxResults=2`);
+  const b1 = (await r1.json()) as QueryResultsResponse;
+  const r2 = await fetch(
+    `${server.url}/projects/${PROJECT}/queries/${jobId}?pageToken=${encodeURIComponent(b1.pageToken ?? '')}&maxResults=2`,
   );
-  const body = (await res.json()) as QueryResultsResponse;
-  assert.equal(body.rows.length, 1);
-  assert.equal(body.pageToken, undefined);
+  const b2 = (await r2.json()) as QueryResultsResponse;
+  const r3 = await fetch(
+    `${server.url}/projects/${PROJECT}/queries/${jobId}?pageToken=${encodeURIComponent(b2.pageToken ?? '')}&maxResults=2`,
+  );
+  const b3 = (await r3.json()) as QueryResultsResponse;
+  assert.equal(b3.rows.length, 1);
+  assert.equal(b3.pageToken, undefined);
 });
 
 test('GET /queries/{j} returns 404 for unknown job', async () => {
