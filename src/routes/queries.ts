@@ -27,17 +27,18 @@ import { BqError } from '../util/errors.ts';
 
 interface QueryResponseWire {
   readonly kind: 'bigquery#queryResponse';
-  readonly schema: { readonly fields: readonly FieldWire[] };
+  readonly schema?: { readonly fields: readonly FieldWire[] };
   readonly jobReference: {
     readonly projectId: string;
     readonly jobId: string;
     readonly location: string;
   };
   readonly totalRows: string;
-  readonly rows: readonly RowWire[];
+  readonly rows?: readonly RowWire[];
   readonly totalBytesProcessed: string;
   readonly jobComplete: true;
   readonly cacheHit: false;
+  readonly numDmlAffectedRows?: string;
 }
 
 function asObject(value: unknown, path: string): Readonly<Record<string, unknown>> {
@@ -91,8 +92,14 @@ export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
           const dry = await executeQueryDryRun(db, project, parsed.query, parsed.parameters);
           const body: QueryResponseWire = {
             kind: 'bigquery#queryResponse',
-            schema: { fields: dry.schema.map(fieldToWire) },
-            jobReference: { projectId: project, jobId: randomUUID(), location: 'US' },
+            ...(dry.schema.length > 0 && {
+              schema: { fields: dry.schema.map(fieldToWire) },
+            }),
+            jobReference: {
+              projectId: project,
+              jobId: randomUUID(),
+              location: 'US',
+            },
             totalRows: '0',
             rows: [],
             totalBytesProcessed: '0',
@@ -105,13 +112,22 @@ export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
         const exec = await executeQuery(db, project, parsed.query, parsed.parameters);
         const body: QueryResponseWire = {
           kind: 'bigquery#queryResponse',
-          schema: { fields: exec.schema.map(fieldToWire) },
-          jobReference: { projectId: project, jobId: exec.jobId, location: 'US' },
+          ...(exec.statementType === 'SELECT' && {
+            schema: { fields: exec.schema.map(fieldToWire) },
+            rows: exec.wireRows,
+          }),
+          jobReference: {
+            projectId: project,
+            jobId: exec.jobId,
+            location: 'US',
+          },
           totalRows: String(exec.totalRows),
-          rows: exec.wireRows,
           totalBytesProcessed: '0',
           jobComplete: true,
           cacheHit: false,
+          ...(exec.dmlAffectedRows !== undefined && {
+            numDmlAffectedRows: String(exec.dmlAffectedRows),
+          }),
         };
         return { status: 200, body } satisfies RouteResponse;
       },
