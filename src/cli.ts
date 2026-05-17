@@ -21,6 +21,7 @@ import { pathToFileURL } from 'node:url';
 
 import pkg from '../package.json' with { type: 'json' };
 import { createGrpcServer, createServer } from './index.ts';
+import { loadSeedFromFile } from './seed.ts';
 
 const VERSION = pkg.version;
 
@@ -34,7 +35,8 @@ Options:
   --database=<path>      DuckDB file path (default: ":memory:").
   --log-level=<level>    debug | info | warn | error (default: info).
   --log-format=<fmt>     json | text (default: text).
-  --data-from-yaml=<f>   Seed data file (reserved; not yet implemented).
+  --data-from-yaml=<f>   YAML seed file loaded once at startup (datasets +
+                         tables + initial rows). See README for the shape.
   -v, --version          Print version and exit.
   -h, --help             Print this help text and exit.
 `;
@@ -149,6 +151,24 @@ async function main(): Promise<void> {
     `bigquery-local ${VERSION} listening on ${server.url} (projects=${options.projects.join(',')}, database=${options.database})\n`,
   );
   process.stdout.write(`bigquery-local ${VERSION} gRPC on ${grpcServer.url} (UNIMPLEMENTED)\n`);
+
+  // Seed file: load once after the server is up. Seed errors are fatal —
+  // booting half-seeded is worse than not booting at all (clients would see
+  // partial state). Use the first declared project as the default for
+  // datasets that don't specify one.
+  if (options.dataFromYaml !== undefined) {
+    try {
+      const defaultProject = options.projects[0] ?? 'local';
+      await loadSeedFromFile(server.url, options.dataFromYaml, defaultProject);
+      process.stdout.write(`bigquery-local ${VERSION} seeded from ${options.dataFromYaml}\n`);
+    } catch (err) {
+      process.stderr.write(
+        `bigquery-local seed load failed: ${err instanceof Error ? err.message : 'unknown error'}\n`,
+      );
+      await Promise.all([server.close(), grpcServer.close()]);
+      process.exit(1);
+    }
+  }
 
   let shuttingDown = false;
   const shutdown = (signal: NodeJS.Signals): void => {

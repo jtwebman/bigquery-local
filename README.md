@@ -50,6 +50,7 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 | `dryRun: true` on queries + jobs (DuckDB `DESCRIBE`-backed) | ✅ |
 | `insertAll` `templateSuffix` (auto-create target on first hit) | ✅ |
 | Multi-project isolation (same dataset+table id in two projects) | ✅ |
+| `--data-from-yaml` initial seed file | ✅ |
 | `jobs.cancel`, `jobs.delete` | 🔭 |
 | `tabledata.list` | 🔭 |
 | `--data-from-yaml` initial seed | 🔭 |
