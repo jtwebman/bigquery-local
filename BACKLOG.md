@@ -463,7 +463,7 @@ Scope: CORR, COVAR_POP, COVAR_SAMP, STDDEV_POP, STDDEV_SAMP, VAR_POP, VAR_SAMP. 
 ### BL-047 — Hash ### BL-047 — Hash & fingerprint functions ⏳ fingerprint functions ✅ · Est: 1h · Deps: BL-014
 Scope: MD5, SHA1, SHA256, SHA512, FARM_FINGERPRINT. Acceptance: known-vector tests for each.
 
-### BL-048 — Bitwise functions ⏳ · Est: 30m · Deps: BL-014
+### BL-048 — Bitwise functions ✅ · Est: 30m · Deps: BL-014
 Scope: BIT_COUNT, `<<`, `>>`, `&`, `|`, `^`, `~`. Acceptance: 1 test per operator.
 
 ### BL-049 — Conversion / cast formatting ⏳ · Est: 2h · Deps: BL-014
