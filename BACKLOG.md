@@ -472,7 +472,7 @@ Scope: format-aware CAST (`CAST(x AS STRING FORMAT 'YYYY-MM-DD')`), PARSE_DATE /
 ### BL-050 — Net functions ✅ · Est: 1h · Deps: BL-014
 Scope: NET.IP_FROM_STRING, NET.IP_TO_STRING, NET.IPV4_FROM_INT64, NET.IPV4_TO_INT64, NET.HOST, NET.PUBLIC_SUFFIX, NET.REG_DOMAIN. Acceptance: 1 test per function.
 
-### BL-051 — `SAFE.` function prefix ⏳ · Est: 2h · Deps: BL-014
+### BL-051 — `SAFE.` function prefix ✅ · Est: 2h · Deps: BL-014
 Scope: lexer recognizes `SAFE.<func>(...)`; translator wraps the call so errors return NULL. Acceptance: `SAFE.DIVIDE(1, 0) IS NULL` returns true.
 
 ## Phase 10 — SQL statements & language features
