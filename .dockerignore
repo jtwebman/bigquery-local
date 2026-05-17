@@ -1,0 +1,25 @@
+# Things that should never end up in the build context (slows the build and
+# can bloat the image). The Dockerfile only COPYs specific paths, but keeping
+# the context small also speeds up the daemon transfer.
+
+.git
+.github
+.vscode
+.idea
+node_modules
+dist
+coverage
+plan.md
+BACKLOG.md
+README.md
+LICENSE
+biome.json
+tsconfig.json
+tsconfig.build.json
+.gitignore
+.gitattributes
+test
+Dockerfile
+.dockerignore
+*.log
+*.tmp
