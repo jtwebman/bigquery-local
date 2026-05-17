@@ -341,13 +341,15 @@ function columnDefinition(field: BqField): string {
   return `${quoteIdent(field.name)} ${bqTypeToDuck(field)}${constraint}`;
 }
 
-function buildCreateTableSql(
+export function buildCreateTableSql(
   datasetId: string,
   tableId: string,
   fields: readonly BqField[],
+  options: { readonly ifNotExists?: boolean } = {},
 ): string {
   const columns = fields.map(columnDefinition).join(', ');
-  return `CREATE TABLE ${qualifiedTableName(datasetId, tableId)} (${columns})`;
+  const guard = options.ifNotExists === true ? 'IF NOT EXISTS ' : '';
+  return `CREATE TABLE ${guard}${qualifiedTableName(datasetId, tableId)} (${columns})`;
 }
 
 function buildAddColumnSql(datasetId: string, tableId: string, field: BqField): string {
@@ -358,7 +360,7 @@ function buildDropTableSql(datasetId: string, tableId: string): string {
   return `DROP TABLE IF EXISTS ${qualifiedTableName(datasetId, tableId)}`;
 }
 
-async function ensureDatasetSchema(db: Db, datasetId: string): Promise<void> {
+export async function ensureDatasetSchema(db: Db, datasetId: string): Promise<void> {
   await db.exec(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(datasetId)}`);
 }
 
