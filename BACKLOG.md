@@ -597,7 +597,7 @@ Scope: BEGIN / COMMIT / ROLLBACK; align semantics with BQ docs (limited rollback
 
 Scope: persistent + temporary SQL UDFs; type signatures stored in `_bq.routines`. Acceptance: defined UDF is callable in subsequent queries.
 
-### BL-064 — Table-valued functions ⏳ · Est: 4h · Deps: BL-063
+### BL-064 — Table-valued functions ✅ · Est: 4h · Deps: BL-063
 
 Scope: TVFs that return relations. Acceptance: TVF used in FROM clause returns expected rows.
 
