@@ -112,7 +112,10 @@ export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
         const exec = await executeQuery(db, project, parsed.query, parsed.parameters);
         const body: QueryResponseWire = {
           kind: 'bigquery#queryResponse',
-          ...(exec.statementType === 'SELECT' && {
+          // Surface schema + rows for SELECT, and for SCRIPT when the last
+          // statement produced any (the BQ script-result equivalent).
+          ...((exec.statementType === 'SELECT' ||
+            (exec.statementType === 'SCRIPT' && exec.schema.length > 0)) && {
             schema: { fields: exec.schema.map(fieldToWire) },
             rows: exec.wireRows,
           }),
