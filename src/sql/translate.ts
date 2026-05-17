@@ -274,6 +274,85 @@ function handleIdentifier(
         tok.value,
       );
 
+    case 'TIMESTAMP_TRUNC':
+    case 'DATETIME_TRUNC':
+      // BQ: TRUNC(ts, DAY)  →  DuckDB: date_trunc('day', ts)
+      return rewritePartArg2(
+        tokens,
+        parenIdx,
+        endIdx,
+        'date_trunc',
+        '',
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'DATE_TRUNC':
+      // DuckDB's date_trunc always returns TIMESTAMP; BQ's DATE_TRUNC
+      // returns DATE. Cast back so the wire format is YYYY-MM-DD.
+      return rewritePartArg2(
+        tokens,
+        parenIdx,
+        endIdx,
+        'date_trunc',
+        '::DATE',
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'FORMAT_TIMESTAMP':
+    case 'FORMAT_DATE':
+    case 'FORMAT_DATETIME':
+      // BQ: FORMAT_X(format, ts)  →  DuckDB: strftime(ts, format)
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (fmt, x) => `strftime(${x}, ${fmt})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'PARSE_TIMESTAMP':
+    case 'PARSE_DATETIME':
+      // BQ: PARSE_X(format, str)  →  DuckDB: strptime(str, format)
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (fmt, s) => `strptime(${s}, ${fmt})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'PARSE_DATE':
+      // strptime returns TIMESTAMP; PARSE_DATE in BQ returns DATE.
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (fmt, s) => `CAST(strptime(${s}, ${fmt}) AS DATE)`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'DATE_DIFF':
+    case 'TIMESTAMP_DIFF':
+    case 'DATETIME_DIFF':
+      // BQ: X_DIFF(a, b, PART)  →  DuckDB: date_diff('part', b, a)
+      // (BQ's a - b in `part` units equals DuckDB's `from b to a`.)
+      return rewriteDiff(tokens, parenIdx, endIdx, out, paramOrder, project, tok.value);
+
     case 'IEEE_DIVIDE':
       // BQ: IEEE 754 semantics (±Inf, NaN) for FLOAT64 divide. DuckDB's
       // DOUBLE / DOUBLE already follows IEEE 754, so casting both sides
@@ -355,6 +434,65 @@ function rewriteTwoArg(
   const arg1 = translateRange(tokens, openParenIdx + 1, commaIdx, paramOrder, project).trim();
   const arg2 = translateRange(tokens, commaIdx + 1, close, paramOrder, project).trim();
   out.push(template(arg1, arg2));
+  return close + 1;
+}
+
+/** Rewrite TIMESTAMP_TRUNC / DATETIME_TRUNC family:
+ *   BQ: TRUNC(ts, PART) →  DuckDB: date_trunc('part', ts)
+ * Drops the BigQuery keyword form (DAY/HOUR/etc.) to a lowercase string. */
+function rewritePartArg2(
+  tokens: readonly Token[],
+  openParenIdx: number,
+  endIdx: number,
+  duckFn: string,
+  /** Trailing cast (e.g. "::DATE") or empty string. */
+  suffix: string,
+  out: string[],
+  paramOrder: string[],
+  project: string,
+  funcName: string,
+): number {
+  const close = findMatchingClose(tokens, openParenIdx, endIdx);
+  const commaIdx = findTopLevelComma(tokens, openParenIdx + 1, close);
+  if (commaIdx === null) {
+    throw BqError.invalid(`${funcName} requires (timestamp, PART).`, funcName);
+  }
+  const tsArg = translateRange(tokens, openParenIdx + 1, commaIdx, paramOrder, project).trim();
+  const part = sliceTokens(tokens, commaIdx + 1, close)
+    .trim()
+    .toLowerCase();
+  out.push(`${duckFn}('${part}', ${tsArg})${suffix}`);
+  return close + 1;
+}
+
+/** Rewrite X_DIFF family:
+ *   BQ: X_DIFF(a, b, PART) →  DuckDB: date_diff('part', b, a)
+ * BQ computes a - b in the given part; DuckDB computes "from start to end",
+ * so we swap a and b to get the same sign. */
+function rewriteDiff(
+  tokens: readonly Token[],
+  openParenIdx: number,
+  endIdx: number,
+  out: string[],
+  paramOrder: string[],
+  project: string,
+  funcName: string,
+): number {
+  const close = findMatchingClose(tokens, openParenIdx, endIdx);
+  const commaIdx1 = findTopLevelComma(tokens, openParenIdx + 1, close);
+  if (commaIdx1 === null) {
+    throw BqError.invalid(`${funcName} requires three arguments.`, funcName);
+  }
+  const commaIdx2 = findTopLevelComma(tokens, commaIdx1 + 1, close);
+  if (commaIdx2 === null) {
+    throw BqError.invalid(`${funcName} requires three arguments.`, funcName);
+  }
+  const a = translateRange(tokens, openParenIdx + 1, commaIdx1, paramOrder, project).trim();
+  const b = translateRange(tokens, commaIdx1 + 1, commaIdx2, paramOrder, project).trim();
+  const part = sliceTokens(tokens, commaIdx2 + 1, close)
+    .trim()
+    .toLowerCase();
+  out.push(`date_diff('${part}', ${b}, ${a})`);
   return close + 1;
 }
 
