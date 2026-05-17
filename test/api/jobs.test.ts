@@ -283,3 +283,35 @@ test('GET /queries/{j} rejects bad pageToken', async () => {
   const res = await fetch(`${server.url}/projects/${PROJECT}/queries/${jobId}?pageToken=-1`);
   assert.equal(res.status, 400);
 });
+
+// ---------------------------------------------------------------------------
+// Body-shape validation — malformed input lands in BqError.invalid
+// ---------------------------------------------------------------------------
+
+test('POST /jobs rejects a body that is not a JSON object', async () => {
+  const { status, json } = await postJob([] as unknown as object);
+  assert.equal(status, 400);
+  const err = json as GoogleErrorBody;
+  assert.equal(err.error.errors[0]?.reason, 'invalid');
+  assert.match(err.error.errors[0]?.message ?? '', /request body/);
+});
+
+test('POST /jobs rejects when jobReference is not an object', async () => {
+  const { status, json } = await postJob({
+    jobReference: 'not-an-object',
+    configuration: { query: { query: 'SELECT 1' } },
+  });
+  assert.equal(status, 400);
+  const err = json as GoogleErrorBody;
+  assert.match(err.error.errors[0]?.message ?? '', /jobReference/);
+});
+
+test('POST /jobs rejects when jobReference.jobId is not a string', async () => {
+  const { status, json } = await postJob({
+    jobReference: { jobId: 12345 },
+    configuration: { query: { query: 'SELECT 1' } },
+  });
+  assert.equal(status, 400);
+  const err = json as GoogleErrorBody;
+  assert.match(err.error.errors[0]?.message ?? '', /jobReference\.jobId/);
+});

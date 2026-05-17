@@ -326,7 +326,7 @@ arrives.
 
 ---
 
-### BL-021 — Coverage to 90% ⏳ · Est: 2h · Deps: BL-016, BL-020
+### BL-021 — Coverage to 90% ✅ · Est: 2h · Deps: BL-016, BL-020
 
 **Scope:** Run `npm run test:coverage`, identify gaps from the coverage report, add targeted unit tests in `test/unit/` until each threshold ≥ 90. Mark genuinely unreachable branches with `/* node:coverage disable */` rather than padding with fake tests.
 

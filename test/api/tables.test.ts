@@ -600,3 +600,123 @@ test('PATCH that only updates description is a no-op DDL-wise', async () => {
     created.schema.fields.map((f) => f.name),
   );
 });
+
+// ---------------------------------------------------------------------------
+// Body / field validation
+// ---------------------------------------------------------------------------
+
+test('POST .../tables rejects a body that is not a JSON object', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify('not-an-object'),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('POST .../tables rejects a field whose name is not a string', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tableReference: { tableId: 'tx-bad-name' },
+      schema: { fields: [{ name: 99, type: 'STRING' }] },
+    }),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('POST .../tables rejects a field whose description is not a string', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tableReference: { tableId: 'tx-bad-desc' },
+      schema: { fields: [{ name: 'a', type: 'STRING', description: 42 }] },
+    }),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('PATCH with an unchanged STRUCT schema recurses through inner fields without error', async () => {
+  // Hits `fieldsStructurallyEqual`'s inner-field loop (equal arrays return true).
+  const tableId = freshTableId();
+  await createTable(tableId, {
+    schema: {
+      fields: [
+        {
+          name: 's',
+          type: 'STRUCT',
+          fields: [
+            { name: 'a', type: 'INT64' },
+            { name: 'b', type: 'STRING' },
+          ],
+        },
+      ],
+    },
+  });
+  const res = await fetch(
+    `${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables/${tableId}`,
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        description: 'patched description',
+        schema: {
+          fields: [
+            {
+              name: 's',
+              type: 'STRUCT',
+              fields: [
+                { name: 'a', type: 'INT64' },
+                { name: 'b', type: 'STRING' },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+  );
+  assert.equal(res.status, 200);
+});
+
+test('PATCH rejects STRUCT inner field rename (same length, different name)', async () => {
+  // Same length, hits the per-element comparison branch in fieldsStructurallyEqual.
+  const tableId = freshTableId();
+  await createTable(tableId, {
+    schema: {
+      fields: [
+        {
+          name: 's',
+          type: 'STRUCT',
+          fields: [
+            { name: 'a', type: 'INT64' },
+            { name: 'b', type: 'STRING' },
+          ],
+        },
+      ],
+    },
+  });
+  const res = await fetch(
+    `${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables/${tableId}`,
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        schema: {
+          fields: [
+            {
+              name: 's',
+              type: 'STRUCT',
+              fields: [
+                { name: 'a', type: 'INT64' },
+                { name: 'renamed', type: 'STRING' }, // ← rename
+              ],
+            },
+          ],
+        },
+      }),
+    },
+  );
+  assert.equal(res.status, 400);
+});

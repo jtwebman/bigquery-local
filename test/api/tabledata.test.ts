@@ -361,3 +361,62 @@ test('insertAll rejects a non-boolean skipInvalidRows with 400', async () => {
   );
   assert.equal(res.status, 400);
 });
+
+test('insertAll rejects a request body that is not a JSON object', async () => {
+  const tableId = await freshTable([{ name: 'a', type: 'STRING' }]);
+  const res = await fetch(
+    `${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables/${tableId}/insertAll`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(['not', 'an', 'object']),
+    },
+  );
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as GoogleErrorBody;
+  assert.equal(body.error.errors[0]?.reason, 'invalid');
+});
+
+test('insertAll per-row encoding error: INT64 column receives a non-numeric value', async () => {
+  // Pre-validation encoding failure: `bqValueToDuck(\"not-a-number\", INT64)` throws
+  // synchronously (BigInt parse error). skipInvalidRows=true keeps the good row.
+  const tableId = await freshTable([
+    { name: 'n', type: 'INT64' },
+    { name: 'name', type: 'STRING' },
+  ]);
+  const { status, json } = await insertAll(tableId, {
+    skipInvalidRows: true,
+    rows: [{ json: { n: '1', name: 'ok' } }, { json: { n: 'not-a-number', name: 'bad' } }],
+  });
+  assert.equal(status, 200);
+  const body = json as InsertAllResponse;
+  assert.equal(body.insertErrors?.length, 1);
+  assert.equal(body.insertErrors?.[0]?.index, 1);
+  const rows = await db.query<{ n: bigint }>(`SELECT n FROM "${DATASET}"."${tableId}"`);
+  assert.equal(rows.length, 1);
+});
+
+test('insertAll skipInvalidRows=false rollback on a *runtime* DB error (NOT NULL)', async () => {
+  // Pre-validation passes — null in JSON encodes to NULL at the SQL layer.
+  // The INSERT itself fails on the NOT NULL constraint (REQUIRED), triggering
+  // the transactional rollback path that releases earlier successful inserts.
+  const tableId = await freshTable([
+    { name: 'id', type: 'INT64', mode: 'REQUIRED' },
+    { name: 'name', type: 'STRING' },
+  ]);
+  const { status, json } = await insertAll(tableId, {
+    skipInvalidRows: false,
+    rows: [
+      { json: { id: '1', name: 'good-1' } },
+      { json: { id: null, name: 'bad-required-null' } }, // NULL into NOT NULL column
+      { json: { id: '3', name: 'never-reached' } },
+    ],
+  });
+  assert.equal(status, 200);
+  const body = json as InsertAllResponse;
+  // Row at index 1 is the offender; index 0 was rolled back, index 2 never ran.
+  assert.equal(body.insertErrors?.length, 1);
+  assert.equal(body.insertErrors?.[0]?.index, 1);
+  const rows = await db.query(`SELECT * FROM "${DATASET}"."${tableId}"`);
+  assert.equal(rows.length, 0, 'all rows rolled back, including the earlier successful one');
+});
