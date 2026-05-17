@@ -579,7 +579,7 @@ Scope: rewrite PIVOT/UNPIVOT clauses (DuckDB supports natively). Acceptance: BQ 
 
 Scope: `TABLESAMPLE SYSTEM (n PERCENT)` rewrite. Acceptance: sample size within ±20% of expected on 10k-row table.
 
-### BL-060 — Wildcard tables + `_TABLE_SUFFIX` ⏳ · Est: 3h · Deps: BL-014
+### BL-060 — Wildcard tables + `_TABLE_SUFFIX` ✅ · Est: 3h · Deps: BL-014
 
 Scope: resolve `\`ds.events\_\*\``at translate time to`UNION ALL`; expose `\_TABLE_SUFFIX` pseudo column. Acceptance: wildcard query returns rows from all matching tables with correct suffix.
 
