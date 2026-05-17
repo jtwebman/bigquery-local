@@ -563,7 +563,7 @@ Scope: `CREATE VIEW`, `DROP VIEW`; stored as DuckDB view + metadata. Acceptance:
 
 Scope: SQL DDL surface for dataset metadata (parity with REST). Acceptance: `CREATE SCHEMA test` creates a dataset visible via REST GET.
 
-### BL-056 — GROUP BY ROLLUP / CUBE / GROUPING SETS ⏳ · Est: 3h · Deps: BL-014
+### BL-056 — GROUP BY ROLLUP / CUBE / GROUPING SETS ✅ · Est: 3h · Deps: BL-014
 
 Scope: rewrite to UNION ALL of regular GROUP BY (or pass through if DuckDB supports). Acceptance: standard ROLLUP example from BQ docs passes.
 
