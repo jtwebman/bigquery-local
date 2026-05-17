@@ -433,7 +433,7 @@ Scope: opaque page tokens encoded as `{ jobId, offset }`; honor `startIndex` + `
 ### BL-037 — String function expansion ✅ · Est: 3h · Deps: BL-014
 Scope: REGEXP_CONTAINS / EXTRACT / EXTRACT_ALL / REPLACE, FORMAT, LPAD / RPAD, NORMALIZE / NORMALIZE_AND_CASEFOLD, TRANSLATE, REPEAT, REVERSE, OCTET_LENGTH. Acceptance: 1 happy-path test per function.
 
-### BL-038 — Numeric/math function expansion ⏳ · Est: 2h · Deps: BL-014
+### BL-038 — Numeric/math function expansion ✅ · Est: 2h · Deps: BL-014
 Scope: TRUNC, MOD, ABS, SIGN, CEIL, FLOOR, ROUND, POWER, EXP, LN, LOG, LOG10, SQRT, SAFE_DIVIDE, IEEE_DIVIDE, IS_INF, IS_NAN. Acceptance: 1 test per function.
 
 ### BL-039 — Date/time function expansion (1) ⏳ · Est: 3h · Deps: BL-014
