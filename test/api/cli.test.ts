@@ -13,8 +13,9 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = new URL('../..', import.meta.url).pathname;
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const BIN = join(REPO_ROOT, 'bin/bigquery-local.ts');
 
 function spawnBin(args: readonly string[]): ChildProcessWithoutNullStreams {
