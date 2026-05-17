@@ -74,6 +74,14 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['UNIX_MILLIS', 'epoch_ms'],
   ['UNIX_MICROS', 'epoch_us'],
   ['LAST_DAY', 'last_day'],
+  // BL-041 — JSON:
+  ['JSON_QUERY', 'json_extract'],
+  ['JSON_QUERY_ARRAY', 'json_extract'],
+  ['JSON_VALUE_ARRAY', 'json_extract_string'],
+  ['JSON_TYPE', 'json_type'],
+  ['JSON_KEYS', 'json_keys'],
+  ['TO_JSON', 'to_json'],
+  ['TO_JSON_STRING', 'to_json'],
 ]);
 
 /** A small list of BQ functions we explicitly call out as unsupported, so
@@ -398,6 +406,36 @@ function handleIdentifier(
         parenIdx,
         endIdx,
         (x) => `date_diff('day', DATE '1970-01-01', ${x})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'PARSE_JSON':
+      // BQ: PARSE_JSON(str) → JSON. DuckDB: CAST(str AS JSON).
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (x) => `CAST(${x} AS JSON)`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'BOOL':
+    case 'INT64':
+    case 'FLOAT64':
+      // BQ: BOOL(json) / INT64(json) / FLOAT64(json) — extract a scalar.
+      // DuckDB: CAST(json AS type) handles the same shape for primitives.
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (x) =>
+          `CAST(${x} AS ${upper === 'INT64' ? 'BIGINT' : upper === 'FLOAT64' ? 'DOUBLE' : 'BOOLEAN'})`,
         out,
         paramOrder,
         project,
