@@ -454,7 +454,7 @@ Scope: STRING_AGG, ANY_VALUE, LOGICAL_AND / LOGICAL_OR, BIT_AND / BIT_OR / BIT_X
 ### BL-044 — Window/analytic functions ✅ · Est: 3h · Deps: BL-014
 Scope: ROW_NUMBER, RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE + frame syntax. Acceptance: tests cover PARTITION BY + ORDER BY + frame.
 
-### BL-045 — Approximate aggregation ⏳ · Est: 4h · Deps: BL-014
+### BL-045 — Approximate aggregation ✅ · Est: 4h · Deps: BL-014
 Scope: APPROX_COUNT_DISTINCT, APPROX_QUANTILES, APPROX_TOP_COUNT, HLL_COUNT.INIT / MERGE / EXTRACT, KLL_QUANTILES.INIT / MERGE / EXTRACT_POINT. Acceptance: numeric tolerance tests (±5%) vs exact counterparts.
 
 ### BL-046 — Statistical aggregate ⏳ · Est: 1.5h · Deps: BL-014
