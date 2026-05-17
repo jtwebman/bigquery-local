@@ -48,6 +48,7 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 | `GET .../tables/{t}/data` (tabledata.list, paginated, selectedFields) | ✅ |
 | `insertAll` insertId dedup (60s window, per-table) | ✅ |
 | `dryRun: true` on queries + jobs (DuckDB `DESCRIBE`-backed) | ✅ |
+| `insertAll` `templateSuffix` (auto-create target on first hit) | ✅ |
 | `jobs.cancel`, `jobs.delete` | 🔭 |
 | `tabledata.list` | 🔭 |
 | `--data-from-yaml` initial seed | 🔭 |

@@ -416,7 +416,7 @@ Scope: `GET /projects/{p}/datasets/{d}/tables/{t}/data` with pagination, `select
 ### BL-032 — `insertAll` insertId-based dedup ✅ · Est: 2h · Deps: BL-012
 Scope: maintain a per-table insertId LRU; skip duplicate inserts within the dedup window. Acceptance: same `insertId` twice → second is a no-op.
 
-### BL-033 — `insertAll` templateSuffix tables ⏳ · Est: 2h · Deps: BL-012
+### BL-033 — `insertAll` templateSuffix tables ✅ · Est: 2h · Deps: BL-012
 Scope: when request includes `templateSuffix`, auto-create `<base>_<suffix>` table from base schema. Acceptance: insertAll against a template suffix creates the target table on first hit.
 
 ### BL-034 — Multi-project: repeatable `--project` ⏳ · Est: 1h · Deps: BL-017, BL-008

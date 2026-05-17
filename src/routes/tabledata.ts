@@ -27,13 +27,18 @@
  *   - **`ignoreUnknownValues: false` (default)**: unknown fields cause
  *     that row to fail with reason `invalid`.
  *
- * `templateSuffix` (auto-creating a `{table}_{suffix}` table) is out
- * of scope for v0 — see BACKLOG BL-033.
+ * **`templateSuffix`**: when set, the actual target table is
+ * `<base><templateSuffix>` (no separator inserted — the client picks).
+ * If the target doesn't exist on first hit, it's auto-created with the
+ * same schema as the base table. This is the BQ streaming-ingest
+ * pattern Kafka-style connectors use to write into rolling
+ * date-suffixed tables like `events20260517`.
  */
 
 import type { Db } from '../storage/db.ts';
-import { getTable } from '../storage/meta.ts';
+import { getTable, upsertTable } from '../storage/meta.ts';
 import type { TableMeta } from '../storage/meta.ts';
+import { buildCreateTableSql, ensureDatasetSchema } from './tables.ts';
 import {
   type BqField,
   bqInsertExpression,
@@ -72,6 +77,9 @@ interface ParsedInsertAllBody {
   readonly rows: readonly ParsedRow[];
   readonly skipInvalidRows: boolean;
   readonly ignoreUnknownValues: boolean;
+  /** When set, the actual target table is `<base><templateSuffix>` —
+   * not `<base>_<suffix>`; the client picks any separator they want. */
+  readonly templateSuffix: string | undefined;
 }
 
 interface ParsedRow {
@@ -113,6 +121,16 @@ function parseInsertAllBody(body: unknown): ParsedInsertAllBody {
     const json = asObject(jsonRaw, `rows[${i}].json`);
     return { insertId, json };
   });
+  const templateSuffixRaw = obj['templateSuffix'];
+  if (templateSuffixRaw !== undefined && typeof templateSuffixRaw !== 'string') {
+    throw BqError.invalid('templateSuffix must be a string.', 'templateSuffix');
+  }
+  // Empty-string suffix means "no template suffix" — same target as base.
+  // Real BQ also treats empty as a no-op.
+  const templateSuffix =
+    typeof templateSuffixRaw === 'string' && templateSuffixRaw.length > 0
+      ? templateSuffixRaw
+      : undefined;
   return {
     rows,
     skipInvalidRows:
@@ -123,6 +141,7 @@ function parseInsertAllBody(body: unknown): ParsedInsertAllBody {
       obj['ignoreUnknownValues'] === undefined
         ? false
         : asBoolean(obj['ignoreUnknownValues'], 'ignoreUnknownValues'),
+    templateSuffix,
   };
 }
 
@@ -391,13 +410,40 @@ export function createTabledataRoutes(
       handler: async (req) => {
         const project = req.params['p'] as string;
         const datasetId = req.params['d'] as string;
-        const tableId = req.params['t'] as string;
-        const meta = await getTable(db, project, datasetId, tableId);
-        if (meta === null) {
-          throw BqError.notFound(`Table "${project}:${datasetId}.${tableId}" not found.`);
+        const baseTableId = req.params['t'] as string;
+        const baseMeta = await getTable(db, project, datasetId, baseTableId);
+        if (baseMeta === null) {
+          throw BqError.notFound(`Table "${project}:${datasetId}.${baseTableId}" not found.`);
         }
         const parsed = parseInsertAllBody(req.body);
-        const fields = tableSchemaFields(meta);
+
+        // templateSuffix: when set, target = base + suffix; auto-create on
+        // first hit with the base's schema. Without it, target == base.
+        let targetMeta: TableMeta = baseMeta;
+        if (parsed.templateSuffix !== undefined) {
+          const targetTableId = baseTableId + parsed.templateSuffix;
+          const existingTarget = await getTable(db, project, datasetId, targetTableId);
+          if (existingTarget !== null) {
+            targetMeta = existingTarget;
+          } else {
+            const baseFields = tableSchemaFields(baseMeta);
+            await ensureDatasetSchema(db, datasetId);
+            // IF NOT EXISTS for safe concurrent-create — two parallel inserts
+            // racing on the same suffix won't error one of them.
+            await db.exec(
+              buildCreateTableSql(datasetId, targetTableId, baseFields, { ifNotExists: true }),
+            );
+            targetMeta = await upsertTable(db, {
+              project,
+              datasetId,
+              tableId: targetTableId,
+              type: 'TABLE',
+              ...(baseMeta.schema !== undefined && { schema: baseMeta.schema }),
+            });
+          }
+        }
+
+        const fields = tableSchemaFields(targetMeta);
 
         // Encode every row first; collect per-row failures from the
         // encode step before any DDL runs.
@@ -407,7 +453,7 @@ export function createTabledataRoutes(
         // `values` and no `error`. The downstream insert loop already treats
         // that shape as "do nothing", so no further plumbing is needed.
         // Same insertId twice in one batch also dedups (first wins).
-        const tableKey = `${project}:${datasetId}:${tableId}`;
+        const tableKey = `${project}:${datasetId}:${targetMeta.tableId}`;
         const now = Date.now();
         const outcomes: RowOutcome[] = parsed.rows.map((row, i) => {
           if (row.insertId !== undefined && dedup.seenOrRecord(tableKey, row.insertId, now)) {
@@ -416,7 +462,7 @@ export function createTabledataRoutes(
           return encodeRow(row, fields, parsed.ignoreUnknownValues, i);
         });
 
-        const sql = buildInsertSql(meta, fields);
+        const sql = buildInsertSql(targetMeta, fields);
 
         if (parsed.skipInvalidRows) {
           // Per-row execution: each row is independent. Encoding failures
