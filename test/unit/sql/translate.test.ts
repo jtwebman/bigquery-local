@@ -190,9 +190,16 @@ test('translate: FARM_FINGERPRINT throws unsupportedFeature', () => {
   );
 });
 
-test('translate: APPROX_COUNT_DISTINCT throws unsupportedFeature', () => {
+test('translate: APPROX_COUNT_DISTINCT passes through (DuckDB has it)', () => {
+  // BL-045: removed from UNSUPPORTED_FUNCTIONS — DuckDB supports the same
+  // name with the same single-arg signature.
+  const { sql } = translate('SELECT APPROX_COUNT_DISTINCT(col) FROM t', { project: 'p' });
+  assert.match(sql, /APPROX_COUNT_DISTINCT\(col\)/i);
+});
+
+test('translate: APPROX_QUANTILES still throws unsupportedFeature (deferred)', () => {
   assert.throws(
-    () => translate('SELECT APPROX_COUNT_DISTINCT(col) FROM t', { project: 'p' }),
+    () => translate('SELECT APPROX_QUANTILES(col, 4) FROM t', { project: 'p' }),
     (err: unknown) => err instanceof BqError && err.reason === 'unsupportedFeature',
   );
 });
