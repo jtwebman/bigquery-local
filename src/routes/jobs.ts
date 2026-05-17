@@ -13,8 +13,8 @@
  */
 
 import type { Db } from '../storage/db.ts';
-import { getJob } from '../storage/meta.ts';
-import type { JobMeta } from '../storage/meta.ts';
+import { getJob, listJobs } from '../storage/meta.ts';
+import type { JobMeta, JobState } from '../storage/meta.ts';
 import {
   type FieldWire,
   type QueryParameterParsed,
@@ -189,11 +189,137 @@ interface QueryResultsResponseWire {
 }
 
 // ---------------------------------------------------------------------------
+// GET /jobs list — pagination + filters
+// ---------------------------------------------------------------------------
+
+const LIST_DEFAULT_PAGE_SIZE = 50;
+const LIST_MAX_PAGE_SIZE = 1000;
+
+function parseListMaxResults(value: string | undefined): number {
+  if (value === undefined) return LIST_DEFAULT_PAGE_SIZE;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw BqError.invalid('maxResults must be a positive integer.', 'maxResults');
+  }
+  return Math.min(parsed, LIST_MAX_PAGE_SIZE);
+}
+
+function parseListPageToken(value: string | undefined): number {
+  if (value === undefined || value === '') return 0;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+  }
+  return parsed;
+}
+
+const VALID_STATES: ReadonlySet<JobState> = new Set(['PENDING', 'RUNNING', 'DONE']);
+
+/** `stateFilter` can be a single value or repeated. Real BigQuery accepts
+ * the repeated query param form; Node's URL parser collapses repeats into
+ * the last value. Our `req.query` is a flat Record<string, string>, so we
+ * support comma-separated values too: `stateFilter=DONE,RUNNING`. */
+function parseStateFilter(value: string | undefined): readonly JobState[] | undefined {
+  if (value === undefined || value === '') return undefined;
+  const raw = value.split(',').map((s) => s.trim().toUpperCase());
+  const out: JobState[] = [];
+  for (const s of raw) {
+    if (!VALID_STATES.has(s as JobState)) {
+      throw BqError.invalid(
+        `stateFilter must be one or more of PENDING, RUNNING, DONE (got "${s}").`,
+        'stateFilter',
+      );
+    }
+    out.push(s as JobState);
+  }
+  return out;
+}
+
+function parseCreationTime(value: string | undefined, field: string): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw BqError.invalid(`${field} must be a non-negative integer (ms since epoch).`, field);
+  }
+  return parsed;
+}
+
+type Projection = 'minimal' | 'full';
+
+function parseProjection(value: string | undefined): Projection {
+  if (value === undefined || value === '' || value === 'minimal') return 'minimal';
+  if (value === 'full') return 'full';
+  throw BqError.invalid('projection must be "minimal" or "full".', 'projection');
+}
+
+interface JobListEntryWire {
+  readonly kind: 'bigquery#job';
+  readonly id: string;
+  readonly jobReference: JobReferenceWire;
+  readonly state: JobState;
+  readonly status: JobStatusWire;
+  readonly statistics: JobStatisticsWire;
+  readonly configuration?: { readonly query: { readonly query: string } };
+}
+
+interface JobListWire {
+  readonly kind: 'bigquery#jobList';
+  readonly etag: string;
+  readonly jobs: readonly JobListEntryWire[];
+  readonly nextPageToken?: string;
+}
+
+function metaToListEntry(meta: JobMeta, projection: Projection): JobListEntryWire {
+  // Real BQ: minimal omits configuration; full includes it.
+  // The other fields are present in both. `state` at the top level is the
+  // BQ convention so clients can filter without diving into `status`.
+  const full = jobMetaToResource(meta);
+  return {
+    kind: 'bigquery#job',
+    id: full.id,
+    jobReference: full.jobReference,
+    state: meta.state,
+    status: full.status,
+    statistics: full.statistics,
+    ...(projection === 'full' && { configuration: full.configuration }),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
 
 export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
   return [
+    {
+      method: 'GET',
+      path: '/projects/{p}/jobs',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const maxResults = parseListMaxResults(req.query['maxResults']);
+        const offset = parseListPageToken(req.query['pageToken']);
+        const states = parseStateFilter(req.query['stateFilter']);
+        const minCreatedMs = parseCreationTime(req.query['minCreationTime'], 'minCreationTime');
+        const maxCreatedMs = parseCreationTime(req.query['maxCreationTime'], 'maxCreationTime');
+        const projection = parseProjection(req.query['projection']);
+
+        const { jobs, nextOffset } = await listJobs(db, project, {
+          offset,
+          limit: maxResults,
+          ...(states !== undefined && { states }),
+          ...(minCreatedMs !== undefined && { minCreatedMs }),
+          ...(maxCreatedMs !== undefined && { maxCreatedMs }),
+        });
+        const body: JobListWire = {
+          kind: 'bigquery#jobList',
+          etag: `${project}:${offset}:${maxResults}:${jobs.length}`,
+          jobs: jobs.map((m) => metaToListEntry(m, projection)),
+          ...(nextOffset !== null && { nextPageToken: String(nextOffset) }),
+        };
+        return { status: 200, body } satisfies RouteResponse;
+      },
+    },
+
     {
       method: 'POST',
       path: '/projects/{p}/jobs',

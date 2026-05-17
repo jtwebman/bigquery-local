@@ -43,7 +43,7 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 | `GET /projects/{p}/queries/{j}` (getQueryResults) | ✅ |
 | `GET /projects/{p}/datasets` (list, paginated) | ✅ |
 | `GET /projects/{p}/datasets/{d}/tables` (list, paginated) | ✅ |
-| List jobs (paginated) | 🔭 |
+| `GET /projects/{p}/jobs` (list w/ stateFilter, time bounds, projection) | ✅ |
 | `jobs.cancel`, `jobs.delete` | 🔭 |
 | `tabledata.list` | 🔭 |
 | `--data-from-yaml` initial seed | 🔭 |

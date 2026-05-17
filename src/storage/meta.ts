@@ -572,3 +572,79 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
     createdMs,
   };
 }
+
+/** Paginated list of jobs in a project, ordered by `created_at` DESC then `job_id`
+ * (matching BigQuery, where newest jobs come first). Optional filters:
+ *
+ *   - `states`: include only these states (PENDING/RUNNING/DONE). Empty = all.
+ *   - `minCreatedMs` / `maxCreatedMs`: inclusive bounds on creation time.
+ *
+ * Mirrors `listDatasets`/`listTables` — reads N+1 to detect "has more". */
+export async function listJobs(
+  db: Db,
+  project: string,
+  options: {
+    readonly offset: number;
+    readonly limit: number;
+    readonly states?: readonly JobState[];
+    readonly minCreatedMs?: number;
+    readonly maxCreatedMs?: number;
+  },
+): Promise<{ readonly jobs: readonly JobMeta[]; readonly nextOffset: number | null }> {
+  const where: string[] = ['project = $1'];
+  const params: unknown[] = [project];
+  let next = 2;
+  if (options.states !== undefined && options.states.length > 0) {
+    // DuckDB rejects a JS array bound as a parameter (it lands as ANY).
+    // Same trick as the query engine: pass the array as JSON, cast to
+    // VARCHAR[] in the SQL.
+    where.push(`state = ANY ($${next}::JSON::VARCHAR[])`);
+    params.push(JSON.stringify(options.states));
+    next += 1;
+  }
+  if (options.minCreatedMs !== undefined) {
+    where.push(`created_at >= epoch_ms($${next}::BIGINT)`);
+    params.push(BigInt(options.minCreatedMs));
+    next += 1;
+  }
+  if (options.maxCreatedMs !== undefined) {
+    where.push(`created_at <= epoch_ms($${next}::BIGINT)`);
+    params.push(BigInt(options.maxCreatedMs));
+    next += 1;
+  }
+  const limitParam = `$${next}`;
+  const offsetParam = `$${next + 1}`;
+  params.push(BigInt(options.limit + 1));
+  params.push(BigInt(options.offset));
+
+  const sql = `SELECT
+       project, job_id, state, statement_type, error, query, params, types,
+       result_schema, result_total_rows,
+       epoch_ms(created_at) AS created_ms,
+       epoch_ms(started_at) AS started_ms,
+       epoch_ms(ended_at) AS ended_ms
+     FROM _bq.jobs
+     WHERE ${where.join(' AND ')}
+     ORDER BY created_at DESC, job_id
+     LIMIT ${limitParam}::BIGINT OFFSET ${offsetParam}::BIGINT`;
+
+  const rows = await db.query<Record<string, unknown>>(sql, params);
+  const hasMore = rows.length > options.limit;
+  const sliced = hasMore ? rows.slice(0, options.limit) : rows;
+  const jobs = sliced.map((row) => ({
+    project: row['project'] as string,
+    jobId: row['job_id'] as string,
+    state: row['state'] as JobState,
+    createdMs: toNumber(row['created_ms']),
+    ...optional('statementType', row['statement_type'] as string | null),
+    ...optionalJson<'error', unknown>('error', row['error']),
+    ...optional('query', row['query'] as string | null),
+    ...optionalJson<'params', unknown>('params', row['params']),
+    ...optionalJson<'types', unknown>('types', row['types']),
+    ...optionalNumber('startedMs', row['started_ms']),
+    ...optionalNumber('endedMs', row['ended_ms']),
+    ...optionalJson<'resultSchema', unknown>('resultSchema', row['result_schema']),
+    ...optionalNumber('resultTotalRows', row['result_total_rows']),
+  }));
+  return { jobs, nextOffset: hasMore ? options.offset + options.limit : null };
+}
