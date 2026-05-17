@@ -121,7 +121,14 @@ export function translate(sql: string, options: TranslateOptions): TranslateResu
   return { sql: out, paramOrder };
 }
 
-export type StatementType = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'MERGE';
+export type StatementType =
+  | 'SELECT'
+  | 'INSERT'
+  | 'UPDATE'
+  | 'DELETE'
+  | 'MERGE'
+  | 'CREATE_VIEW'
+  | 'DROP_VIEW';
 
 /**
  * Classifies a BQ SQL string by its leading keyword. Skips whitespace,
@@ -140,6 +147,19 @@ export function detectStatementType(sql: string): StatementType {
   if (head === 'UPDATE') return 'UPDATE';
   if (head === 'DELETE') return 'DELETE';
   if (head === 'MERGE') return 'MERGE';
+  if (head === 'CREATE') {
+    // Look ahead past OR REPLACE, TEMP|TEMPORARY for the object kind.
+    const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA']);
+    if (kindIdx !== null && tokens[kindIdx]?.value.toUpperCase() === 'VIEW') {
+      return 'CREATE_VIEW';
+    }
+  }
+  if (head === 'DROP') {
+    const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA']);
+    if (kindIdx !== null && tokens[kindIdx]?.value.toUpperCase() === 'VIEW') {
+      return 'DROP_VIEW';
+    }
+  }
   if (head === 'WITH') {
     // Skip past the CTE definitions to the trailing statement keyword.
     const after = skipCteBlock(tokens, i + 1);
@@ -155,6 +175,163 @@ export function detectStatementType(sql: string): StatementType {
     }
   }
   return 'SELECT';
+}
+
+/**
+ * Resolves a CREATE [OR REPLACE] [TEMP] VIEW [IF NOT EXISTS] / DROP VIEW
+ * [IF EXISTS] target into its (project, dataset, view) triple, plus the
+ * raw BQ AS-clause SQL for CREATE (used to populate `view.query` in
+ * tables.get). The default project applies when the SQL omits one.
+ */
+export interface ViewDdlTarget {
+  readonly kind: 'CREATE_VIEW' | 'DROP_VIEW';
+  readonly project: string;
+  readonly datasetId: string;
+  readonly viewId: string;
+  /** Raw SELECT text after `AS`, or undefined for DROP VIEW. */
+  readonly viewQuery?: string;
+}
+
+export function parseViewDdl(sql: string, defaultProject: string): ViewDdlTarget {
+  const tokens = tokenize(sql);
+  let i = 0;
+  while (i < tokens.length && isSkippable(tokens[i] as Token)) i += 1;
+  const first = tokens[i];
+  if (first === undefined || first.kind !== 'identifier') {
+    throw BqError.invalid('Expected a CREATE VIEW or DROP VIEW statement.', 'query');
+  }
+  const head = first.value.toUpperCase();
+  if (head !== 'CREATE' && head !== 'DROP') {
+    throw BqError.invalid('Expected a CREATE VIEW or DROP VIEW statement.', 'query');
+  }
+  const viewKw = findNextKeyword(tokens, i + 1, ['VIEW']);
+  if (viewKw === null) {
+    throw BqError.invalid('Expected VIEW keyword after CREATE / DROP.', 'query');
+  }
+  // Move past VIEW, then optional IF [NOT] EXISTS.
+  let j = nextNonSkippable(tokens, viewKw + 1);
+  if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'IF') {
+    j = nextNonSkippable(tokens, j + 1);
+    if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'NOT') {
+      j = nextNonSkippable(tokens, j + 1);
+    }
+    if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'EXISTS') {
+      j = nextNonSkippable(tokens, j + 1);
+    }
+  }
+  const targetTok = tokens[j];
+  if (targetTok === undefined) {
+    throw BqError.invalid('Expected a view name.', 'query');
+  }
+  const { project, datasetId, viewId } = parseTableTarget(tokens, j, defaultProject);
+  if (head === 'DROP') {
+    return { kind: 'DROP_VIEW', project, datasetId, viewId };
+  }
+  // CREATE: find the AS keyword and capture everything past it as the view body.
+  const after = advancePastTarget(tokens, j);
+  const asIdx = findNextKeyword(tokens, after, ['AS']);
+  if (asIdx === null) {
+    throw BqError.invalid('CREATE VIEW requires an AS <query> body.', 'query');
+  }
+  const bodyStart = tokens[asIdx]?.end ?? sql.length;
+  const viewQuery = sql.slice(bodyStart).trim();
+  return { kind: 'CREATE_VIEW', project, datasetId, viewId, viewQuery };
+}
+
+function parseTableTarget(
+  tokens: readonly Token[],
+  start: number,
+  defaultProject: string,
+): { project: string; datasetId: string; viewId: string } {
+  const tok = tokens[start];
+  if (tok === undefined) {
+    throw BqError.invalid('Expected a table reference.', 'query');
+  }
+  // Backtick form: `project.dataset.view` or `dataset.view`.
+  if (tok.kind === 'backtick-identifier') {
+    const inner = tok.value.slice(1, -1);
+    const parts = inner.split('.');
+    if (parts.length === 3) {
+      return {
+        project: parts[0] as string,
+        datasetId: parts[1] as string,
+        viewId: parts[2] as string,
+      };
+    }
+    if (parts.length === 2) {
+      return {
+        project: defaultProject,
+        datasetId: parts[0] as string,
+        viewId: parts[1] as string,
+      };
+    }
+    throw BqError.invalid(
+      `Unsupported view reference \`${inner}\` — expected dataset.view or project.dataset.view.`,
+      'query',
+    );
+  }
+  // Bare-identifier form: IDENT . IDENT [. IDENT].
+  if (tok.kind === 'identifier') {
+    const parts: string[] = [tok.value];
+    let i = nextNonSkippable(tokens, start + 1);
+    while (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === '.') {
+      const next = nextNonSkippable(tokens, i + 1);
+      const id = tokens[next];
+      if (id?.kind !== 'identifier') break;
+      parts.push(id.value);
+      i = nextNonSkippable(tokens, next + 1);
+    }
+    if (parts.length === 3) {
+      return {
+        project: parts[0] as string,
+        datasetId: parts[1] as string,
+        viewId: parts[2] as string,
+      };
+    }
+    if (parts.length === 2) {
+      return {
+        project: defaultProject,
+        datasetId: parts[0] as string,
+        viewId: parts[1] as string,
+      };
+    }
+    throw BqError.invalid(
+      `View reference must include a dataset (got "${parts.join('.')}").`,
+      'query',
+    );
+  }
+  throw BqError.invalid(`Unexpected token "${tok.value}" where a view name was expected.`, 'query');
+}
+
+function advancePastTarget(tokens: readonly Token[], start: number): number {
+  const tok = tokens[start];
+  if (tok?.kind === 'backtick-identifier') return nextNonSkippable(tokens, start + 1);
+  let i = nextNonSkippable(tokens, start + 1);
+  while (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === '.') {
+    const next = nextNonSkippable(tokens, i + 1);
+    if (tokens[next]?.kind !== 'identifier') break;
+    i = nextNonSkippable(tokens, next + 1);
+  }
+  return i;
+}
+
+function findNextKeyword(
+  tokens: readonly Token[],
+  start: number,
+  keywords: readonly string[],
+): number | null {
+  for (let i = start; i < tokens.length; i += 1) {
+    const tok = tokens[i] as Token;
+    if (tok.kind !== 'identifier') continue;
+    if (keywords.includes(tok.value.toUpperCase())) return i;
+  }
+  return null;
+}
+
+function nextNonSkippable(tokens: readonly Token[], start: number): number {
+  let i = start;
+  while (i < tokens.length && isSkippable(tokens[i] as Token)) i += 1;
+  return i;
 }
 
 function isSkippable(tok: Token): boolean {

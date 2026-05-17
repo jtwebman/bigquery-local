@@ -84,6 +84,7 @@ interface TableResourceWire {
   readonly expirationTime?: string;
   readonly description?: string;
   readonly numRows?: string;
+  readonly view?: { readonly query: string; readonly useLegacySql: false };
 }
 
 function fieldToWire(field: BqField): FieldWire {
@@ -114,6 +115,10 @@ function metaToResource(meta: TableMeta): TableResourceWire {
     ...(meta.expirationMs !== undefined && { expirationTime: String(meta.expirationMs) }),
     ...(meta.description !== undefined && { description: meta.description }),
     ...(meta.numRows !== undefined && { numRows: String(meta.numRows) }),
+    ...(meta.type === 'VIEW' &&
+      meta.viewQuery !== undefined && {
+        view: { query: meta.viewQuery, useLegacySql: false as const },
+      }),
   };
 }
 
@@ -324,7 +329,7 @@ function diffSchemaForPatch(
 // DuckDB DDL helpers
 // ---------------------------------------------------------------------------
 
-function quoteIdent(name: string): string {
+export function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
