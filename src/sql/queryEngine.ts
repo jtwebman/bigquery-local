@@ -32,6 +32,7 @@ import {
   normalizeBqType,
 } from '../storage/types.ts';
 import { BqError } from '../util/errors.ts';
+import { tokenize } from './tokenize.ts';
 import {
   type SchemaDdlTarget,
   type StatementType,
@@ -327,7 +328,8 @@ export async function executeQuery(
   options: { readonly jobId?: string } = {},
 ): Promise<QueryExecution> {
   const statementType = detectStatementType(query);
-  const translated = translate(query, { project });
+  const expanded = await expandWildcardTables(query, db, project);
+  const translated = translate(expanded, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 
@@ -604,7 +606,8 @@ export async function executeQueryDryRun(
   parameters: readonly QueryParameterParsed[],
 ): Promise<DryRunResult> {
   const statementType = detectStatementType(query);
-  const translated = translate(query, { project });
+  const expanded = await expandWildcardTables(query, db, project);
+  const translated = translate(expanded, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 
@@ -641,4 +644,86 @@ export async function executeQueryDryRun(
   });
 
   return { statementType, schema };
+}
+
+// ---------------------------------------------------------------------------
+// Wildcard tables: `ds.prefix_*` → (SELECT *, '<suffix>' AS _TABLE_SUFFIX FROM `ds.prefix_X` UNION ALL …)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves BQ wildcard table references at the SQL-string level, before
+ * translation. For each backtick of the form `\`[proj.]ds.prefix_*\``, looks
+ * up matching tables in `_bq.tables`, and substitutes the wildcard with a
+ * UNION ALL subquery that surfaces the `_TABLE_SUFFIX` pseudo-column:
+ *
+ *   `ds.events_*`  →  (SELECT *, '20240101' AS _TABLE_SUFFIX FROM `ds.events_20240101`
+ *                       UNION ALL
+ *                      SELECT *, '20240102' AS _TABLE_SUFFIX FROM `ds.events_20240102`)
+ *
+ * The result is still BQ SQL (backticks intact), so `translate()` does the
+ * usual project-qualified rewrite on the substituted parts.
+ */
+async function expandWildcardTables(
+  query: string,
+  db: Db,
+  defaultProject: string,
+): Promise<string> {
+  if (!query.includes('*')) return query;
+  const tokens = tokenize(query);
+  const replacements: Array<{ start: number; end: number; text: string }> = [];
+  for (const tok of tokens) {
+    if (tok.kind !== 'backtick-identifier') continue;
+    const inner = tok.value.slice(1, -1);
+    if (!inner.endsWith('*')) continue;
+    const parts = inner.slice(0, -1).split('.');
+    let proj: string;
+    let ds: string;
+    let prefix: string;
+    if (parts.length === 2) {
+      proj = defaultProject;
+      ds = parts[0] as string;
+      prefix = parts[1] as string;
+    } else if (parts.length === 3) {
+      proj = parts[0] as string;
+      ds = parts[1] as string;
+      prefix = parts[2] as string;
+    } else {
+      throw BqError.invalid(
+        `Wildcard table \`${inner}\` must be dataset.prefix_* or project.dataset.prefix_*.`,
+        'query',
+      );
+    }
+    const rows = await db.query<{ table_id: string }>(
+      `SELECT table_id FROM _bq.tables
+        WHERE project = $1 AND dataset_id = $2
+          AND table_id LIKE $3
+          AND type = 'TABLE'
+        ORDER BY table_id`,
+      [proj, ds, `${prefix}%`],
+    );
+    if (rows.length === 0) {
+      throw BqError.notFound(`No tables match wildcard \`${inner}\` in dataset "${proj}:${ds}".`);
+    }
+    const unionParts = rows.map((r) => {
+      const suffix = r.table_id.slice(prefix.length);
+      return `SELECT *, ${quoteStringLiteral(suffix)} AS _TABLE_SUFFIX FROM \`${ds}.${r.table_id}\``;
+    });
+    replacements.push({
+      start: tok.start,
+      end: tok.end,
+      text: `(${unionParts.join(' UNION ALL ')})`,
+    });
+  }
+  if (replacements.length === 0) return query;
+  // Apply tail-to-head so earlier offsets stay valid as we splice.
+  let out = query;
+  for (let i = replacements.length - 1; i >= 0; i -= 1) {
+    const r = replacements[i] as { start: number; end: number; text: string };
+    out = `${out.slice(0, r.start)}${r.text}${out.slice(r.end)}`;
+  }
+  return out;
+}
+
+function quoteStringLiteral(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
 }
