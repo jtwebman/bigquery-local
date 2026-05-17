@@ -567,7 +567,7 @@ Scope: SQL DDL surface for dataset metadata (parity with REST). Acceptance: `CRE
 
 Scope: rewrite to UNION ALL of regular GROUP BY (or pass through if DuckDB supports). Acceptance: standard ROLLUP example from BQ docs passes.
 
-### BL-057 — QUALIFY ⏳ · Est: 2h · Deps: BL-044
+### BL-057 — QUALIFY ✅ · Est: 2h · Deps: BL-044
 
 Scope: rewrite `… QUALIFY <window-expr>` to outer subquery + WHERE. Acceptance: example QUALIFY queries return expected rows.
 
