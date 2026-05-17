@@ -1,0 +1,29 @@
+datasets:
+  - datasetId: analytics
+    location: US
+    tables:
+      - tableId: events
+        schema:
+          fields:
+            - { name: id, type: STRING, mode: REQUIRED }
+            - { name: type, type: STRING }
+            - { name: score, type: INT64 }
+        rows:
+          - { id: a, type: drops.dropInteraction, score: "1" }
+          - { id: b, type: drops.dropInteraction, score: "2" }
+          - { id: c, type: other, score: "3" }
+      - tableId: users
+        schema:
+          fields:
+            - { name: username, type: STRING, mode: REQUIRED }
+        rows:
+          - { username: alice }
+          - { username: bob }
+  - project: other-proj
+    datasetId: warehouse
+    tables:
+      - tableId: snapshots
+        schema:
+          fields:
+            - { name: at, type: TIMESTAMP }
+        # No rows — empty table is fine.
