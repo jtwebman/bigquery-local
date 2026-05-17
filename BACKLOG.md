@@ -398,10 +398,10 @@ Phases are loosely ordered by likely sequencing, not strict dependency
 ### BL-026 — `--data-from-yaml` initial seed ⏳ · Est: 2h · Deps: BL-010, BL-011
 Scope: parse a YAML seed file at startup, create the declared datasets/tables and `insertAll` declared rows. Acceptance: a published seed YAML round-trips through startup and the data is queryable.
 
-### BL-027 — Datasets list endpoint with pagination ⏳ · Est: 1.5h · Deps: BL-010
+### BL-027 — Datasets list endpoint with pagination ✅ · Est: 1.5h · Deps: BL-010
 Scope: `GET /projects/{p}/datasets` with `pageToken`, `maxResults`. Acceptance: list returns all datasets paginated; `pageToken` round-trips.
 
-### BL-028 — Tables list endpoint with pagination ⏳ · Est: 1.5h · Deps: BL-011
+### BL-028 — Tables list endpoint with pagination ✅ · Est: 1.5h · Deps: BL-011
 Scope: `GET /projects/{p}/datasets/{d}/tables` with pagination. Acceptance: matches Datasets list semantics.
 
 ### BL-029 — Jobs list endpoint with filters ⏳ · Est: 2h · Deps: BL-016

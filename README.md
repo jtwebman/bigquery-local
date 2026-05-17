@@ -41,7 +41,9 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 | `POST /projects/{p}/jobs` (jobs.insert) | ✅ |
 | `GET /projects/{p}/jobs/{j}` | ✅ |
 | `GET /projects/{p}/queries/{j}` (getQueryResults) | ✅ |
-| List datasets / tables / jobs (paginated) | 🔭 |
+| `GET /projects/{p}/datasets` (list, paginated) | ✅ |
+| `GET /projects/{p}/datasets/{d}/tables` (list, paginated) | ✅ |
+| List jobs (paginated) | 🔭 |
 | `jobs.cancel`, `jobs.delete` | 🔭 |
 | `tabledata.list` | 🔭 |
 | `--data-from-yaml` initial seed | 🔭 |
