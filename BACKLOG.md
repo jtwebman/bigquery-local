@@ -583,7 +583,7 @@ Scope: `TABLESAMPLE SYSTEM (n PERCENT)` rewrite. Acceptance: sample size within 
 
 Scope: resolve `\`ds.events\_\*\``at translate time to`UNION ALL`; expose `\_TABLE_SUFFIX` pseudo column. Acceptance: wildcard query returns rows from all matching tables with correct suffix.
 
-### BL-061 — TRUNCATE TABLE ⏳ · Est: 30m · Deps: BL-052
+### BL-061 — TRUNCATE TABLE ✅ · Est: 30m · Deps: BL-052
 
 Scope: drop and recreate the underlying DuckDB table. Acceptance: row count goes to 0; schema preserved.
 

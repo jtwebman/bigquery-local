@@ -127,6 +127,7 @@ export type StatementType =
   | 'UPDATE'
   | 'DELETE'
   | 'MERGE'
+  | 'TRUNCATE_TABLE'
   | 'CREATE_VIEW'
   | 'DROP_VIEW'
   | 'CREATE_SCHEMA'
@@ -149,6 +150,7 @@ export function detectStatementType(sql: string): StatementType {
   if (head === 'UPDATE') return 'UPDATE';
   if (head === 'DELETE') return 'DELETE';
   if (head === 'MERGE') return 'MERGE';
+  if (head === 'TRUNCATE') return 'TRUNCATE_TABLE';
   if (head === 'CREATE') {
     // Look ahead past OR REPLACE, TEMP|TEMPORARY for the object kind.
     const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA']);
