@@ -26,7 +26,7 @@ async function freshDb(): Promise<Db> {
 // Schema bootstrap
 // ---------------------------------------------------------------------------
 
-test('ensureMetaSchema creates the _bq schema and all four tables', async () => {
+test('ensureMetaSchema creates the _bq schema and the meta tables', async () => {
   const db = await freshDb();
   try {
     const rows = await db.query<{ name: string }>(
@@ -35,7 +35,7 @@ test('ensureMetaSchema creates the _bq schema and all four tables', async () => 
     );
     assert.deepEqual(
       rows.map((r) => r.name),
-      ['datasets', 'job_rows', 'jobs', 'tables'],
+      ['datasets', 'job_rows', 'jobs', 'routines', 'tables'],
     );
   } finally {
     await db.close();

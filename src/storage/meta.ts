@@ -85,6 +85,20 @@ const DDL_STATEMENTS: readonly string[] = [
     row JSON NOT NULL,
     PRIMARY KEY (project, job_id, row_index)
   )`,
+  `CREATE TABLE IF NOT EXISTS _bq.routines (
+    project VARCHAR NOT NULL,
+    dataset_id VARCHAR NOT NULL,
+    routine_id VARCHAR NOT NULL,
+    routine_type VARCHAR NOT NULL,
+    language VARCHAR NOT NULL,
+    arguments JSON,
+    return_type JSON,
+    body VARCHAR NOT NULL,
+    etag VARCHAR NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (project, dataset_id, routine_id)
+  )`,
 ];
 
 export async function ensureMetaSchema(db: Db): Promise<void> {
@@ -707,5 +721,121 @@ export async function deleteJob(db: Db, project: string, jobId: string): Promise
   if (existing === null) return false;
   await db.exec('DELETE FROM _bq.job_rows WHERE project = $1 AND job_id = $2', [project, jobId]);
   await db.exec('DELETE FROM _bq.jobs WHERE project = $1 AND job_id = $2', [project, jobId]);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Routines (UDFs, TVFs, procedures)
+// ---------------------------------------------------------------------------
+
+export type RoutineType = 'SCALAR_FUNCTION' | 'TABLE_VALUED_FUNCTION' | 'PROCEDURE';
+export type RoutineLanguage = 'SQL' | 'JAVASCRIPT';
+
+export interface RoutineMetaInput {
+  readonly project: string;
+  readonly datasetId: string;
+  readonly routineId: string;
+  readonly routineType: RoutineType;
+  readonly language: RoutineLanguage;
+  /** [{ name, type }] mirroring BQ's `arguments` array. */
+  readonly arguments?: unknown;
+  /** BQ `returnType` object — { type, ... } — or null for TVFs / procedures. */
+  readonly returnType?: unknown;
+  /** Raw body text as written by the user. */
+  readonly body: string;
+}
+
+export interface RoutineMeta extends RoutineMetaInput {
+  readonly etag: string;
+  readonly createdMs: number;
+  readonly updatedMs: number;
+}
+
+const SELECT_ROUTINE = `SELECT
+  project, dataset_id, routine_id, routine_type, language, arguments, return_type, body, etag,
+  epoch_ms(created_at) AS created_ms,
+  epoch_ms(updated_at) AS updated_ms
+FROM _bq.routines
+WHERE project = $1 AND dataset_id = $2 AND routine_id = $3`;
+
+export async function getRoutine(
+  db: Db,
+  project: string,
+  datasetId: string,
+  routineId: string,
+): Promise<RoutineMeta | null> {
+  const rows = await db.query<Record<string, unknown>>(SELECT_ROUTINE, [
+    project,
+    datasetId,
+    routineId,
+  ]);
+  const row = rows[0];
+  if (row === undefined) return null;
+  return {
+    project: row['project'] as string,
+    datasetId: row['dataset_id'] as string,
+    routineId: row['routine_id'] as string,
+    routineType: row['routine_type'] as RoutineType,
+    language: row['language'] as RoutineLanguage,
+    body: row['body'] as string,
+    etag: row['etag'] as string,
+    createdMs: toNumber(row['created_ms']),
+    updatedMs: toNumber(row['updated_ms']),
+    ...optionalJson<'arguments', unknown>('arguments', row['arguments']),
+    ...optionalJson<'returnType', unknown>('returnType', row['return_type']),
+  };
+}
+
+export async function upsertRoutine(db: Db, input: RoutineMetaInput): Promise<RoutineMeta> {
+  const existing = await getRoutine(db, input.project, input.datasetId, input.routineId);
+  const newEtag = etag(input);
+  const now = Date.now();
+  const createdMs = existing?.createdMs ?? now;
+  await db.exec(
+    `INSERT INTO _bq.routines (
+      project, dataset_id, routine_id, routine_type, language,
+      arguments, return_type, body, etag, created_at, updated_at
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9,
+      epoch_ms($10::BIGINT), epoch_ms($11::BIGINT)
+    )
+    ON CONFLICT (project, dataset_id, routine_id) DO UPDATE SET
+      routine_type = EXCLUDED.routine_type,
+      language = EXCLUDED.language,
+      arguments = EXCLUDED.arguments,
+      return_type = EXCLUDED.return_type,
+      body = EXCLUDED.body,
+      etag = EXCLUDED.etag,
+      updated_at = EXCLUDED.updated_at`,
+    [
+      input.project,
+      input.datasetId,
+      input.routineId,
+      input.routineType,
+      input.language,
+      jsonOrNull(input.arguments),
+      jsonOrNull(input.returnType),
+      input.body,
+      newEtag,
+      BigInt(createdMs),
+      BigInt(now),
+    ],
+  );
+  return { ...input, etag: newEtag, createdMs, updatedMs: now };
+}
+
+export async function deleteRoutine(
+  db: Db,
+  project: string,
+  datasetId: string,
+  routineId: string,
+): Promise<boolean> {
+  const existing = await getRoutine(db, project, datasetId, routineId);
+  if (existing === null) return false;
+  await db.exec(
+    `DELETE FROM _bq.routines
+     WHERE project = $1 AND dataset_id = $2 AND routine_id = $3`,
+    [project, datasetId, routineId],
+  );
   return true;
 }
