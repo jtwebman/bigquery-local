@@ -254,10 +254,74 @@ interface TableDataListWire {
 }
 
 // ---------------------------------------------------------------------------
+// insertAll — insertId dedup (best-effort, in-memory, per server instance)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-table LRU of recently-seen `insertId`s. Matches BigQuery's "1-minute
+ * dedup window" behavior — within the window, repeat insertIds are dropped
+ * silently from the insert path. After the window, they're allowed again.
+ *
+ * Notes that match real BQ semantics on purpose:
+ *   - Dedup is per-table. Same insertId in another table is a fresh insert.
+ *   - Dedup applies even when the original insert *failed* — the mark is
+ *     recorded at submit-time, not commit-time. Retries with the same
+ *     insertId are no-ops regardless of original outcome.
+ *   - Dedup applies *within* a batch too: if a single request includes the
+ *     same insertId twice, only the first is inserted.
+ *
+ * In-memory only. If the server restarts, dedup state is lost — same as a
+ * real BQ outage spanning the window.
+ */
+export class InsertIdDedup {
+  private readonly windowMs: number;
+  private readonly maxPerTable: number;
+  /** tableKey → (insertId → expiresAt). Map iterates insertion-order so the
+   *  oldest entry is always first — that's our cheap eviction target. */
+  private readonly tables = new Map<string, Map<string, number>>();
+
+  constructor(options: { readonly windowMs?: number; readonly maxPerTable?: number } = {}) {
+    this.windowMs = options.windowMs ?? 60_000;
+    this.maxPerTable = options.maxPerTable ?? 10_000;
+  }
+
+  /** Returns true if `insertId` was already recorded for `tableKey` within
+   * the window. Otherwise records it and returns false. */
+  seenOrRecord(tableKey: string, insertId: string, now: number): boolean {
+    let bucket = this.tables.get(tableKey);
+    if (bucket === undefined) {
+      bucket = new Map();
+      this.tables.set(tableKey, bucket);
+    }
+    // Cheap amortized sweep — drop a handful of expired entries each call,
+    // keep the per-call cost bounded regardless of bucket size.
+    let swept = 0;
+    for (const [k, expiresAt] of bucket) {
+      if (expiresAt > now) break;
+      bucket.delete(k);
+      if (++swept > 64) break;
+    }
+    const existing = bucket.get(insertId);
+    if (existing !== undefined && existing > now) return true;
+    bucket.set(insertId, now + this.windowMs);
+    if (bucket.size > this.maxPerTable) {
+      // Evict the oldest entry (Map iteration is insertion-order).
+      const firstKey = bucket.keys().next().value;
+      if (firstKey !== undefined) bucket.delete(firstKey);
+    }
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
-export function createTabledataRoutes(db: Db): readonly RouteDefinition[] {
+export function createTabledataRoutes(
+  db: Db,
+  options: { readonly dedup?: InsertIdDedup } = {},
+): readonly RouteDefinition[] {
+  const dedup = options.dedup ?? new InsertIdDedup();
   return [
     {
       method: 'GET',
@@ -337,9 +401,20 @@ export function createTabledataRoutes(db: Db): readonly RouteDefinition[] {
 
         // Encode every row first; collect per-row failures from the
         // encode step before any DDL runs.
-        const outcomes: RowOutcome[] = parsed.rows.map((row, i) =>
-          encodeRow(row, fields, parsed.ignoreUnknownValues, i),
-        );
+        //
+        // insertId dedup is also applied here: a row whose insertId has been
+        // seen within the window becomes a silent skip — `{ index }` with no
+        // `values` and no `error`. The downstream insert loop already treats
+        // that shape as "do nothing", so no further plumbing is needed.
+        // Same insertId twice in one batch also dedups (first wins).
+        const tableKey = `${project}:${datasetId}:${tableId}`;
+        const now = Date.now();
+        const outcomes: RowOutcome[] = parsed.rows.map((row, i) => {
+          if (row.insertId !== undefined && dedup.seenOrRecord(tableKey, row.insertId, now)) {
+            return { index: i };
+          }
+          return encodeRow(row, fields, parsed.ignoreUnknownValues, i);
+        });
 
         const sql = buildInsertSql(meta, fields);
 

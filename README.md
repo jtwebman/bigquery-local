@@ -46,6 +46,7 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 | `GET /projects/{p}/jobs` (list w/ stateFilter, time bounds, projection) | ✅ |
 | `POST .../jobs/{j}/cancel`, `DELETE .../jobs/{j}/delete` | ✅ |
 | `GET .../tables/{t}/data` (tabledata.list, paginated, selectedFields) | ✅ |
+| `insertAll` insertId dedup (60s window, per-table) | ✅ |
 | `jobs.cancel`, `jobs.delete` | 🔭 |
 | `tabledata.list` | 🔭 |
 | `--data-from-yaml` initial seed | 🔭 |
