@@ -457,7 +457,7 @@ Scope: ROW_NUMBER, RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG, LEAD, 
 ### BL-045 — Approximate aggregation ✅ · Est: 4h · Deps: BL-014
 Scope: APPROX_COUNT_DISTINCT, APPROX_QUANTILES, APPROX_TOP_COUNT, HLL_COUNT.INIT / MERGE / EXTRACT, KLL_QUANTILES.INIT / MERGE / EXTRACT_POINT. Acceptance: numeric tolerance tests (±5%) vs exact counterparts.
 
-### BL-046 — Statistical aggregate ⏳ · Est: 1.5h · Deps: BL-014
+### BL-046 — Statistical aggregate ✅ · Est: 1.5h · Deps: BL-014
 Scope: CORR, COVAR_POP, COVAR_SAMP, STDDEV_POP, STDDEV_SAMP, VAR_POP, VAR_SAMP. Acceptance: 1 test per function, ±1e-9 tolerance.
 
 ### BL-047 — Hash & fingerprint functions ⏳ · Est: 1h · Deps: BL-014
