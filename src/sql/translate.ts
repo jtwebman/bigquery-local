@@ -78,6 +78,10 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   // those names; the semantics map directly.
   ['GENERATE_ARRAY', 'generate_series'],
   ['FLATTEN', 'flatten'],
+  // BL-043 — aggregates:
+  ['STRING_AGG', 'string_agg'],
+  ['LOGICAL_AND', 'bool_and'],
+  ['LOGICAL_OR', 'bool_or'],
   // BL-041 — JSON:
   ['JSON_QUERY', 'json_extract'],
   ['JSON_QUERY_ARRAY', 'json_extract'],
@@ -410,6 +414,33 @@ function handleIdentifier(
         parenIdx,
         endIdx,
         (x) => `date_diff('day', DATE '1970-01-01', ${x})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'COUNTIF':
+      // BQ: COUNTIF(cond)  →  DuckDB: COUNT(*) FILTER (WHERE cond)
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (cond) => `COUNT(*) FILTER (WHERE ${cond})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'ARRAY_CONCAT_AGG':
+      // BQ: ARRAY_CONCAT_AGG(arr) flattens NULLs out and concatenates.
+      // DuckDB equivalent: flatten(array_agg(x) FILTER (WHERE x IS NOT NULL)).
+      return rewriteOneArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (x) => `flatten(array_agg(${x}) FILTER (WHERE ${x} IS NOT NULL))`,
         out,
         paramOrder,
         project,

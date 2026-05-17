@@ -448,7 +448,7 @@ Scope: JSON_QUERY, JSON_QUERY_ARRAY, JSON_VALUE_ARRAY, JSON_TYPE, JSON_KEYS, TO_
 ### BL-042 — Array function expansion ✅ · Est: 2h · Deps: BL-014
 Scope: ARRAY_AGG, GENERATE_ARRAY, ARRAY_TO_STRING, ARRAY_CONCAT, ARRAY_LENGTH, ARRAY_REVERSE, OFFSET / ORDINAL / SAFE_OFFSET subscripts, FLATTEN. Acceptance: 1 test per function.
 
-### BL-043 — Aggregate function expansion ⏳ · Est: 2h · Deps: BL-014
+### BL-043 — Aggregate function expansion ✅ · Est: 2h · Deps: BL-014
 Scope: STRING_AGG, ANY_VALUE, LOGICAL_AND / LOGICAL_OR, BIT_AND / BIT_OR / BIT_XOR, COUNTIF, MIN/MAX over arrays, ARRAY_CONCAT_AGG. Acceptance: 1 test per function.
 
 ### BL-044 — Window/analytic functions ⏳ · Est: 3h · Deps: BL-014
