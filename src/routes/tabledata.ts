@@ -34,7 +34,13 @@
 import type { Db } from '../storage/db.ts';
 import { getTable } from '../storage/meta.ts';
 import type { TableMeta } from '../storage/meta.ts';
-import { type BqField, bqInsertExpression, bqValueToDuck } from '../storage/types.ts';
+import {
+  type BqField,
+  bqInsertExpression,
+  bqSelectExpression,
+  bqValueToDuck,
+  duckValueToBq,
+} from '../storage/types.ts';
 import type { RouteDefinition, RouteResponse } from '../types.ts';
 import { BqError } from '../util/errors.ts';
 
@@ -186,11 +192,135 @@ function toInsertErrorWire(outcome: RowOutcome): InsertErrorWire | null {
 }
 
 // ---------------------------------------------------------------------------
+// tabledata.list — GET .../tables/{t}/data
+// ---------------------------------------------------------------------------
+
+const LIST_DEFAULT_PAGE_SIZE = 100;
+const LIST_MAX_PAGE_SIZE = 10_000;
+
+function parseMaxResults(value: string | undefined): number {
+  if (value === undefined) return LIST_DEFAULT_PAGE_SIZE;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw BqError.invalid('maxResults must be a positive integer.', 'maxResults');
+  }
+  return Math.min(parsed, LIST_MAX_PAGE_SIZE);
+}
+
+function parsePageToken(value: string | undefined): number {
+  if (value === undefined || value === '') return 0;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw BqError.invalid('pageToken is malformed.', 'pageToken');
+  }
+  return parsed;
+}
+
+/** Resolve `selectedFields` (comma-separated) against the table schema.
+ * Returns the projected field list, preserving the *table's* column order
+ * so the f/v wire shape stays predictable for clients. Unknown names → 400. */
+function selectedFieldsFor(
+  schema: readonly BqField[],
+  raw: string | undefined,
+): readonly BqField[] {
+  if (raw === undefined || raw === '') return schema;
+  const requested = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  );
+  if (requested.size === 0) return schema;
+  // Validate names up front so partial-match results don't sneak through.
+  const known = new Set(schema.map((f) => f.name));
+  for (const name of requested) {
+    if (!known.has(name)) {
+      throw BqError.invalid(`selectedFields names unknown column "${name}".`, 'selectedFields');
+    }
+  }
+  return schema.filter((f) => requested.has(f.name));
+}
+
+interface RowWire {
+  readonly f: ReadonlyArray<{ readonly v: unknown }>;
+}
+
+interface TableDataListWire {
+  readonly kind: 'bigquery#tableDataList';
+  readonly etag: string;
+  readonly totalRows: string;
+  readonly rows: readonly RowWire[];
+  readonly pageToken?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
 export function createTabledataRoutes(db: Db): readonly RouteDefinition[] {
   return [
+    {
+      method: 'GET',
+      path: '/projects/{p}/datasets/{d}/tables/{t}/data',
+      handler: async (req) => {
+        const project = req.params['p'] as string;
+        const datasetId = req.params['d'] as string;
+        const tableId = req.params['t'] as string;
+        const meta = await getTable(db, project, datasetId, tableId);
+        if (meta === null) {
+          throw BqError.notFound(`Table "${project}:${datasetId}.${tableId}" not found.`);
+        }
+        const schema = tableSchemaFields(meta);
+        const fields = selectedFieldsFor(schema, req.query['selectedFields']);
+        const maxResults = parseMaxResults(req.query['maxResults']);
+        const offset = parsePageToken(req.query['pageToken']);
+
+        // Count first so totalRows is the table's true row count, not the page.
+        // Small price for an emulator; the real BQ uses table metadata.
+        const qualified = `${quoteIdent(datasetId)}.${quoteIdent(tableId)}`;
+        const countRows = await db.query<{ n: bigint }>(
+          `SELECT COUNT(*)::BIGINT AS n FROM ${qualified}`,
+        );
+        const totalRows = Number(countRows[0]?.n ?? 0n);
+
+        // Empty schema (zero-column tables don't really exist in BQ, but be safe).
+        let pageRows: ReadonlyArray<Record<string, unknown>>;
+        if (fields.length === 0) {
+          pageRows = [];
+        } else {
+          const projection = fields
+            .map((f) => `${bqSelectExpression(f.name, f)} AS ${quoteIdent(f.name)}`)
+            .join(', ');
+          // Stable order by ROWID equivalent: DuckDB doesn't expose one for
+          // user tables, but absent ORDER BY the read order matches insert
+          // order in practice. For multi-page consistency we use the system
+          // rowid alias via the underlying rowid column (DuckDB provides it).
+          pageRows = await db.query<Record<string, unknown>>(
+            `SELECT ${projection} FROM ${qualified}
+             ORDER BY rowid
+             LIMIT $1::BIGINT OFFSET $2::BIGINT`,
+            [BigInt(maxResults), BigInt(offset)],
+          );
+        }
+
+        const wireRows: RowWire[] = pageRows.map((row) => ({
+          f: fields.map((field) => ({ v: duckValueToBq(row[field.name], field) })),
+        }));
+
+        const nextOffset = offset + wireRows.length;
+        const hasMore = nextOffset < totalRows;
+
+        const body: TableDataListWire = {
+          kind: 'bigquery#tableDataList',
+          etag: `${project}:${datasetId}:${tableId}:${offset}:${maxResults}:${wireRows.length}`,
+          totalRows: String(totalRows),
+          rows: wireRows,
+          ...(hasMore && { pageToken: String(nextOffset) }),
+        };
+        return { status: 200, body } satisfies RouteResponse;
+      },
+    },
+
     {
       method: 'POST',
       path: '/projects/{p}/datasets/{d}/tables/{t}/insertAll',
