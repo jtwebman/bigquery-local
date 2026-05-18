@@ -136,6 +136,8 @@ export type StatementType =
   | 'DROP_FUNCTION'
   | 'CREATE_TABLE_FUNCTION'
   | 'DROP_TABLE_FUNCTION'
+  | 'CREATE_PROCEDURE'
+  | 'DROP_PROCEDURE'
   | 'SCRIPT';
 
 /**
@@ -161,17 +163,30 @@ export function detectStatementType(sql: string): StatementType {
     head === 'START' ||
     head === 'DECLARE' ||
     head === 'SET' ||
-    head === 'IF'
+    head === 'IF' ||
+    head === 'CALL' ||
+    head === 'RETURN' ||
+    head === 'LOOP' ||
+    head === 'WHILE' ||
+    head === 'REPEAT' ||
+    head === 'FOR'
   ) {
     return 'SCRIPT';
   }
   if (head === 'CREATE') {
     // Look ahead past OR REPLACE, TEMP|TEMPORARY for the object kind.
-    const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA', 'FUNCTION']);
+    const kindIdx = findNextKeyword(tokens, i + 1, [
+      'VIEW',
+      'TABLE',
+      'SCHEMA',
+      'FUNCTION',
+      'PROCEDURE',
+    ]);
     const kw = kindIdx !== null ? tokens[kindIdx]?.value.toUpperCase() : undefined;
     if (kw === 'VIEW') return 'CREATE_VIEW';
     if (kw === 'SCHEMA') return 'CREATE_SCHEMA';
     if (kw === 'FUNCTION') return 'CREATE_FUNCTION';
+    if (kw === 'PROCEDURE') return 'CREATE_PROCEDURE';
     if (kw === 'TABLE' && kindIdx !== null) {
       // `TABLE FUNCTION` (TVF) — distinct from plain `CREATE TABLE`.
       const after = nextNonSkippable(tokens, kindIdx + 1);
@@ -184,11 +199,18 @@ export function detectStatementType(sql: string): StatementType {
     }
   }
   if (head === 'DROP') {
-    const kindIdx = findNextKeyword(tokens, i + 1, ['VIEW', 'TABLE', 'SCHEMA', 'FUNCTION']);
+    const kindIdx = findNextKeyword(tokens, i + 1, [
+      'VIEW',
+      'TABLE',
+      'SCHEMA',
+      'FUNCTION',
+      'PROCEDURE',
+    ]);
     const kw = kindIdx !== null ? tokens[kindIdx]?.value.toUpperCase() : undefined;
     if (kw === 'VIEW') return 'DROP_VIEW';
     if (kw === 'SCHEMA') return 'DROP_SCHEMA';
     if (kw === 'FUNCTION') return 'DROP_FUNCTION';
+    if (kw === 'PROCEDURE') return 'DROP_PROCEDURE';
     if (kw === 'TABLE' && kindIdx !== null) {
       const after = nextNonSkippable(tokens, kindIdx + 1);
       if (
@@ -640,6 +662,224 @@ export function parseFunctionDdl(sql: string, defaultProject: string): FunctionD
     returnType,
     body,
   };
+}
+
+/**
+ * Parses CREATE / DROP PROCEDURE statements. Procedures have typed args
+ * (no DEFAULT in v0; arg-mode keywords IN/OUT/INOUT recognized and the
+ * mode captured), no RETURNS, and a `BEGIN … END` body that the script
+ * interpreter executes when CALLed.
+ */
+export interface ProcedureArg {
+  readonly name: string;
+  /** Raw BQ type text. */
+  readonly typeText: string;
+  /** BQ-style parameter mode. Defaults to 'IN' when not specified. */
+  readonly mode: 'IN' | 'OUT' | 'INOUT';
+}
+
+export interface ProcedureDdlTarget {
+  readonly kind: 'CREATE_PROCEDURE' | 'DROP_PROCEDURE';
+  readonly project: string;
+  readonly datasetId: string;
+  readonly procedureId: string;
+  readonly orReplace: boolean;
+  readonly ifNotExists: boolean;
+  readonly ifExists: boolean;
+  readonly args: readonly ProcedureArg[];
+  /** Full `BEGIN … END` body text. Undefined for DROP. */
+  readonly body: string | undefined;
+}
+
+export function parseProcedureDdl(sql: string, defaultProject: string): ProcedureDdlTarget {
+  const tokens = tokenize(sql);
+  let i = 0;
+  while (i < tokens.length && isSkippable(tokens[i] as Token)) i += 1;
+  const first = tokens[i];
+  if (first === undefined || first.kind !== 'identifier') {
+    throw BqError.invalid('Expected a CREATE PROCEDURE or DROP PROCEDURE statement.', 'query');
+  }
+  const head = first.value.toUpperCase();
+  if (head !== 'CREATE' && head !== 'DROP') {
+    throw BqError.invalid('Expected a CREATE PROCEDURE or DROP PROCEDURE statement.', 'query');
+  }
+  let orReplace = false;
+  let cursor = nextNonSkippable(tokens, i + 1);
+  if (head === 'CREATE') {
+    if (
+      isIdentKeyword(tokens[cursor], 'OR') &&
+      isIdentKeyword(tokens[nextNonSkippable(tokens, cursor + 1)], 'REPLACE')
+    ) {
+      orReplace = true;
+      cursor = nextNonSkippable(tokens, nextNonSkippable(tokens, cursor + 1) + 1);
+    }
+  }
+  if (!isIdentKeyword(tokens[cursor], 'PROCEDURE')) {
+    throw BqError.invalid('Expected PROCEDURE keyword after CREATE / DROP.', 'query');
+  }
+  cursor = nextNonSkippable(tokens, cursor + 1);
+
+  let ifNotExists = false;
+  let ifExists = false;
+  if (isIdentKeyword(tokens[cursor], 'IF')) {
+    cursor = nextNonSkippable(tokens, cursor + 1);
+    if (head === 'CREATE' && isIdentKeyword(tokens[cursor], 'NOT')) {
+      cursor = nextNonSkippable(tokens, cursor + 1);
+      if (isIdentKeyword(tokens[cursor], 'EXISTS')) {
+        ifNotExists = true;
+        cursor = nextNonSkippable(tokens, cursor + 1);
+      }
+    } else if (head === 'DROP' && isIdentKeyword(tokens[cursor], 'EXISTS')) {
+      ifExists = true;
+      cursor = nextNonSkippable(tokens, cursor + 1);
+    }
+  }
+
+  // A procedure name must be dataset-qualified. parseFunctionName with
+  // isTemp=false enforces that.
+  const named = parseFunctionName(tokens, cursor, defaultProject, false);
+  cursor = advancePastTarget(tokens, cursor);
+  if (named.datasetId === undefined) {
+    throw BqError.invalid('Procedure name must be dataset-qualified.', 'query');
+  }
+  const datasetId = named.datasetId;
+
+  if (head === 'DROP') {
+    return {
+      kind: 'DROP_PROCEDURE',
+      project: named.project,
+      datasetId,
+      procedureId: named.functionId,
+      orReplace,
+      ifNotExists: false,
+      ifExists,
+      args: [],
+      body: undefined,
+    };
+  }
+
+  // CREATE: parse `( arg_name arg_type, ... )` argument list — with optional
+  // IN / OUT / INOUT mode prefix.
+  if (tokens[cursor]?.kind !== 'punctuation' || tokens[cursor]?.value !== '(') {
+    throw BqError.invalid('Expected `(` after procedure name.', 'query');
+  }
+  const argsClose = findMatchingParenClose(tokens, cursor);
+  const args = parseProcedureArgs(tokens, cursor + 1, argsClose);
+  cursor = nextNonSkippable(tokens, argsClose + 1);
+
+  // OPTIONS (…) is permitted by BQ but ignored in v0.
+  if (isIdentKeyword(tokens[cursor], 'OPTIONS')) {
+    const optsOpen = nextNonSkippable(tokens, cursor + 1);
+    if (tokens[optsOpen]?.kind === 'punctuation' && tokens[optsOpen]?.value === '(') {
+      const optsClose = findMatchingParenClose(tokens, optsOpen);
+      cursor = nextNonSkippable(tokens, optsClose + 1);
+    }
+  }
+
+  // Body — BEGIN … END (including the keywords, so the script interpreter
+  // sees a proper block).
+  if (!isIdentKeyword(tokens[cursor], 'BEGIN')) {
+    throw BqError.invalid('CREATE PROCEDURE body must start with BEGIN.', 'query');
+  }
+  const bodyStart = cursor;
+  const bodyEnd = findProcedureBodyEnd(tokens, cursor);
+  const body = joinTokenRange(tokens, bodyStart, bodyEnd, sql);
+
+  return {
+    kind: 'CREATE_PROCEDURE',
+    project: named.project,
+    datasetId,
+    procedureId: named.functionId,
+    orReplace,
+    ifNotExists,
+    ifExists: false,
+    args,
+    body,
+  };
+}
+
+function parseProcedureArgs(tokens: readonly Token[], start: number, end: number): ProcedureArg[] {
+  const args: ProcedureArg[] = [];
+  let i = start;
+  while (i < end) {
+    while (i < end && isSkippable(tokens[i] as Token)) i += 1;
+    if (i >= end) break;
+    // Optional mode prefix: IN / OUT / INOUT.
+    let mode: 'IN' | 'OUT' | 'INOUT' = 'IN';
+    let nameIdx = i;
+    const peek = tokens[i] as Token;
+    if (peek.kind === 'identifier') {
+      const up = peek.value.toUpperCase();
+      if (up === 'IN' || up === 'OUT' || up === 'INOUT') {
+        const afterMode = nextNonSkippable(tokens, i + 1);
+        const next = tokens[afterMode];
+        // Only treat as a mode if the next token is an identifier (the arg
+        // name). Otherwise the user might have named their var `in`.
+        if (next?.kind === 'identifier') {
+          mode = up as 'IN' | 'OUT' | 'INOUT';
+          nameIdx = afterMode;
+        }
+      }
+    }
+    const nameTok = tokens[nameIdx];
+    if (nameTok?.kind !== 'identifier') {
+      throw BqError.invalid('Expected argument name in procedure definition.', 'query');
+    }
+    i = nextNonSkippable(tokens, nameIdx + 1);
+    const typeStart = i;
+    let depth = 0;
+    while (i < end) {
+      const tok = tokens[i] as Token;
+      if (tok.kind === 'punctuation') {
+        if (tok.value === '(' || tok.value === '<') depth += 1;
+        else if (tok.value === ')' || tok.value === '>') depth -= 1;
+        else if (tok.value === ',' && depth === 0) break;
+      } else if (tok.kind === 'operator') {
+        if (tok.value === '<') depth += 1;
+        else if (tok.value === '>') depth -= 1;
+      }
+      i += 1;
+    }
+    const typeText = sliceTokens(tokens, typeStart, i).trim();
+    args.push({ name: nameTok.value, typeText, mode });
+    if (i < end && tokens[i]?.kind === 'punctuation' && tokens[i]?.value === ',') i += 1;
+  }
+  return args;
+}
+
+/** Find the index just past the matching END of a procedure body's
+ *  `BEGIN … END` block. */
+function findProcedureBodyEnd(tokens: readonly Token[], startIdx: number): number {
+  let i = startIdx + 1;
+  let depth = 1; // already inside the leading BEGIN
+  while (i < tokens.length) {
+    const t = tokens[i] as Token;
+    if (t.kind === 'identifier') {
+      const up = t.value.toUpperCase();
+      if (
+        up === 'BEGIN' ||
+        up === 'IF' ||
+        up === 'LOOP' ||
+        up === 'WHILE' ||
+        up === 'REPEAT' ||
+        up === 'FOR'
+      ) {
+        depth += 1;
+      } else if (up === 'END') {
+        depth -= 1;
+        if (depth === 0) return i + 1;
+        // Step past matching keyword for END IF / LOOP / WHILE / REPEAT / FOR.
+        const after = nextNonSkippable(tokens, i + 1);
+        const next = tokens[after];
+        const closesCompound =
+          next?.kind === 'identifier' &&
+          ['IF', 'LOOP', 'WHILE', 'REPEAT', 'FOR'].includes(next.value.toUpperCase());
+        if (closesCompound) i = after;
+      }
+    }
+    i += 1;
+  }
+  return tokens.length;
 }
 
 function isIdentKeyword(tok: Token | undefined, kw: string): boolean {

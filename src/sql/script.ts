@@ -19,6 +19,7 @@
  */
 
 import type { Db } from '../storage/db.ts';
+import { getRoutine } from '../storage/meta.ts';
 import { type BqField, type BqType, duckTypeToBq, normalizeBqType } from '../storage/types.ts';
 import { BqError } from '../util/errors.ts';
 import { type Token, tokenize } from './tokenize.ts';
@@ -96,6 +97,10 @@ class Scope {
 
 class BreakSignal {}
 class ContinueSignal {}
+/** Thrown by `RETURN`; caught by the nearest CALL frame. Procedure bodies
+ *  use it to exit early. At the top of the script (no enclosing CALL),
+ *  RETURN becomes a clean script termination. */
+class ReturnSignal {}
 
 // ---------------------------------------------------------------------------
 // AST
@@ -114,6 +119,8 @@ type Stmt =
   | { kind: 'FOR'; name: string; selectSql: string; body: Stmt[] }
   | { kind: 'BREAK' }
   | { kind: 'CONTINUE' }
+  | { kind: 'RETURN' }
+  | { kind: 'CALL'; project: string; datasetId: string; procedureId: string; argExprs: string[] }
   | { kind: 'SQL'; sql: string };
 
 interface IfBranch {
@@ -151,8 +158,80 @@ export async function executeBqScript(
     }
   };
 
-  await runList(program);
+  try {
+    await runList(program);
+  } catch (signal) {
+    // RETURN at the top of a script (i.e. with no enclosing CALL) is a
+    // clean early-exit, not an error. BREAK / CONTINUE outside any loop
+    // are user errors though — propagate those.
+    if (!(signal instanceof ReturnSignal)) throw signal;
+  }
   return lastSelectResult;
+}
+
+/** Invoke a stored procedure: lookup the routine, validate arg count, create
+ *  a fresh scope with the args declared as locals, run the body, catch
+ *  RETURN. Procedures don't return rows; their effects are persisted writes. */
+async function runCall(
+  db: Db,
+  project: string,
+  callerScope: Scope,
+  stmt: Extract<Stmt, { kind: 'CALL' }>,
+): Promise<undefined> {
+  // Parser leaves `project` empty when the user only wrote `dataset.proc`;
+  // resolve against the request's default project here.
+  const proj = stmt.project === '' ? project : stmt.project;
+  const routine = await getRoutine(db, proj, stmt.datasetId, stmt.procedureId);
+  if (routine === null) {
+    throw BqError.notFound(`Procedure "${proj}:${stmt.datasetId}.${stmt.procedureId}" not found.`);
+  }
+  if (routine.routineType !== 'PROCEDURE') {
+    throw BqError.invalid(
+      `Routine "${stmt.project}:${stmt.datasetId}.${stmt.procedureId}" is not a procedure.`,
+      'query',
+    );
+  }
+  const args =
+    (routine.arguments as Array<{ name: string; dataType?: { typeKind?: string } }>) ?? [];
+  if (args.length !== stmt.argExprs.length) {
+    throw BqError.invalid(
+      `Procedure "${stmt.procedureId}" expected ${args.length} arg(s), got ${stmt.argExprs.length}.`,
+      'query',
+    );
+  }
+  // Evaluate caller-side arg expressions in the CALLER's scope, then build
+  // a fresh procedure-local scope with the resulting values bound under
+  // each formal parameter name.
+  const evaluated: Array<{ name: string; type: BqType; value: unknown }> = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const formal = args[i] as { name: string; dataType?: { typeKind?: string } };
+    const typeText = formal.dataType?.typeKind ?? 'STRING';
+    const bqType = normalizeBqType(typeText.split(/[<\s(]/)[0] ?? 'STRING');
+    const duckType = bqTypeShortDuck(bqType);
+    const argExpr = stmt.argExprs[i] as string;
+    const v = await evalScalarExpr(db, project, callerScope, argExpr, duckType);
+    evaluated.push({ name: formal.name, type: bqType, value: v });
+  }
+  const procScope = new Scope();
+  for (const a of evaluated) procScope.declare(a.name, a.type, a.value);
+
+  // Parse and execute the procedure body in the new scope. The body text
+  // captured at CREATE PROCEDURE time is a `BEGIN … END` block.
+  const bodyTokens = tokenize(routine.body);
+  const program = parseStatements(routine.body, bodyTokens, 0, bodyTokens.length);
+
+  const runList = async (stmts: readonly Stmt[]): Promise<void> => {
+    for (const s of stmts) {
+      await runStmt(db, project, procScope, s, runList);
+    }
+  };
+  try {
+    await runList(program);
+  } catch (signal) {
+    if (!(signal instanceof ReturnSignal)) throw signal;
+    // RETURN exits the procedure cleanly.
+  }
+  return undefined;
 }
 
 async function runLoop(
@@ -336,6 +415,11 @@ async function runStmt(
       throw new BreakSignal();
     case 'CONTINUE':
       throw new ContinueSignal();
+    case 'RETURN':
+      throw new ReturnSignal();
+    case 'CALL': {
+      return runCall(db, project, scope, stmt);
+    }
     case 'SQL': {
       // Distinguish SELECT from everything else: SELECTs surface results.
       const upper = leadingKeyword(stmt.sql);
@@ -678,6 +762,10 @@ function parseSingleStmt(
     if (kw === 'CONTINUE' || kw === 'ITERATE') {
       return { stmt: { kind: 'CONTINUE' }, next: startIdx + 1 };
     }
+    if (kw === 'RETURN') {
+      return { stmt: { kind: 'RETURN' }, next: startIdx + 1 };
+    }
+    if (kw === 'CALL') return parseCall(sql, tokens, startIdx, endIdx);
     if (kw === 'BEGIN') {
       // `BEGIN TRANSACTION` and friends are passed through to DuckDB as
       // plain SQL — only the bare `BEGIN <stmts> END` form is a block.
@@ -987,6 +1075,104 @@ function parseFor(
     throw BqError.invalid('FOR must terminate with END FOR.', 'query');
   }
   return { stmt: { kind: 'FOR', name, selectSql, body }, next: i + 1 };
+}
+
+function parseCall(
+  sql: string,
+  tokens: readonly Token[],
+  startIdx: number,
+  endIdx: number,
+): ParseOne {
+  // CALL <name>(arg_expr1, arg_expr2, ...)
+  // Name resolution mirrors functions: dataset-qualified, backtick or
+  // dotted-bare. We default to the request's project when the user only
+  // wrote `dataset.proc`.
+  let i = skipTrivia(tokens, startIdx + 1, endIdx);
+  const nameTok = tokens[i];
+  if (nameTok === undefined) {
+    throw BqError.invalid('CALL expects a procedure name.', 'query');
+  }
+  const target = parseCallTarget(tokens, i);
+  i = target.next;
+  if (!isPunct(tokens[i], '(')) {
+    throw BqError.invalid('CALL expects `(` after the procedure name.', 'query');
+  }
+  const close = matchingParen(tokens, i, endIdx);
+  const argExprs = i + 1 === close ? [] : splitTopLevelCommas(sql, tokens, i + 1, close);
+  return {
+    stmt: {
+      kind: 'CALL',
+      project: target.project,
+      datasetId: target.datasetId,
+      procedureId: target.procedureId,
+      argExprs,
+    },
+    next: close + 1,
+  };
+}
+
+/** Parse a `[`proj.`]dataset.proc` reference and return the resolved triple
+ *  plus the token index just past the name. The project defaults to the
+ *  empty string — the caller (queryEngine) supplies the request-scope
+ *  project when we don't see a 3-part form. */
+function parseCallTarget(
+  tokens: readonly Token[],
+  start: number,
+): { project: string; datasetId: string; procedureId: string; next: number } {
+  const tok = tokens[start] as Token;
+  if (tok.kind === 'backtick-identifier') {
+    const inner = tok.value.slice(1, -1);
+    const parts = inner.split('.');
+    if (parts.length === 2) {
+      return {
+        project: '',
+        datasetId: parts[0] as string,
+        procedureId: parts[1] as string,
+        next: skipTrivia(tokens, start + 1, tokens.length),
+      };
+    }
+    if (parts.length === 3) {
+      return {
+        project: parts[0] as string,
+        datasetId: parts[1] as string,
+        procedureId: parts[2] as string,
+        next: skipTrivia(tokens, start + 1, tokens.length),
+      };
+    }
+    throw BqError.invalid(`Unsupported procedure reference \`${inner}\`.`, 'query');
+  }
+  if (tok.kind === 'identifier') {
+    const parts: string[] = [tok.value];
+    let i = skipTrivia(tokens, start + 1, tokens.length);
+    while (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === '.') {
+      const nxt = skipTrivia(tokens, i + 1, tokens.length);
+      const id = tokens[nxt];
+      if (id?.kind !== 'identifier') break;
+      parts.push(id.value);
+      i = skipTrivia(tokens, nxt + 1, tokens.length);
+    }
+    if (parts.length === 2) {
+      return {
+        project: '',
+        datasetId: parts[0] as string,
+        procedureId: parts[1] as string,
+        next: i,
+      };
+    }
+    if (parts.length === 3) {
+      return {
+        project: parts[0] as string,
+        datasetId: parts[1] as string,
+        procedureId: parts[2] as string,
+        next: i,
+      };
+    }
+    throw BqError.invalid(
+      `Procedure reference "${parts.join('.')}" must be dataset-qualified.`,
+      'query',
+    );
+  }
+  throw BqError.invalid('CALL expects a procedure name.', 'query');
 }
 
 function parseSqlUntilSemi(
