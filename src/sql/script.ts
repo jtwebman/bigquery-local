@@ -34,20 +34,47 @@ interface Variable {
   value: unknown;
 }
 
+interface RowVariable {
+  readonly name: string;
+  /** Column name (canonical) → DuckDB row value. */
+  row: Record<string, unknown>;
+  /** Column name (lowercased) → BQ type — used for the placeholder cast. */
+  colTypes: Record<string, BqType>;
+}
+
 class Scope {
   // Keys lowercased so identifier lookups are case-insensitive (matches BQ).
   private readonly vars: Map<string, Variable> = new Map();
+  private readonly rows: Map<string, RowVariable> = new Map();
 
   declare(name: string, bqType: BqType, initialValue: unknown): void {
     const key = name.toLowerCase();
-    if (this.vars.has(key)) {
+    if (this.vars.has(key) || this.rows.has(key)) {
       throw BqError.invalid(`Variable "${name}" is already declared in this scope.`, 'query');
     }
     this.vars.set(key, { name, bqType, value: initialValue });
   }
 
+  /** Bind a FOR-loop row to a name. The same name can be re-bound across
+   *  iterations of the loop — that's what FOR does. */
+  bindRow(name: string, row: Record<string, unknown>, colTypes: Record<string, BqType>): void {
+    const key = name.toLowerCase();
+    if (this.vars.has(key)) {
+      throw BqError.invalid(`Variable "${name}" is already declared in this scope.`, 'query');
+    }
+    this.rows.set(key, { name, row, colTypes });
+  }
+
+  unbindRow(name: string): void {
+    this.rows.delete(name.toLowerCase());
+  }
+
   get(name: string): Variable | undefined {
     return this.vars.get(name.toLowerCase());
+  }
+
+  getRow(name: string): RowVariable | undefined {
+    return this.rows.get(name.toLowerCase());
   }
 
   set(name: string, value: unknown): void {
@@ -59,9 +86,16 @@ class Scope {
   }
 
   has(name: string): boolean {
-    return this.vars.has(name.toLowerCase());
+    return this.vars.has(name.toLowerCase()) || this.rows.has(name.toLowerCase());
   }
 }
+
+// ---------------------------------------------------------------------------
+// Control-flow signals
+// ---------------------------------------------------------------------------
+
+class BreakSignal {}
+class ContinueSignal {}
 
 // ---------------------------------------------------------------------------
 // AST
@@ -74,6 +108,12 @@ type Stmt =
   | { kind: 'SET_SUBQUERY'; names: string[]; selectSql: string }
   | { kind: 'IF'; branches: IfBranch[]; elseBody?: Stmt[] }
   | { kind: 'BLOCK'; body: Stmt[] }
+  | { kind: 'LOOP'; body: Stmt[] }
+  | { kind: 'WHILE'; cond: string; body: Stmt[] }
+  | { kind: 'REPEAT'; body: Stmt[]; untilCond: string }
+  | { kind: 'FOR'; name: string; selectSql: string; body: Stmt[] }
+  | { kind: 'BREAK' }
+  | { kind: 'CONTINUE' }
   | { kind: 'SQL'; sql: string };
 
 interface IfBranch {
@@ -113,6 +153,63 @@ export async function executeBqScript(
 
   await runList(program);
   return lastSelectResult;
+}
+
+async function runLoop(
+  body: readonly Stmt[],
+  runList: (stmts: readonly Stmt[]) => Promise<void>,
+): Promise<void> {
+  for (;;) {
+    try {
+      await runList(body);
+    } catch (signal) {
+      if (signal instanceof BreakSignal) return;
+      if (signal instanceof ContinueSignal) continue;
+      throw signal;
+    }
+  }
+}
+
+async function runWhile(
+  db: Db,
+  project: string,
+  scope: Scope,
+  cond: string,
+  body: readonly Stmt[],
+  runList: (stmts: readonly Stmt[]) => Promise<void>,
+): Promise<void> {
+  for (;;) {
+    const c = await evalScalarExpr(db, project, scope, cond, 'BOOLEAN');
+    if (c !== true) return;
+    try {
+      await runList(body);
+    } catch (signal) {
+      if (signal instanceof BreakSignal) return;
+      if (signal instanceof ContinueSignal) continue;
+      throw signal;
+    }
+  }
+}
+
+async function runRepeat(
+  db: Db,
+  project: string,
+  scope: Scope,
+  body: readonly Stmt[],
+  untilCond: string,
+  runList: (stmts: readonly Stmt[]) => Promise<void>,
+): Promise<void> {
+  for (;;) {
+    try {
+      await runList(body);
+    } catch (signal) {
+      if (signal instanceof BreakSignal) return;
+      if (!(signal instanceof ContinueSignal)) throw signal;
+      // CONTINUE inside REPEAT: still evaluate UNTIL before next iteration.
+    }
+    const done = await evalScalarExpr(db, project, scope, untilCond, 'BOOLEAN');
+    if (done === true) return;
+  }
 }
 
 async function runStmt(
@@ -197,6 +294,48 @@ async function runStmt(
       await runList(stmt.body);
       return undefined;
     }
+    case 'LOOP':
+      await runLoop(stmt.body, runList);
+      return undefined;
+    case 'WHILE':
+      await runWhile(db, project, scope, stmt.cond, stmt.body, runList);
+      return undefined;
+    case 'REPEAT':
+      await runRepeat(db, project, scope, stmt.body, stmt.untilCond, runList);
+      return undefined;
+    case 'FOR': {
+      const { sql, values } = substituteVars(stmt.selectSql, scope);
+      const result = await db.queryWithSchema(translate(sql, { project }).sql, values);
+      const colTypes: Record<string, BqType> = {};
+      for (let ci = 0; ci < result.columnNames.length; ci += 1) {
+        const cname = result.columnNames[ci] as string;
+        const ctype = result.columnTypes[ci] ?? 'VARCHAR';
+        colTypes[cname.toLowerCase()] = duckTypeToBq(ctype, cname).type;
+      }
+      for (const row of result.rows) {
+        scope.bindRow(stmt.name, row as Record<string, unknown>, colTypes);
+        try {
+          await runList(stmt.body);
+        } catch (signal) {
+          if (signal instanceof BreakSignal) {
+            scope.unbindRow(stmt.name);
+            return undefined;
+          }
+          if (signal instanceof ContinueSignal) {
+            scope.unbindRow(stmt.name);
+            continue;
+          }
+          scope.unbindRow(stmt.name);
+          throw signal;
+        }
+        scope.unbindRow(stmt.name);
+      }
+      return undefined;
+    }
+    case 'BREAK':
+      throw new BreakSignal();
+    case 'CONTINUE':
+      throw new ContinueSignal();
     case 'SQL': {
       // Distinguish SELECT from everything else: SELECTs surface results.
       const upper = leadingKeyword(stmt.sql);
@@ -269,32 +408,33 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
   // its own context — for BL-066 we only alias at the outermost SELECT.
   let depth = 0;
   let inSelectList = false;
-  let beforeFirstStmt = true;
-  for (let i = 0; i < tokens.length; i += 1) {
+  let i = 0;
+  while (i < tokens.length) {
     const tok = tokens[i] as Token;
     if (tok.kind === 'punctuation') {
       if (tok.value === '(') depth += 1;
       else if (tok.value === ')') depth -= 1;
       parts.push(tok.value);
+      i += 1;
       continue;
     }
     if (tok.kind === 'identifier' && depth === 0) {
       const up = tok.value.toUpperCase();
       if (up === 'SELECT') {
         inSelectList = true;
-        beforeFirstStmt = false;
         parts.push(tok.value);
+        i += 1;
         continue;
       }
       if (SELECT_LIST_TERMINATORS.has(up)) {
         inSelectList = false;
       } else if (TOP_LEVEL_NON_SELECT_KEYWORDS.has(up)) {
         inSelectList = false;
-        beforeFirstStmt = false;
       }
     }
     if (tok.kind !== 'identifier') {
       parts.push(tok.value);
+      i += 1;
       continue;
     }
     const prevIdx = previousNonWs(tokens, i);
@@ -303,7 +443,9 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
       tokens[prevIdx]?.kind === 'punctuation' &&
       tokens[prevIdx]?.value === '.'
     ) {
+      // RHS of a `.` reference (e.g. `t.col`) — not a variable lookup.
       parts.push(tok.value);
+      i += 1;
       continue;
     }
     const nextIdx = nextNonWs(tokens, i + 1);
@@ -312,30 +454,54 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
       tokens[nextIdx]?.kind === 'punctuation' &&
       tokens[nextIdx]?.value === '.'
     ) {
+      // LHS of a `.` — could be a row variable (FOR loop) or a table alias.
+      const afterDot = nextNonWs(tokens, nextIdx + 1);
+      const row = scope.getRow(tok.value);
+      if (afterDot !== null && row !== undefined) {
+        const colTok = tokens[afterDot];
+        if (colTok?.kind === 'identifier') {
+          const colName = colTok.value;
+          const colKey = Object.keys(row.row).find(
+            (k) => k.toLowerCase() === colName.toLowerCase(),
+          );
+          if (colKey !== undefined) {
+            const colValue = row.row[colKey];
+            const bqType = row.colTypes[colName.toLowerCase()] ?? 'STRING';
+            values.push(prepareBindValue(colValue, bqType));
+            const cast = placeholderCast(bqType);
+            const placeholder = cast === '' ? `$${values.length}` : `$${values.length}${cast}`;
+            const aliased =
+              depth === 0 &&
+              inSelectList &&
+              isBareSelectListItem(tokens, prevIdx, nextNonWs(tokens, afterDot + 1));
+            parts.push(aliased ? `${placeholder} AS ${quoteAlias(colName)}` : placeholder);
+            i = afterDot + 1;
+            continue;
+          }
+        }
+      }
       parts.push(tok.value);
+      i += 1;
       continue;
     }
     if (!scope.has(tok.value)) {
       parts.push(tok.value);
+      i += 1;
       continue;
     }
     const v = scope.get(tok.value);
     if (v === undefined) {
       parts.push(tok.value);
+      i += 1;
       continue;
     }
     values.push(prepareBindValue(v.value, v.bqType));
     const cast = placeholderCast(v.bqType);
     const placeholder = cast === '' ? `$${values.length}` : `$${values.length}${cast}`;
-    // Alias the bound value only when we're at the outermost SELECT's
-    // projection list — anywhere else (VALUES, WHERE, function args, …)
-    // an `AS alias` is a syntax error.
     const aliased = depth === 0 && inSelectList && isBareSelectListItem(tokens, prevIdx, nextIdx);
     parts.push(aliased ? `${placeholder} AS ${quoteAlias(tok.value)}` : placeholder);
+    i += 1;
   }
-  // Suppress an unused-var lint warning while still keeping `beforeFirstStmt`
-  // available if future statement-classifier logic wants it.
-  void beforeFirstStmt;
   return { sql: parts.join(''), values };
 }
 
@@ -502,6 +668,16 @@ function parseSingleStmt(
     if (kw === 'DECLARE') return parseDeclare(sql, tokens, startIdx, endIdx);
     if (kw === 'SET') return parseSet(sql, tokens, startIdx, endIdx);
     if (kw === 'IF') return parseIf(sql, tokens, startIdx, endIdx);
+    if (kw === 'LOOP') return parseLoop(sql, tokens, startIdx, endIdx);
+    if (kw === 'WHILE') return parseWhile(sql, tokens, startIdx, endIdx);
+    if (kw === 'REPEAT') return parseRepeat(sql, tokens, startIdx, endIdx);
+    if (kw === 'FOR') return parseFor(sql, tokens, startIdx, endIdx);
+    if (kw === 'BREAK' || kw === 'LEAVE') {
+      return { stmt: { kind: 'BREAK' }, next: startIdx + 1 };
+    }
+    if (kw === 'CONTINUE' || kw === 'ITERATE') {
+      return { stmt: { kind: 'CONTINUE' }, next: startIdx + 1 };
+    }
     if (kw === 'BEGIN') {
       // `BEGIN TRANSACTION` and friends are passed through to DuckDB as
       // plain SQL — only the bare `BEGIN <stmts> END` form is a block.
@@ -694,6 +870,125 @@ function parseBlock(
   return { stmt: { kind: 'BLOCK', body }, next: i + 1 };
 }
 
+function parseLoop(
+  sql: string,
+  tokens: readonly Token[],
+  startIdx: number,
+  endIdx: number,
+): ParseOne {
+  // LOOP <body> END LOOP
+  let i = skipTrivia(tokens, startIdx + 1, endIdx);
+  const bodyStart = i;
+  i = findCompoundEnd(tokens, i, endIdx, 'LOOP');
+  const body = parseStatements(sql, tokens, bodyStart, i);
+  if (!isKeyword(tokens[i], 'END')) {
+    throw BqError.invalid('LOOP must terminate with END LOOP.', 'query');
+  }
+  i = skipTrivia(tokens, i + 1, endIdx);
+  if (!isKeyword(tokens[i], 'LOOP')) {
+    throw BqError.invalid('LOOP must terminate with END LOOP.', 'query');
+  }
+  return { stmt: { kind: 'LOOP', body }, next: i + 1 };
+}
+
+function parseWhile(
+  sql: string,
+  tokens: readonly Token[],
+  startIdx: number,
+  endIdx: number,
+): ParseOne {
+  // WHILE <cond> DO <body> END WHILE
+  let i = skipTrivia(tokens, startIdx + 1, endIdx);
+  const condStart = i;
+  i = consumeUntilKeyword(tokens, i, endIdx, ['DO']);
+  if (!isKeyword(tokens[i], 'DO')) {
+    throw BqError.invalid('WHILE expects DO before the body.', 'query');
+  }
+  const cond = sliceTokenText(sql, tokens, condStart, i).trim();
+  i = skipTrivia(tokens, i + 1, endIdx);
+  const bodyStart = i;
+  i = findCompoundEnd(tokens, i, endIdx, 'WHILE');
+  const body = parseStatements(sql, tokens, bodyStart, i);
+  if (!isKeyword(tokens[i], 'END')) {
+    throw BqError.invalid('WHILE must terminate with END WHILE.', 'query');
+  }
+  i = skipTrivia(tokens, i + 1, endIdx);
+  if (!isKeyword(tokens[i], 'WHILE')) {
+    throw BqError.invalid('WHILE must terminate with END WHILE.', 'query');
+  }
+  return { stmt: { kind: 'WHILE', cond, body }, next: i + 1 };
+}
+
+function parseRepeat(
+  sql: string,
+  tokens: readonly Token[],
+  startIdx: number,
+  endIdx: number,
+): ParseOne {
+  // REPEAT <body> UNTIL <cond> END REPEAT
+  let i = skipTrivia(tokens, startIdx + 1, endIdx);
+  const bodyStart = i;
+  i = findRepeatBodyEnd(tokens, i, endIdx);
+  const body = parseStatements(sql, tokens, bodyStart, i);
+  if (!isKeyword(tokens[i], 'UNTIL')) {
+    throw BqError.invalid('REPEAT requires UNTIL <cond> END REPEAT.', 'query');
+  }
+  i = skipTrivia(tokens, i + 1, endIdx);
+  const condStart = i;
+  i = consumeUntilKeyword(tokens, i, endIdx, ['END']);
+  const untilCond = sliceTokenText(sql, tokens, condStart, i).trim();
+  if (!isKeyword(tokens[i], 'END')) {
+    throw BqError.invalid('REPEAT must terminate with END REPEAT.', 'query');
+  }
+  i = skipTrivia(tokens, i + 1, endIdx);
+  if (!isKeyword(tokens[i], 'REPEAT')) {
+    throw BqError.invalid('REPEAT must terminate with END REPEAT.', 'query');
+  }
+  return { stmt: { kind: 'REPEAT', body, untilCond }, next: i + 1 };
+}
+
+function parseFor(
+  sql: string,
+  tokens: readonly Token[],
+  startIdx: number,
+  endIdx: number,
+): ParseOne {
+  // FOR <name> IN (<select>) DO <body> END FOR
+  let i = skipTrivia(tokens, startIdx + 1, endIdx);
+  const nameTok = tokens[i];
+  if (nameTok?.kind !== 'identifier') {
+    throw BqError.invalid('FOR expects a row variable name.', 'query');
+  }
+  const name = nameTok.value;
+  i = skipTrivia(tokens, i + 1, endIdx);
+  if (!isKeyword(tokens[i], 'IN')) {
+    throw BqError.invalid('FOR expects IN after the row variable name.', 'query');
+  }
+  i = skipTrivia(tokens, i + 1, endIdx);
+  if (!isPunct(tokens[i], '(')) {
+    throw BqError.invalid('FOR ... IN expects a parenthesized SELECT.', 'query');
+  }
+  const open = i;
+  const close = matchingParen(tokens, open, endIdx);
+  const selectSql = sliceTokenText(sql, tokens, open + 1, close).trim();
+  i = skipTrivia(tokens, close + 1, endIdx);
+  if (!isKeyword(tokens[i], 'DO')) {
+    throw BqError.invalid('FOR ... IN (...) DO ... END FOR — expected DO.', 'query');
+  }
+  i = skipTrivia(tokens, i + 1, endIdx);
+  const bodyStart = i;
+  i = findCompoundEnd(tokens, i, endIdx, 'FOR');
+  const body = parseStatements(sql, tokens, bodyStart, i);
+  if (!isKeyword(tokens[i], 'END')) {
+    throw BqError.invalid('FOR must terminate with END FOR.', 'query');
+  }
+  i = skipTrivia(tokens, i + 1, endIdx);
+  if (!isKeyword(tokens[i], 'FOR')) {
+    throw BqError.invalid('FOR must terminate with END FOR.', 'query');
+  }
+  return { stmt: { kind: 'FOR', name, selectSql, body }, next: i + 1 };
+}
+
 function parseSqlUntilSemi(
   sql: string,
   tokens: readonly Token[],
@@ -746,7 +1041,7 @@ function consumeUntilSemi(tokens: readonly Token[], from: number, end: number): 
       else if (t.value === ';' && depth === 0 && blockDepth === 0) return i;
     } else if (t.kind === 'identifier') {
       const up = t.value.toUpperCase();
-      if (up === 'BEGIN' || up === 'IF') blockDepth += 1;
+      if (COMPOUND_OPENERS.has(up)) blockDepth += 1;
       else if (up === 'END') blockDepth = Math.max(0, blockDepth - 1);
     }
     i += 1;
@@ -802,18 +1097,23 @@ function consumeUntilKeywordOrSemi(
  *  at the same nesting level. */
 function findIfBranchEnd(tokens: readonly Token[], from: number, end: number): number {
   let i = from;
-  let depth = 0; // BEGIN/IF nesting inside the body
+  let depth = 0; // Compound-stmt nesting inside the body (BEGIN/IF/LOOP/etc).
   while (i < end) {
     const t = tokens[i] as Token;
     if (t.kind === 'identifier') {
       const up = t.value.toUpperCase();
-      if (up === 'BEGIN' || up === 'IF') {
+      if (COMPOUND_OPENERS.has(up)) {
         depth += 1;
       } else if (up === 'END' && depth > 0) {
         depth -= 1;
-        // Consume the matching `IF` after `END IF`.
         const after = skipTrivia(tokens, i + 1, end);
-        if (isKeyword(tokens[after], 'IF')) i = after;
+        const afterTok = tokens[after];
+        if (
+          afterTok?.kind === 'identifier' &&
+          COMPOUND_END_WORDS.has(afterTok.value.toUpperCase())
+        ) {
+          i = after;
+        }
       } else if (depth === 0 && (up === 'ELSEIF' || up === 'ELSE' || up === 'END')) {
         return i;
       }
@@ -823,20 +1123,78 @@ function findIfBranchEnd(tokens: readonly Token[], from: number, end: number): n
   return end;
 }
 
+/** Compound-statement openers we have to track for matched-END nesting. */
+const COMPOUND_OPENERS = new Set(['BEGIN', 'IF', 'LOOP', 'WHILE', 'REPEAT', 'FOR']);
+
+/** Compound-statement terminators that come after `END`. For BEGIN, the
+ *  terminator is just `END` with no follow-on word. */
+const COMPOUND_END_WORDS = new Set(['IF', 'LOOP', 'WHILE', 'REPEAT', 'FOR']);
+
 function findBlockEnd(tokens: readonly Token[], from: number, end: number): number {
+  return findCompoundEnd(tokens, from, end, undefined);
+}
+
+/** Walk to the closing `END` (optionally followed by a specific keyword
+ *  like LOOP/WHILE/REPEAT/FOR/IF) at the same nesting depth as the start.
+ *  `expectedWord = undefined` matches a bare `END` (closing a BEGIN block). */
+function findCompoundEnd(
+  tokens: readonly Token[],
+  from: number,
+  end: number,
+  expectedWord: string | undefined,
+): number {
   let i = from;
   let depth = 0;
   while (i < end) {
     const t = tokens[i] as Token;
     if (t.kind === 'identifier') {
       const up = t.value.toUpperCase();
-      if (up === 'BEGIN' || up === 'IF') {
+      if (COMPOUND_OPENERS.has(up)) {
         depth += 1;
       } else if (up === 'END') {
-        if (depth === 0) return i;
-        depth -= 1;
-        const after = skipTrivia(tokens, i + 1, end);
-        if (isKeyword(tokens[after], 'IF')) i = after;
+        const afterIdx = skipTrivia(tokens, i + 1, end);
+        const after = tokens[afterIdx];
+        const afterUp = after?.kind === 'identifier' ? after.value.toUpperCase() : undefined;
+        const closes = afterUp !== undefined && COMPOUND_END_WORDS.has(afterUp);
+        if (depth === 0) {
+          if (expectedWord === undefined) {
+            // Bare BEGIN..END close.
+            if (!closes) return i;
+          } else if (afterUp === expectedWord) {
+            return i;
+          }
+        }
+        if (depth > 0) {
+          depth -= 1;
+          if (closes) i = afterIdx; // step past `END <kind>`
+        }
+      }
+    }
+    i += 1;
+  }
+  return end;
+}
+
+/** Body-end finder for REPEAT — terminates at the matching UNTIL at depth 0. */
+function findRepeatBodyEnd(tokens: readonly Token[], from: number, end: number): number {
+  let i = from;
+  let depth = 0;
+  while (i < end) {
+    const t = tokens[i] as Token;
+    if (t.kind === 'identifier') {
+      const up = t.value.toUpperCase();
+      if (COMPOUND_OPENERS.has(up)) depth += 1;
+      else if (up === 'END') {
+        if (depth > 0) {
+          depth -= 1;
+          const afterIdx = skipTrivia(tokens, i + 1, end);
+          const after = tokens[afterIdx];
+          if (after?.kind === 'identifier' && COMPOUND_END_WORDS.has(after.value.toUpperCase())) {
+            i = afterIdx;
+          }
+        }
+      } else if (up === 'UNTIL' && depth === 0) {
+        return i;
       }
     }
     i += 1;
