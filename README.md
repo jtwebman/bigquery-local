@@ -17,7 +17,7 @@ Not production-ready, but the architecture stays close to real BigQuery
 on purpose — so this can also be a **migration on-ramp** for projects
 that want to move off BigQuery onto DuckDB.
 
-> **Status:** v0.5.0 — published to both
+> **Status:** v0.6.0 — published to both
 > [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local) and
 > [npm](https://www.npmjs.com/package/bigquery-local). See `plan.md`
 > for the v0 plan + full-BigQuery scope appendix, and `BACKLOG.md` for
@@ -150,7 +150,7 @@ npx bigquery-local --port=9050 --database=./bq.duckdb
 
 ```ts
 import { BigQuery } from '@google-cloud/bigquery';
-import { emulatorGoogleAuth } from 'bigquery-local';
+import { emulatorGoogleAuth } from 'bigquery-local/auth';
 
 const bigQuery = new BigQuery({
   projectId: 'local',
@@ -159,17 +159,34 @@ const bigQuery = new BigQuery({
 });
 ```
 
-`emulatorGoogleAuth()` returns an `OAuth2Client` that attaches a
-placeholder `Authorization: Bearer emulator` header without ever calling
-Google. The emulator ignores the token; the header is only there so the
-official client doesn't error before sending the request. The emulator
-itself accepts any (or no) auth header.
+`emulatorGoogleAuth()` lives at the `bigquery-local/auth` subpath so
+the core entry has zero auth dependencies. The helper itself imports
+`google-auth-library`, which is declared as an **optional peer
+dependency** — if you're using `@google-cloud/bigquery` you already
+have it transitively; otherwise:
+
+```bash
+npm install --save-dev google-auth-library
+```
+
+The helper returns an `OAuth2Client` that attaches a placeholder
+`Authorization: Bearer emulator` header without ever calling Google.
+The emulator ignores the token; the header is only there so the
+official client doesn't error before sending the request. The
+emulator itself accepts any (or no) auth header.
 
 One server serves any project id — projects are isolated by URL path,
 the same way real BigQuery does it. The official client sends URLs
 prefixed with `/bigquery/v2/...`; the emulator strips that prefix
 internally, so a single route table serves both raw HTTP callers and
 the client library.
+
+If you don't want a fake auth client at all, the BigQuery client also
+has a built-in fallthrough: when ADC finds **no** credentials, the
+client sends unauthenticated requests, which the emulator accepts.
+That works on clean CI runners but is flaky on dev machines that have
+stale `gcloud auth login` state — the helper above makes it
+deterministic.
 
 If you can't use the `authClient` option (different client library,
 constructed deep inside framework code, etc.), the
@@ -195,7 +212,8 @@ npm install --save-dev bigquery-local
 ```
 
 ```ts
-import { createServer, emulatorGoogleAuth } from 'bigquery-local';
+import { createServer } from 'bigquery-local';
+import { emulatorGoogleAuth } from 'bigquery-local/auth';
 import { BigQuery } from '@google-cloud/bigquery';
 
 const server = await createServer({ database: ':memory:' });

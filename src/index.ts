@@ -32,7 +32,9 @@ export type { BqErrorBody, BqErrorEntry, BqErrorReason } from './util/errors.ts'
 export type { Server } from './types.ts';
 export { GRPC_STATUS_UNIMPLEMENTED, createGrpcServer } from './grpc.ts';
 export type { GrpcServer, GrpcServerConfig } from './grpc.ts';
-export { EmulatorAuthClient, emulatorGoogleAuth } from './client.ts';
+// Note: `emulatorGoogleAuth` / `EmulatorAuthClient` are intentionally not
+// re-exported here. They live at the `bigquery-local/auth` subpath so the
+// core entry stays free of any `google-auth-library` import — see ./client.ts.
 
 export interface ServerConfig {
   /**
