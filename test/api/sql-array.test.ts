@@ -13,6 +13,7 @@ import type { Db } from '../../src/storage/db.ts';
 import { ensureMetaSchema } from '../../src/storage/meta.ts';
 import { createRouterServer as createServer } from '../../src/server.ts';
 import type { Server } from '../../src/types.ts';
+import { unwrapV } from '../helpers/wire.ts';
 
 let db: Db;
 let server: Server;
@@ -38,7 +39,7 @@ async function scalar(query: string): Promise<unknown> {
     body: JSON.stringify({ query }),
   });
   const body = (await res.json()) as { rows: Array<{ f: Array<{ v: unknown }> }> };
-  return body.rows[0]?.f[0]?.v;
+  return unwrapV(body.rows[0]?.f[0]?.v);
 }
 
 test('GENERATE_ARRAY returns an inclusive range', async () => {

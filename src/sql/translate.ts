@@ -1247,6 +1247,20 @@ function handleIdentifier(
     }
   }
 
+  // `TIMESTAMP 'literal'` typed-literal. BigQuery's TIMESTAMP is timezone-
+  // aware (always UTC if no zone given); DuckDB's bare `TIMESTAMP 'x'`
+  // produces a *timezone-naive* TIMESTAMP that we'd then encode as DATETIME.
+  // Rewrite to `TIMESTAMPTZ 'x'` so the value flows through as BQ TIMESTAMP.
+  // Only fires when the next non-whitespace token is a string literal —
+  // bare `TIMESTAMP` in CAST / column-type context is left alone.
+  if (upper === 'TIMESTAMP') {
+    const nextIdx = skipWhitespace(tokens, i + 1, endIdx);
+    if (nextIdx !== null && tokens[nextIdx]?.kind === 'string') {
+      out.push('TIMESTAMPTZ');
+      return i + 1;
+    }
+  }
+
   // `TABLESAMPLE SYSTEM (n PERCENT)` — BQ's SYSTEM is storage-block-based,
   // matching DuckDB's SYSTEM. But DuckDB's SYSTEM only emits whole storage
   // blocks, which for small / in-memory tables means N% of "one block" rounds

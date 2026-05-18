@@ -17,7 +17,7 @@ Not production-ready, but the architecture stays close to real BigQuery
 on purpose — so this can also be a **migration on-ramp** for projects
 that want to move off BigQuery onto DuckDB.
 
-> **Status:** v0.4.0 — published to both
+> **Status:** v0.5.0 — published to both
 > [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local) and
 > [npm](https://www.npmjs.com/package/bigquery-local). See `plan.md`
 > for the v0 plan + full-BigQuery scope appendix, and `BACKLOG.md` for

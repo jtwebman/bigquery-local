@@ -221,8 +221,14 @@ test('queries: TIMESTAMP_SUB + CURRENT_TIMESTAMP rewrites resolve to a comparabl
   assert.equal(status, 200);
   const body = json as QueryResponse;
   assert.equal(body.totalRows, '1');
-  // The value should be an ISO timestamp string.
-  assert.match(String(body.rows[0]?.f[0]?.v ?? ''), /^\d{4}-\d{2}-\d{2}T/);
+  // BQ wires TIMESTAMP as microseconds-since-epoch (Int64Value string).
+  // Just verify it's a positive integer string within ±2 days of "now".
+  const usStr = String(body.rows[0]?.f[0]?.v ?? '');
+  assert.match(usStr, /^\d+$/);
+  const us = BigInt(usStr);
+  const nowUs = BigInt(Date.now()) * 1000n;
+  const twoDaysUs = 2n * 24n * 60n * 60n * 1000n * 1000n;
+  assert.ok(us > nowUs - twoDaysUs && us < nowUs, `out-of-range timestamp ${usStr}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -411,10 +417,11 @@ test('queries: BOOL scalar parameter binds true', async () => {
   });
   assert.equal(res.status, 200);
   const body = (await res.json()) as QueryResponse;
-  assert.equal(body.rows[0]?.f[0]?.v, true);
+  // BQ wire format encodes BOOL as the literal string "true" / "false".
+  assert.equal(body.rows[0]?.f[0]?.v, 'true');
 });
 
-test('queries: FLOAT64 scalar parameter binds as a number', async () => {
+test('queries: FLOAT64 scalar parameter binds as a decimal string', async () => {
   const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -431,7 +438,7 @@ test('queries: FLOAT64 scalar parameter binds as a number', async () => {
   });
   assert.equal(res.status, 200);
   const body = (await res.json()) as QueryResponse;
-  assert.equal(body.rows[0]?.f[0]?.v, 3.75);
+  assert.equal(body.rows[0]?.f[0]?.v, '3.75');
 });
 
 test('queries: STRUCT scalar parameter rejected with unsupportedFeature', async () => {
@@ -471,11 +478,11 @@ test('queries: ARRAY<BOOL> binds via UNNEST', async () => {
   const body = (await res.json()) as QueryResponse;
   assert.deepEqual(
     body.rows.map((r) => r.f[0]?.v),
-    [true, false],
+    ['true', 'false'],
   );
 });
 
-test('queries: ARRAY<FLOAT64> elements come back as numbers', async () => {
+test('queries: ARRAY<FLOAT64> elements come back as decimal strings', async () => {
   const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -494,7 +501,7 @@ test('queries: ARRAY<FLOAT64> elements come back as numbers', async () => {
   const body = (await res.json()) as QueryResponse;
   assert.deepEqual(
     body.rows.map((r) => r.f[0]?.v),
-    [1.5, 2.5],
+    ['1.5', '2.5'],
   );
 });
 

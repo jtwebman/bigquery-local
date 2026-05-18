@@ -136,13 +136,16 @@ test('round-trip: INT64 (decimal string wire format)', async () => {
 });
 
 test('round-trip: FLOAT64', async () => {
+  // FLOAT64 wire format is a decimal string per BQ spec (Int64Value /
+  // float-as-string pattern across the response).
   const value = Math.E;
-  assert.equal(await roundTrip({ name: 'v', type: 'FLOAT64' }, value), value);
+  assert.equal(await roundTrip({ name: 'v', type: 'FLOAT64' }, value), value.toString());
 });
 
 test('round-trip: BOOL', async () => {
-  assert.equal(await roundTrip({ name: 'v', type: 'BOOL' }, true), true);
-  assert.equal(await roundTrip({ name: 'v', type: 'BOOL' }, false), false);
+  // BOOL wire format is the literal strings "true" / "false".
+  assert.equal(await roundTrip({ name: 'v', type: 'BOOL' }, true), 'true');
+  assert.equal(await roundTrip({ name: 'v', type: 'BOOL' }, false), 'false');
 });
 
 test('round-trip: NUMERIC (small)', async () => {
@@ -161,10 +164,11 @@ test('round-trip: BIGNUMERIC', async () => {
 });
 
 test('round-trip: TIMESTAMP', async () => {
-  assert.equal(
-    await roundTrip({ name: 'v', type: 'TIMESTAMP' }, '2026-05-16T10:11:12.000Z'),
-    '2026-05-16T10:11:12.000Z',
-  );
+  // Wire output is microseconds-since-epoch as a decimal string (BQ's
+  // useInt64Timestamp form). Input accepts ISO strings for parameter binding.
+  const out = await roundTrip({ name: 'v', type: 'TIMESTAMP' }, '2026-05-16T10:11:12.000Z');
+  const expectedUs = String(BigInt(Date.UTC(2026, 4, 16, 10, 11, 12)) * 1000n);
+  assert.equal(out, expectedUs);
 });
 
 test('round-trip: DATETIME', async () => {
@@ -195,21 +199,21 @@ test('round-trip: GEOGRAPHY (WKT pass-through)', async () => {
   );
 });
 
-test('round-trip: REPEATED STRING', async () => {
+test('round-trip: REPEATED STRING (BQ wire wraps each element as {v: ...})', async () => {
   const out = await roundTrip({ name: 'v', type: 'STRING', mode: 'REPEATED' }, [
     'alpha',
     'beta',
     'gamma',
   ]);
-  assert.deepEqual(out, ['alpha', 'beta', 'gamma']);
+  assert.deepEqual(out, [{ v: 'alpha' }, { v: 'beta' }, { v: 'gamma' }]);
 });
 
-test('round-trip: REPEATED INT64', async () => {
+test('round-trip: REPEATED INT64 (each element {v: <decimal-string>})', async () => {
   const out = await roundTrip({ name: 'v', type: 'INT64', mode: 'REPEATED' }, ['1', '2', '3']);
-  assert.deepEqual(out, ['1', '2', '3']);
+  assert.deepEqual(out, [{ v: '1' }, { v: '2' }, { v: '3' }]);
 });
 
-test('round-trip: STRUCT', async () => {
+test('round-trip: STRUCT (BQ wire is {"f": [{"v": ...}, ...]})', async () => {
   const field: BqField = {
     name: 'v',
     type: 'STRUCT',
@@ -221,10 +225,12 @@ test('round-trip: STRUCT', async () => {
   };
   const input = { a: '42', b: 'hello', c: true };
   const out = await roundTrip(field, input);
-  assert.deepEqual(out, input);
+  assert.deepEqual(out, {
+    f: [{ v: '42' }, { v: 'hello' }, { v: 'true' }],
+  });
 });
 
-test('round-trip: REPEATED STRUCT', async () => {
+test('round-trip: REPEATED STRUCT (each element wraps a struct in {v: {f: [...]}})', async () => {
   const field: BqField = {
     name: 'v',
     type: 'STRUCT',
@@ -239,7 +245,10 @@ test('round-trip: REPEATED STRUCT', async () => {
     { a: '2', b: 'two' },
   ];
   const out = await roundTrip(field, input);
-  assert.deepEqual(out, input);
+  assert.deepEqual(out, [
+    { v: { f: [{ v: '1' }, { v: 'one' }] } },
+    { v: { f: [{ v: '2' }, { v: 'two' }] } },
+  ]);
 });
 
 // ---------------------------------------------------------------------------

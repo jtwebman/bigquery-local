@@ -340,14 +340,29 @@ function structuredEncodeForJson(value: unknown, field: BqField): unknown {
 // Value decoding (DuckDB getRowObjectsJS → BQ wire)
 // ---------------------------------------------------------------------------
 
+/**
+ * BigQuery wire encoding: every `rows[i].f[j].v` is a JSON value, but for
+ * scalars BQ always uses a string (so INT64 / FLOAT64 / BOOL / NUMERIC /
+ * TIMESTAMP / etc. survive precision loss in JSON). NULL is JSON null.
+ * Arrays and structs wrap each element / field in the same `{v}` / `{f}`
+ * envelope recursively.
+ *
+ * Refs:
+ *  - https://cloud.google.com/bigquery/docs/reference/rest/v2/jobs/query#response-body
+ *  - https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types
+ *  - Discovery doc `TableCell.v: any` + Int64Value pattern used across the
+ *    same response.
+ */
 export function duckValueToBq(value: unknown, field: BqField): unknown {
   if (value === null || value === undefined) return null;
   if (field.mode === 'REPEATED') {
     if (!Array.isArray(value)) {
       throw new Error(`Expected array from DuckDB for REPEATED field "${field.name}".`);
     }
+    // Each array element is itself an `{ "v": ... }` cell — same envelope
+    // as top-level row cells. Element NULLs render as `{"v": null}`.
     const innerField: BqField = { ...field, mode: 'NULLABLE' };
-    return value.map((item) => duckValueToBq(item, innerField));
+    return value.map((item) => ({ v: duckValueToBq(item, innerField) }));
   }
   switch (field.type) {
     case 'STRING':
@@ -362,24 +377,31 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
     case 'INT64':
       return typeof value === 'bigint' ? value.toString(10) : String(value);
     case 'FLOAT64':
-      return Number(value);
+      return floatToWire(value);
     case 'BOOL':
-      return Boolean(value);
+      // BQ wire format encodes booleans as the literal strings "true" /
+      // "false" — not JSON booleans. The client libs depend on this.
+      return value ? 'true' : 'false';
     case 'NUMERIC':
       // DuckDB returns DECIMAL as a number (small) or a stringFromDecimal-style
       // string; getRowObjectsJS coerces to number when it fits, string when not.
       return typeof value === 'number' ? trimDecimal(value.toString()) : String(value);
     case 'TIMESTAMP':
+      // BQ's modern default (when the client sets `useInt64Timestamp=true`,
+      // which the @google-cloud/bigquery client does by default) is
+      // microseconds-since-epoch as a decimal Int64Value string. This is
+      // also lossless across the 1µs precision DuckDB stores.
+      return timestampToWireMicros(value);
     case 'DATETIME':
-      // DuckDB returns Date objects via getRowObjectsJS for TIMESTAMP types.
-      if (value instanceof Date) return value.toISOString();
-      return String(value);
+      // DATETIME has no zone; canonical form is `YYYY-MM-DDTHH:MM:SS[.f]`.
+      return datetimeToWire(value);
     case 'DATE':
       if (value instanceof Date) return value.toISOString().slice(0, 10);
       return String(value);
     case 'TIME':
-      // TIME has no native JS type; getRowObjectsJS returns a string.
-      return String(value);
+      // DuckDB returns TIME as a string already (no native JS type). BQ
+      // canonical is `HH:MM:SS[.ffffff]` — coerce defensively.
+      return timeToWire(value);
     case 'JSON':
       // DuckDB JSON columns come back as parsed values OR JSON strings;
       // normalize to a string so callers get consistent BQ wire format.
@@ -391,14 +413,73 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
       if (field.fields === undefined) {
         throw new Error(`STRUCT field "${field.name}" requires a non-empty fields list.`);
       }
+      // BQ STRUCT wire shape: `{ "f": [ {"v": …}, {"v": …} ] }` (same
+      // envelope as the top-level row). Sub-field order follows the schema.
       const obj = value as Record<string, unknown>;
-      const out: Record<string, unknown> = {};
-      for (const f of field.fields) {
-        out[f.name] = duckValueToBq(obj[f.name], f);
-      }
-      return out;
+      const cells = field.fields.map((f) => ({ v: duckValueToBq(obj[f.name], f) }));
+      return { f: cells };
     }
   }
+}
+
+function floatToWire(value: unknown): string {
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) return 'NaN';
+    if (value === Number.POSITIVE_INFINITY) return 'Infinity';
+    if (value === Number.NEGATIVE_INFINITY) return '-Infinity';
+    // Integer-valued floats need a `.0` suffix so the wire stays
+    // distinguishable from INT64 (which is also a decimal string but
+    // never has a fractional component).
+    return trimDecimal(value.toString());
+  }
+  return String(value);
+}
+
+/** Microseconds-since-epoch as a decimal Int64Value string (the form BQ
+ *  emits when `useInt64Timestamp=true`). */
+function timestampToWireMicros(value: unknown): string {
+  if (value instanceof Date) {
+    return String(BigInt(value.getTime()) * 1000n);
+  }
+  if (typeof value === 'bigint') return value.toString(10);
+  if (typeof value === 'number') return String(BigInt(value) * 1000n);
+  return String(value);
+}
+
+function datetimeToWire(value: unknown): string {
+  if (value instanceof Date) {
+    // DuckDB returns a JS Date for TIMESTAMP types; for DATETIME (which has
+    // no zone), drop the trailing Z to match BQ's canonical form.
+    return value.toISOString().replace(/Z$/, '');
+  }
+  return String(value);
+}
+
+function timeToWire(value: unknown): string {
+  if (value instanceof Date) {
+    // DuckDB sometimes returns TIME as a Date pinned to the Unix epoch.
+    return value.toISOString().slice(11, 23);
+  }
+  if (typeof value === 'bigint') {
+    // DuckDB returns TIME as microseconds-since-midnight (bigint). Convert
+    // to canonical `HH:MM:SS[.ffffff]`.
+    const totalUs = value;
+    const usPerSecond = 1_000_000n;
+    const seconds = totalUs / usPerSecond;
+    const us = totalUs % usPerSecond;
+    const hours = Number(seconds / 3600n);
+    const minutes = Number((seconds % 3600n) / 60n);
+    const secs = Number(seconds % 60n);
+    const hh = String(hours).padStart(2, '0');
+    const mm = String(minutes).padStart(2, '0');
+    const ss = String(secs).padStart(2, '0');
+    if (us === 0n) return `${hh}:${mm}:${ss}`;
+    // Drop trailing zeros (BQ canonical: `HH:MM:SS.f` where f is variable
+    // length, no padding required).
+    const usStr = String(us).padStart(6, '0').replace(/0+$/, '');
+    return `${hh}:${mm}:${ss}.${usStr}`;
+  }
+  return String(value);
 }
 
 function trimDecimal(s: string): string {

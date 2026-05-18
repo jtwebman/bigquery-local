@@ -54,6 +54,9 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
   const path = config.path ?? ':memory:';
   const instance = await DuckDBInstance.create(path);
   const connection = await instance.connect();
+  // Anchor DuckDB's session timezone to UTC so unzone'd TIMESTAMP literals
+  // (which BQ treats as UTC) don't drift through the host's local zone.
+  await connection.run("SET TimeZone='UTC'");
   const preparedCache = new Map<string, Promise<DuckDBPreparedStatement>>();
   let closed = false;
 

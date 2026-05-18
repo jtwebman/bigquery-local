@@ -17,6 +17,7 @@ import type { Db } from '../../src/storage/db.ts';
 import { ensureMetaSchema } from '../../src/storage/meta.ts';
 import { createRouterServer as createServer } from '../../src/server.ts';
 import type { Server } from '../../src/types.ts';
+import { unwrapV } from '../helpers/wire.ts';
 
 let db: Db;
 let server: Server;
@@ -44,7 +45,7 @@ async function scalar(query: string): Promise<unknown> {
     body: JSON.stringify({ query }),
   });
   const body = (await res.json()) as { rows: Array<{ f: Array<{ v: unknown }> }> };
-  return body.rows[0]?.f[0]?.v;
+  return unwrapV(body.rows[0]?.f[0]?.v);
 }
 
 // ---------------------------------------------------------------------------
@@ -52,8 +53,8 @@ async function scalar(query: string): Promise<unknown> {
 // ---------------------------------------------------------------------------
 
 test('REGEXP_CONTAINS returns BOOL true on a match', async () => {
-  assert.equal(await scalar("SELECT REGEXP_CONTAINS('hello-world', r'\\d+') AS x"), false);
-  assert.equal(await scalar("SELECT REGEXP_CONTAINS('user42', r'\\d+') AS x"), true);
+  assert.equal(await scalar("SELECT REGEXP_CONTAINS('hello-world', r'\\d+') AS x"), 'false');
+  assert.equal(await scalar("SELECT REGEXP_CONTAINS('user42', r'\\d+') AS x"), 'true');
 });
 
 test('FORMAT uses printf-style placeholders', async () => {
