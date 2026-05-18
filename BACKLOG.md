@@ -617,13 +617,17 @@ Scope: WHILE, LOOP, FOR, REPEAT, BREAK, CONTINUE. Acceptance: standard loop exam
 
 Scope: dynamic SQL execution and procedure invocation. Acceptance: EXECUTE IMMEDIATE example runs.
 
-### BL-069 — Scripting: EXCEPTION handlers ⏳ · Est: 2h · Deps: BL-066
+### BL-069 — Scripting: EXCEPTION handlers ⏸ deferred · Est: 2h · Deps: BL-066
 
 Scope: BEGIN … EXCEPTION WHEN ERROR THEN … END. Acceptance: errors caught by handler; `@@error.message` populated.
 
-### BL-070 — JS UDFs ⏳ · Est: 8h · Deps: BL-063
+**Deferred at v0.4.0** — most BQ users don't write procedures with exception handling. Lands when a real-world script needs it; the interpreter's signal-class pattern (BreakSignal / ReturnSignal) already shows how to wire a new control flow.
+
+### BL-070 — JS UDFs ⏸ deferred · Est: 8h · Deps: BL-063
 
 Scope: sandboxed JS UDFs via `vm` module; BQ argument/return type marshalling. Acceptance: a `RETURNS FLOAT64 LANGUAGE js AS '''return x * 2;'''` example works.
+
+**Deferred at v0.4.0** — heaviest BL in the phase (vm sandbox + BQ↔JS type marshalling). Lower priority than wire-fidelity gaps (BOOL/NUMERIC string encoding, error message shapes) which break real BQ clients today.
 
 ## Phase 12 — Routines / models / sessions
 
