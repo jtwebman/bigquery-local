@@ -65,7 +65,17 @@ export function createRouterServer(config: ServerConfig = {}): Server {
       return;
     }
 
-    const match = matchRoute(compiled, method, url.pathname);
+    // The @google-cloud/bigquery client prefixes its URLs with `/bigquery/v2/`
+    // (and the @google-cloud/storage style with `/storage/v1/`, etc). For the
+    // BQ emulator we strip the `/bigquery/v2` prefix if present so a single
+    // route table works for both raw HTTP callers and the official client.
+    const rawPath = url.pathname;
+    const path =
+      rawPath.startsWith('/bigquery/v2/') || rawPath === '/bigquery/v2'
+        ? rawPath.slice('/bigquery/v2'.length) || '/'
+        : rawPath;
+
+    const match = matchRoute(compiled, method, path);
     if (match === null) {
       send(res, NOT_FOUND_RESPONSE);
       return;
@@ -73,7 +83,7 @@ export function createRouterServer(config: ServerConfig = {}): Server {
 
     const request: RouteRequest = {
       method,
-      path: url.pathname,
+      path,
       params: match.params,
       query: parseQueryString(url.search),
       headers,

@@ -15,6 +15,7 @@ import type { Db } from '../../src/storage/db.ts';
 import { ensureMetaSchema } from '../../src/storage/meta.ts';
 import { createRouterServer as createServer } from '../../src/server.ts';
 import type { Server } from '../../src/types.ts';
+import { unwrapV } from '../helpers/wire.ts';
 
 let db: Db;
 let server: Server;
@@ -41,7 +42,7 @@ async function scalar(query: string): Promise<unknown> {
     body: JSON.stringify({ query }),
   });
   const body = (await res.json()) as { rows: Array<{ f: Array<{ v: unknown }> }> };
-  return body.rows[0]?.f[0]?.v;
+  return unwrapV(body.rows[0]?.f[0]?.v);
 }
 
 test('GENERATE_DATE_ARRAY produces an inclusive list of DATEs', async () => {
@@ -52,11 +53,14 @@ test('GENERATE_DATE_ARRAY produces an inclusive list of DATEs', async () => {
 });
 
 test('GENERATE_TIMESTAMP_ARRAY produces an inclusive list of TIMESTAMPs', async () => {
+  // Elements are TIMESTAMP-typed, so the wire format is microseconds-since-
+  // epoch as decimal strings (Int64Value form).
   const out = (await scalar(
     "SELECT GENERATE_TIMESTAMP_ARRAY(TIMESTAMP '2026-05-17 00:00:00', TIMESTAMP '2026-05-17 02:00:00', INTERVAL 1 HOUR) AS x",
   )) as string[];
   assert.equal(out.length, 3);
-  assert.match(out[0] ?? '', /2026-05-17T00:00:00/);
+  const expectedFirstUs = String(BigInt(Date.UTC(2026, 4, 17, 0, 0, 0)) * 1000n);
+  assert.equal(out[0], expectedFirstUs);
 });
 
 test('LAST_DAY returns the last day of the month for a DATE', async () => {

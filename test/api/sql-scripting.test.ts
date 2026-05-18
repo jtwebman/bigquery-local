@@ -107,14 +107,11 @@ test('DECLARE STRING with quoted default', async () => {
 });
 
 test('DECLARE without DEFAULT initializes to NULL', async () => {
-  // Note: BOOL wire encoding in this codebase returns a JS boolean, not the
-  // BQ docs' string `"true"`. That's a pre-existing wire-encoding choice
-  // outside the scope of BL-066; the test asserts what the codebase does.
   const v = await lastSelectValue(`
     DECLARE x INT64;
     SELECT x IS NULL AS is_null;
   `);
-  assert.equal(v, true);
+  assert.equal(v, 'true');
 });
 
 test('DECLARE multiple variables of the same type with a shared default', async () => {

@@ -15,6 +15,7 @@ import type { Db } from '../../src/storage/db.ts';
 import { ensureMetaSchema } from '../../src/storage/meta.ts';
 import { createRouterServer as createServer } from '../../src/server.ts';
 import type { Server } from '../../src/types.ts';
+import { unwrapV } from '../helpers/wire.ts';
 
 let db: Db;
 let server: Server;
@@ -40,7 +41,7 @@ async function scalar(query: string): Promise<unknown> {
     body: JSON.stringify({ query }),
   });
   const body = (await res.json()) as { rows: Array<{ f: Array<{ v: unknown }> }> };
-  return body.rows[0]?.f[0]?.v;
+  return unwrapV(body.rows[0]?.f[0]?.v);
 }
 
 test('JSON_QUERY pulls a nested JSON subtree by path', async () => {
@@ -89,7 +90,7 @@ test('PARSE_JSON returns NULL for NULL input', async () => {
 });
 
 test('BOOL extracts a boolean from JSON', async () => {
-  assert.equal(await scalar("SELECT BOOL(CAST('true' AS JSON)) AS x"), true);
+  assert.equal(await scalar("SELECT BOOL(CAST('true' AS JSON)) AS x"), 'true');
 });
 
 test('INT64 extracts an integer from JSON', async () => {
@@ -98,5 +99,5 @@ test('INT64 extracts an integer from JSON', async () => {
 });
 
 test('FLOAT64 extracts a float from JSON', async () => {
-  assert.equal(await scalar("SELECT FLOAT64(CAST('3.14' AS JSON)) AS x"), 3.14);
+  assert.equal(await scalar("SELECT FLOAT64(CAST('3.14' AS JSON)) AS x"), '3.14');
 });

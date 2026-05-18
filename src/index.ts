@@ -32,6 +32,7 @@ export type { BqErrorBody, BqErrorEntry, BqErrorReason } from './util/errors.ts'
 export type { Server } from './types.ts';
 export { GRPC_STATUS_UNIMPLEMENTED, createGrpcServer } from './grpc.ts';
 export type { GrpcServer, GrpcServerConfig } from './grpc.ts';
+export { EmulatorAuthClient, emulatorGoogleAuth } from './client.ts';
 
 export interface ServerConfig {
   /**

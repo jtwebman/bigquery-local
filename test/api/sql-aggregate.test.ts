@@ -13,6 +13,7 @@ import type { Db } from '../../src/storage/db.ts';
 import { ensureMetaSchema } from '../../src/storage/meta.ts';
 import { createRouterServer as createServer } from '../../src/server.ts';
 import type { Server } from '../../src/types.ts';
+import { unwrapV } from '../helpers/wire.ts';
 
 let db: Db;
 let server: Server;
@@ -38,7 +39,7 @@ async function scalar(query: string): Promise<unknown> {
     body: JSON.stringify({ query }),
   });
   const body = (await res.json()) as { rows: Array<{ f: Array<{ v: unknown }> }> };
-  return body.rows[0]?.f[0]?.v;
+  return unwrapV(body.rows[0]?.f[0]?.v);
 }
 
 test('STRING_AGG joins string values', async () => {
@@ -54,8 +55,15 @@ test('ANY_VALUE returns one of the values', async () => {
 });
 
 test('LOGICAL_AND / LOGICAL_OR aggregate booleans', async () => {
-  assert.equal(await scalar('SELECT LOGICAL_AND(b) AS r FROM UNNEST([true, true]) AS t(b)'), true);
-  assert.equal(await scalar('SELECT LOGICAL_OR(b) AS r FROM UNNEST([false, true]) AS t(b)'), true);
+  // BQ wires BOOL as the literal strings "true" / "false".
+  assert.equal(
+    await scalar('SELECT LOGICAL_AND(b) AS r FROM UNNEST([true, true]) AS t(b)'),
+    'true',
+  );
+  assert.equal(
+    await scalar('SELECT LOGICAL_OR(b) AS r FROM UNNEST([false, true]) AS t(b)'),
+    'true',
+  );
 });
 
 test('BIT_AND / BIT_OR / BIT_XOR aggregate integers', async () => {

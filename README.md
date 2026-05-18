@@ -17,7 +17,7 @@ Not production-ready, but the architecture stays close to real BigQuery
 on purpose — so this can also be a **migration on-ramp** for projects
 that want to move off BigQuery onto DuckDB.
 
-> **Status:** v0.4.0 — published to both
+> **Status:** v0.5.0 — published to both
 > [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local) and
 > [npm](https://www.npmjs.com/package/bigquery-local). See `plan.md`
 > for the v0 plan + full-BigQuery scope appendix, and `BACKLOG.md` for
@@ -122,7 +122,8 @@ Legend: ✅ shipped · 🚧 in progress · ⏳ planned for v0 · 🔭 later · �
 | `--project`, `--port`, `--grpc-port`, `--database`, `--log-level`, `--log-format` | ✅ |
 | Multi-arch Docker image (`linux/amd64` + `linux/arm64`) | ✅ |
 | Persistent file store (`--database=path.duckdb`) and `:memory:` mode | ✅ |
-| No auth required; accepts any/no credentials | ✅ |
+| No auth required; accepts any/no credentials. For the official client, use `emulatorGoogleAuth()` (see [Quick start](#pointing-the-bigquery-node-client-at-it)) | ✅ |
+| Accepts both raw (`/projects/...`) and prefixed (`/bigquery/v2/projects/...`) URL shapes | ✅ |
 | Multi-tenant: one server serves any project id (URL-scoped) | ✅ |
 
 ---
@@ -149,16 +150,40 @@ npx bigquery-local --port=9050 --database=./bq.duckdb
 
 ```ts
 import { BigQuery } from '@google-cloud/bigquery';
+import { emulatorGoogleAuth } from 'bigquery-local';
 
 const bigQuery = new BigQuery({
   projectId: 'local',
   apiEndpoint: 'http://localhost:9050',
+  authClient: emulatorGoogleAuth(),
 });
 ```
 
-No credentials needed. The emulator accepts any (or no) auth header.
+`emulatorGoogleAuth()` returns an `OAuth2Client` that attaches a
+placeholder `Authorization: Bearer emulator` header without ever calling
+Google. The emulator ignores the token; the header is only there so the
+official client doesn't error before sending the request. The emulator
+itself accepts any (or no) auth header.
+
 One server serves any project id — projects are isolated by URL path,
-the same way real BigQuery does it.
+the same way real BigQuery does it. The official client sends URLs
+prefixed with `/bigquery/v2/...`; the emulator strips that prefix
+internally, so a single route table serves both raw HTTP callers and
+the client library.
+
+If you can't use the `authClient` option (different client library,
+constructed deep inside framework code, etc.), the
+`BIGQUERY_EMULATOR_HOST` env var also works:
+
+```bash
+BIGQUERY_EMULATOR_HOST=http://localhost:9050 \
+GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/fake-creds.json \
+node my-app.js
+```
+
+`fake-creds.json` can be any valid-shaped service-account JSON — the
+client lib uses it to skip the ADC lookup, then the request still
+lands on the emulator.
 
 ### Embedding it in your tests
 
@@ -170,7 +195,7 @@ npm install --save-dev bigquery-local
 ```
 
 ```ts
-import { createServer } from 'bigquery-local';
+import { createServer, emulatorGoogleAuth } from 'bigquery-local';
 import { BigQuery } from '@google-cloud/bigquery';
 
 const server = await createServer({ database: ':memory:' });
@@ -179,12 +204,17 @@ await server.listen(0); // 0 = pick a random free port
 const bigQuery = new BigQuery({
   projectId: 'test',
   apiEndpoint: server.url,
+  authClient: emulatorGoogleAuth(),
 });
 
 // ...run your tests against `bigQuery`...
 
 await server.close(); // closes the HTTP listener and the DB
 ```
+
+If you want to inspect or assert on the raw HTTP wire format directly,
+`server.url` is just a normal `http://127.0.0.1:<port>` URL — `fetch()`
+hits the same routes the client library uses.
 
 ---
 

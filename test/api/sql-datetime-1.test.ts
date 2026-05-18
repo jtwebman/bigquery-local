@@ -14,6 +14,7 @@ import type { Db } from '../../src/storage/db.ts';
 import { ensureMetaSchema } from '../../src/storage/meta.ts';
 import { createRouterServer as createServer } from '../../src/server.ts';
 import type { Server } from '../../src/types.ts';
+import { unwrapV } from '../helpers/wire.ts';
 
 let db: Db;
 let server: Server;
@@ -40,7 +41,7 @@ async function scalar(query: string): Promise<unknown> {
     body: JSON.stringify({ query }),
   });
   const body = (await res.json()) as { rows: Array<{ f: Array<{ v: unknown }> }> };
-  return body.rows[0]?.f[0]?.v;
+  return unwrapV(body.rows[0]?.f[0]?.v);
 }
 
 test('DATE_TRUNC(date, MONTH) snaps to first of month', async () => {
@@ -48,8 +49,11 @@ test('DATE_TRUNC(date, MONTH) snaps to first of month', async () => {
 });
 
 test('TIMESTAMP_TRUNC(ts, DAY) snaps to midnight', async () => {
+  // BQ wires TIMESTAMP as microseconds-since-epoch (Int64 string). Decode
+  // back to a Date to compare. 2026-05-17 UTC midnight in microseconds.
   const v = await scalar("SELECT TIMESTAMP_TRUNC(TIMESTAMP '2026-05-17 10:30:00', DAY) AS x");
-  assert.match(String(v), /^2026-05-17T00:00:00/);
+  const expectedUs = String(BigInt(Date.UTC(2026, 4, 17, 0, 0, 0)) * 1000n);
+  assert.equal(v, expectedUs);
 });
 
 test('DATETIME_TRUNC(ts, HOUR) snaps to top of hour', async () => {

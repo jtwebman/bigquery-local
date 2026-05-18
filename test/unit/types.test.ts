@@ -136,13 +136,16 @@ test('round-trip: INT64 (decimal string wire format)', async () => {
 });
 
 test('round-trip: FLOAT64', async () => {
+  // FLOAT64 wire format is a decimal string per BQ spec (Int64Value /
+  // float-as-string pattern across the response).
   const value = Math.E;
-  assert.equal(await roundTrip({ name: 'v', type: 'FLOAT64' }, value), value);
+  assert.equal(await roundTrip({ name: 'v', type: 'FLOAT64' }, value), value.toString());
 });
 
 test('round-trip: BOOL', async () => {
-  assert.equal(await roundTrip({ name: 'v', type: 'BOOL' }, true), true);
-  assert.equal(await roundTrip({ name: 'v', type: 'BOOL' }, false), false);
+  // BOOL wire format is the literal strings "true" / "false".
+  assert.equal(await roundTrip({ name: 'v', type: 'BOOL' }, true), 'true');
+  assert.equal(await roundTrip({ name: 'v', type: 'BOOL' }, false), 'false');
 });
 
 test('round-trip: NUMERIC (small)', async () => {
@@ -161,10 +164,11 @@ test('round-trip: BIGNUMERIC', async () => {
 });
 
 test('round-trip: TIMESTAMP', async () => {
-  assert.equal(
-    await roundTrip({ name: 'v', type: 'TIMESTAMP' }, '2026-05-16T10:11:12.000Z'),
-    '2026-05-16T10:11:12.000Z',
-  );
+  // Wire output is microseconds-since-epoch as a decimal string (BQ's
+  // useInt64Timestamp form). Input accepts ISO strings for parameter binding.
+  const out = await roundTrip({ name: 'v', type: 'TIMESTAMP' }, '2026-05-16T10:11:12.000Z');
+  const expectedUs = String(BigInt(Date.UTC(2026, 4, 16, 10, 11, 12)) * 1000n);
+  assert.equal(out, expectedUs);
 });
 
 test('round-trip: DATETIME', async () => {
@@ -195,21 +199,21 @@ test('round-trip: GEOGRAPHY (WKT pass-through)', async () => {
   );
 });
 
-test('round-trip: REPEATED STRING', async () => {
+test('round-trip: REPEATED STRING (BQ wire wraps each element as {v: ...})', async () => {
   const out = await roundTrip({ name: 'v', type: 'STRING', mode: 'REPEATED' }, [
     'alpha',
     'beta',
     'gamma',
   ]);
-  assert.deepEqual(out, ['alpha', 'beta', 'gamma']);
+  assert.deepEqual(out, [{ v: 'alpha' }, { v: 'beta' }, { v: 'gamma' }]);
 });
 
-test('round-trip: REPEATED INT64', async () => {
+test('round-trip: REPEATED INT64 (each element {v: <decimal-string>})', async () => {
   const out = await roundTrip({ name: 'v', type: 'INT64', mode: 'REPEATED' }, ['1', '2', '3']);
-  assert.deepEqual(out, ['1', '2', '3']);
+  assert.deepEqual(out, [{ v: '1' }, { v: '2' }, { v: '3' }]);
 });
 
-test('round-trip: STRUCT', async () => {
+test('round-trip: STRUCT (BQ wire is {"f": [{"v": ...}, ...]})', async () => {
   const field: BqField = {
     name: 'v',
     type: 'STRUCT',
@@ -221,10 +225,12 @@ test('round-trip: STRUCT', async () => {
   };
   const input = { a: '42', b: 'hello', c: true };
   const out = await roundTrip(field, input);
-  assert.deepEqual(out, input);
+  assert.deepEqual(out, {
+    f: [{ v: '42' }, { v: 'hello' }, { v: 'true' }],
+  });
 });
 
-test('round-trip: REPEATED STRUCT', async () => {
+test('round-trip: REPEATED STRUCT (each element wraps a struct in {v: {f: [...]}})', async () => {
   const field: BqField = {
     name: 'v',
     type: 'STRUCT',
@@ -239,7 +245,10 @@ test('round-trip: REPEATED STRUCT', async () => {
     { a: '2', b: 'two' },
   ];
   const out = await roundTrip(field, input);
-  assert.deepEqual(out, input);
+  assert.deepEqual(out, [
+    { v: { f: [{ v: '1' }, { v: 'one' }] } },
+    { v: { f: [{ v: '2' }, { v: 'two' }] } },
+  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -413,4 +422,112 @@ test('bqValueToDuck: STRUCT containing a REPEATED sub-field rejects non-array su
     () => bqValueToDuck({ tags: 'not-an-array' }, field),
     /Expected array for REPEATED field "tags"/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Wire-encoding edge cases (cf. test/api/sql-wire-fidelity.test.ts for the
+// end-to-end audits; these cover values DuckDB can't produce through SQL).
+// ---------------------------------------------------------------------------
+
+test('duckValueToBq: FLOAT64 Infinity renders as the literal string "Infinity"', () => {
+  const field: BqField = { name: 'f', type: 'FLOAT64' };
+  assert.equal(duckValueToBq(Number.POSITIVE_INFINITY, field), 'Infinity');
+  assert.equal(duckValueToBq(Number.NEGATIVE_INFINITY, field), '-Infinity');
+  assert.equal(duckValueToBq(Number.NaN, field), 'NaN');
+});
+
+test('duckValueToBq: BOOL true/false render as literal strings', () => {
+  const field: BqField = { name: 'b', type: 'BOOL' };
+  assert.equal(duckValueToBq(true, field), 'true');
+  assert.equal(duckValueToBq(false, field), 'false');
+});
+
+test('duckValueToBq: BIGNUMERIC long decimal string passes through verbatim', () => {
+  const field: BqField = { name: 'n', type: 'BIGNUMERIC' };
+  const big = '578960446186580977117854925043439539266';
+  assert.equal(duckValueToBq(big, field), big);
+});
+
+test('duckValueToBq: STRUCT wraps as {"f": [{"v": ...}, ...]} recursively', () => {
+  const field: BqField = {
+    name: 's',
+    type: 'STRUCT',
+    fields: [
+      { name: 'id', type: 'INT64' },
+      { name: 'msg', type: 'STRING' },
+    ],
+  };
+  assert.deepEqual(duckValueToBq({ id: 1n, msg: 'hi' }, field), {
+    f: [{ v: '1' }, { v: 'hi' }],
+  });
+});
+
+test('duckValueToBq: REPEATED ARRAY wraps each element as {"v": ...}', () => {
+  const field: BqField = { name: 'xs', type: 'INT64', mode: 'REPEATED' };
+  assert.deepEqual(duckValueToBq([1n, 2n, null], field), [{ v: '1' }, { v: '2' }, { v: null }]);
+});
+
+test('duckValueToBq: REPEATED STRUCT wraps each cell as {"v": {"f": [...]}}', () => {
+  const field: BqField = {
+    name: 'rows',
+    type: 'STRUCT',
+    mode: 'REPEATED',
+    fields: [{ name: 'n', type: 'INT64' }],
+  };
+  assert.deepEqual(duckValueToBq([{ n: 1n }, { n: 2n }], field), [
+    { v: { f: [{ v: '1' }] } },
+    { v: { f: [{ v: '2' }] } },
+  ]);
+});
+
+test('duckValueToBq: TIMESTAMP from a Date renders microseconds-since-epoch', () => {
+  const field: BqField = { name: 't', type: 'TIMESTAMP' };
+  const date = new Date(Date.UTC(2026, 4, 17, 10, 30, 0));
+  assert.equal(duckValueToBq(date, field), String(BigInt(date.getTime()) * 1000n));
+});
+
+test('duckValueToBq: TIMESTAMP accepts bigint (DuckDB epoch_us) and number (epoch_ms)', () => {
+  const field: BqField = { name: 't', type: 'TIMESTAMP' };
+  // bigint path: already microseconds, passed through.
+  assert.equal(duckValueToBq(1779013800000000n, field), '1779013800000000');
+  // number path: treated as milliseconds-since-epoch, multiplied to micros.
+  assert.equal(duckValueToBq(1779013800000, field), '1779013800000000');
+});
+
+test('duckValueToBq: TIMESTAMP with a string falls back to String() coercion', () => {
+  const field: BqField = { name: 't', type: 'TIMESTAMP' };
+  assert.equal(duckValueToBq('2026-05-17T10:30:00Z', field), '2026-05-17T10:30:00Z');
+});
+
+test('duckValueToBq: DATETIME from a Date drops the trailing Z', () => {
+  const field: BqField = { name: 'dt', type: 'DATETIME' };
+  const date = new Date(Date.UTC(2026, 4, 17, 12, 34, 56));
+  assert.equal(duckValueToBq(date, field), '2026-05-17T12:34:56.000');
+});
+
+test('duckValueToBq: DATETIME with a string passes through verbatim', () => {
+  const field: BqField = { name: 'dt', type: 'DATETIME' };
+  assert.equal(duckValueToBq('2026-05-17T12:34:56', field), '2026-05-17T12:34:56');
+});
+
+test('duckValueToBq: TIME from a Date renders HH:MM:SS.fff', () => {
+  const field: BqField = { name: 't', type: 'TIME' };
+  const epochPlusTime = new Date(Date.UTC(1970, 0, 1, 12, 34, 56, 789));
+  assert.equal(duckValueToBq(epochPlusTime, field), '12:34:56.789');
+});
+
+test('duckValueToBq: TIME with zero microseconds drops the fractional part', () => {
+  const field: BqField = { name: 't', type: 'TIME' };
+  const noFraction = 12n * 3600n * 1_000_000n;
+  assert.equal(duckValueToBq(noFraction, field), '12:00:00');
+});
+
+test('duckValueToBq: TIME with neither Date nor bigint falls back to String()', () => {
+  const field: BqField = { name: 't', type: 'TIME' };
+  assert.equal(duckValueToBq('10:11:12', field), '10:11:12');
+});
+
+test('duckValueToBq: FLOAT64 with a non-number value falls back to String()', () => {
+  const field: BqField = { name: 'f', type: 'FLOAT64' };
+  assert.equal(duckValueToBq('3.14', field), '3.14');
 });
