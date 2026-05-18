@@ -609,7 +609,7 @@ Scope: procedure body parsed and executed via scripting runtime; `CALL` invokes.
 
 Scope: variable scoping; conditional execution; multi-statement script entrypoint. Acceptance: example scripts from BQ docs run end-to-end.
 
-### BL-067 — Scripting: loops ⏳ · Est: 3h · Deps: BL-066
+### BL-067 — Scripting: loops ✅ · Est: 3h · Deps: BL-066
 
 Scope: WHILE, LOOP, FOR, REPEAT, BREAK, CONTINUE. Acceptance: standard loop examples run with correct iteration counts.
 
