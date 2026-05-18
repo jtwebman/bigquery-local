@@ -169,7 +169,8 @@ export function detectStatementType(sql: string): StatementType {
     head === 'LOOP' ||
     head === 'WHILE' ||
     head === 'REPEAT' ||
-    head === 'FOR'
+    head === 'FOR' ||
+    head === 'EXECUTE'
   ) {
     return 'SCRIPT';
   }

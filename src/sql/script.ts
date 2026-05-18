@@ -121,7 +121,21 @@ type Stmt =
   | { kind: 'CONTINUE' }
   | { kind: 'RETURN' }
   | { kind: 'CALL'; project: string; datasetId: string; procedureId: string; argExprs: string[] }
+  | {
+      kind: 'EXECUTE_IMMEDIATE';
+      sqlExpr: string;
+      intoVars: readonly string[];
+      usingClauses: readonly UsingClause[];
+    }
   | { kind: 'SQL'; sql: string };
+
+interface UsingClause {
+  /** Caller-side expression to evaluate. */
+  readonly expr: string;
+  /** Optional `AS <name>` — when set, the value is bound as `@name` in
+   *  the dynamic SQL. When absent, it's a positional `?` placeholder. */
+  readonly name?: string;
+}
 
 interface IfBranch {
   readonly cond: string;
@@ -167,6 +181,117 @@ export async function executeBqScript(
     if (!(signal instanceof ReturnSignal)) throw signal;
   }
   return lastSelectResult;
+}
+
+/** Execute a dynamically-built SQL string. Optional INTO captures the
+ *  result row's columns into named script variables (like `SET (a, b) =
+ *  (SELECT …)`). Optional USING binds parameter values into the dynamic
+ *  SQL — `?` positional or `AS <name>` for the `@name` form.
+ *
+ *  Side effects (DML / DDL) just run through DuckDB. SELECT-shaped
+ *  dynamic SQL is read but its result rows aren't returned to the caller
+ *  unless captured via INTO. */
+async function runExecuteImmediate(
+  db: Db,
+  project: string,
+  scope: Scope,
+  stmt: Extract<Stmt, { kind: 'EXECUTE_IMMEDIATE' }>,
+): Promise<ScriptResult | undefined> {
+  // 1. Evaluate the SQL-text expression in the caller scope.
+  const sqlText = await evalScalarExpr(db, project, scope, stmt.sqlExpr, 'VARCHAR');
+  if (typeof sqlText !== 'string') {
+    throw BqError.invalid('EXECUTE IMMEDIATE expression must evaluate to STRING.', 'query');
+  }
+
+  // 2. Evaluate USING expressions against the caller scope. Each binds as
+  //    either a positional `?` (no name) or a named `@<name>` placeholder.
+  const positionalUsing: unknown[] = [];
+  const namedUsing = new Map<string, unknown>();
+  for (const clause of stmt.usingClauses) {
+    const val = await evalScalarExpr(db, project, scope, clause.expr, undefined);
+    if (clause.name === undefined) positionalUsing.push(val);
+    else namedUsing.set(clause.name.toLowerCase(), val);
+  }
+
+  // 3. Translate dynamic SQL — `@name` placeholders flow through translate()'s
+  //    paramOrder; positional `?` we substitute ourselves with `$N`.
+  const { sql: translatedSql, paramOrder } = translate(sqlText, { project });
+  const { sql: withPositional, positionalCount } = replaceQuestionMarks(translatedSql, paramOrder);
+  if (positionalCount !== positionalUsing.length) {
+    throw BqError.invalid(
+      `EXECUTE IMMEDIATE: dynamic SQL has ${positionalCount} positional placeholder(s) but USING supplied ${positionalUsing.length}.`,
+      'query',
+    );
+  }
+  // Build the bind values: named placeholders go in paramOrder slots; the
+  // appended positional slots come after.
+  const values: unknown[] = [];
+  for (const name of paramOrder) {
+    const v = namedUsing.get(name.toLowerCase());
+    if (v === undefined) {
+      throw BqError.invalid(
+        `EXECUTE IMMEDIATE: dynamic SQL references @${name} but no matching USING clause was supplied.`,
+        'query',
+      );
+    }
+    values.push(v);
+  }
+  for (const v of positionalUsing) values.push(v);
+
+  // 4. Execute and (optionally) capture results into the script-level vars.
+  let result: Awaited<ReturnType<Db['queryWithSchema']>>;
+  try {
+    result = await db.queryWithSchema(withPositional, values);
+  } catch (err) {
+    throw BqError.invalid(
+      err instanceof Error ? err.message : 'EXECUTE IMMEDIATE execution failed.',
+      'query',
+    );
+  }
+
+  if (stmt.intoVars.length > 0) {
+    if (result.rows.length !== 1) {
+      throw BqError.invalid(
+        `EXECUTE IMMEDIATE INTO expected exactly 1 row, got ${result.rows.length}.`,
+        'query',
+      );
+    }
+    if (result.columnNames.length !== stmt.intoVars.length) {
+      throw BqError.invalid(
+        `EXECUTE IMMEDIATE INTO expected ${stmt.intoVars.length} columns, got ${result.columnNames.length}.`,
+        'query',
+      );
+    }
+    const row = result.rows[0] as Record<string, unknown>;
+    for (let i = 0; i < stmt.intoVars.length; i += 1) {
+      const col = result.columnNames[i] as string;
+      scope.set(stmt.intoVars[i] as string, row[col]);
+    }
+  }
+  return undefined;
+}
+
+/** Replace each top-level `?` with `$N` (continuing from the highest `$N`
+ *  already present in the SQL). Skips `?` characters inside string literals
+ *  and comments — we tokenize to find them. */
+function replaceQuestionMarks(
+  sql: string,
+  existingParamOrder: readonly string[],
+): { sql: string; positionalCount: number } {
+  const tokens = tokenize(sql);
+  const parts: string[] = [];
+  let nextIdx = existingParamOrder.length + 1;
+  let positionalCount = 0;
+  for (const tok of tokens) {
+    if (tok.kind === 'operator' && tok.value === '?') {
+      parts.push(`$${nextIdx}`);
+      nextIdx += 1;
+      positionalCount += 1;
+    } else {
+      parts.push(tok.value);
+    }
+  }
+  return { sql: parts.join(''), positionalCount };
 }
 
 /** Invoke a stored procedure: lookup the routine, validate arg count, create
@@ -419,6 +544,9 @@ async function runStmt(
       throw new ReturnSignal();
     case 'CALL': {
       return runCall(db, project, scope, stmt);
+    }
+    case 'EXECUTE_IMMEDIATE': {
+      return runExecuteImmediate(db, project, scope, stmt);
     }
     case 'SQL': {
       // Distinguish SELECT from everything else: SELECTs surface results.
@@ -766,6 +894,12 @@ function parseSingleStmt(
       return { stmt: { kind: 'RETURN' }, next: startIdx + 1 };
     }
     if (kw === 'CALL') return parseCall(sql, tokens, startIdx, endIdx);
+    if (kw === 'EXECUTE') {
+      const after = skipTrivia(tokens, startIdx + 1, endIdx);
+      if (isKeyword(tokens[after], 'IMMEDIATE')) {
+        return parseExecuteImmediate(sql, tokens, after, endIdx);
+      }
+    }
     if (kw === 'BEGIN') {
       // `BEGIN TRANSACTION` and friends are passed through to DuckDB as
       // plain SQL — only the bare `BEGIN <stmts> END` form is a block.
@@ -1075,6 +1209,93 @@ function parseFor(
     throw BqError.invalid('FOR must terminate with END FOR.', 'query');
   }
   return { stmt: { kind: 'FOR', name, selectSql, body }, next: i + 1 };
+}
+
+function parseExecuteImmediate(
+  sql: string,
+  tokens: readonly Token[],
+  immediateIdx: number,
+  endIdx: number,
+): ParseOne {
+  // immediateIdx points at the `IMMEDIATE` token. The next non-WS token
+  // begins the SQL-text expression, which runs up to `INTO`, `USING`, or `;`.
+  let i = skipTrivia(tokens, immediateIdx + 1, endIdx);
+  const sqlExprStart = i;
+  i = consumeUntilKeywordOrSemi(tokens, i, endIdx, ['INTO', 'USING']);
+  const sqlExpr = sliceTokenText(sql, tokens, sqlExprStart, i).trim();
+  if (sqlExpr === '') {
+    throw BqError.invalid('EXECUTE IMMEDIATE requires a SQL-text expression.', 'query');
+  }
+
+  const intoVars: string[] = [];
+  if (isKeyword(tokens[i], 'INTO')) {
+    i = skipTrivia(tokens, i + 1, endIdx);
+    while (i < endIdx) {
+      const t = tokens[i] as Token;
+      if (t.kind !== 'identifier') {
+        throw BqError.invalid('EXECUTE IMMEDIATE INTO expects variable names.', 'query');
+      }
+      intoVars.push(t.value);
+      i = skipTrivia(tokens, i + 1, endIdx);
+      if (isPunct(tokens[i], ',')) {
+        i = skipTrivia(tokens, i + 1, endIdx);
+        continue;
+      }
+      break;
+    }
+  }
+
+  const usingClauses: UsingClause[] = [];
+  if (isKeyword(tokens[i], 'USING')) {
+    i = skipTrivia(tokens, i + 1, endIdx);
+    while (i < endIdx) {
+      // Each clause: <expr> [AS <name>], separated by `,`. The expression
+      // runs until the next top-level `,` / `AS` / `;`.
+      const exprStart = i;
+      i = consumeUntilUsingBoundary(tokens, i, endIdx);
+      const expr = sliceTokenText(sql, tokens, exprStart, i).trim();
+      if (expr === '') {
+        throw BqError.invalid('EXECUTE IMMEDIATE USING expects an expression.', 'query');
+      }
+      let name: string | undefined;
+      if (isKeyword(tokens[i], 'AS')) {
+        i = skipTrivia(tokens, i + 1, endIdx);
+        const nameTok = tokens[i];
+        if (nameTok?.kind !== 'identifier') {
+          throw BqError.invalid('EXECUTE IMMEDIATE USING ... AS expects a name.', 'query');
+        }
+        name = nameTok.value;
+        i = skipTrivia(tokens, i + 1, endIdx);
+      }
+      usingClauses.push(name === undefined ? { expr } : { expr, name });
+      if (isPunct(tokens[i], ',')) {
+        i = skipTrivia(tokens, i + 1, endIdx);
+        continue;
+      }
+      break;
+    }
+  }
+  return {
+    stmt: { kind: 'EXECUTE_IMMEDIATE', sqlExpr, intoVars, usingClauses },
+    next: i,
+  };
+}
+
+function consumeUntilUsingBoundary(tokens: readonly Token[], from: number, end: number): number {
+  let depth = 0;
+  let i = from;
+  while (i < end) {
+    const t = tokens[i] as Token;
+    if (t.kind === 'punctuation') {
+      if (t.value === '(') depth += 1;
+      else if (t.value === ')') depth -= 1;
+      else if ((t.value === ',' || t.value === ';') && depth === 0) return i;
+    } else if (t.kind === 'identifier' && depth === 0) {
+      if (t.value.toUpperCase() === 'AS') return i;
+    }
+    i += 1;
+  }
+  return end;
 }
 
 function parseCall(

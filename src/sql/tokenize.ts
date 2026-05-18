@@ -120,6 +120,13 @@ function readToken(sql: string, start: number, out: Token[]): number {
   if (ch === '$' && isDigit(sql.charAt(start + 1))) {
     return readPositionalParameter(sql, start, out);
   }
+  if (ch === '?') {
+    // BQ's positional placeholder for `EXECUTE IMMEDIATE … USING …`. We
+    // emit it as an operator so the script interpreter can rewrite it
+    // to a `$N` placeholder bound to the matching USING value.
+    out.push({ kind: 'operator', value: '?', start, end: start + 1 });
+    return start + 1;
+  }
 
   // r / b / rb / br string prefixes (case-insensitive).
   const prefixEnd = readStringPrefix(sql, start);

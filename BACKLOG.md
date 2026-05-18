@@ -613,7 +613,7 @@ Scope: variable scoping; conditional execution; multi-statement script entrypoin
 
 Scope: WHILE, LOOP, FOR, REPEAT, BREAK, CONTINUE. Acceptance: standard loop examples run with correct iteration counts.
 
-### BL-068 — Scripting: CALL / EXECUTE IMMEDIATE / RETURN ⏳ · Est: 3h · Deps: BL-066
+### BL-068 — Scripting: CALL / EXECUTE IMMEDIATE / RETURN ✅ · Est: 3h · Deps: BL-066
 
 Scope: dynamic SQL execution and procedure invocation. Acceptance: EXECUTE IMMEDIATE example runs.
 
