@@ -38,11 +38,13 @@ import { type ScriptResult, executeBqScript } from './script.ts';
 import { tokenize } from './tokenize.ts';
 import {
   type FunctionDdlTarget,
+  type ProcedureDdlTarget,
   type SchemaDdlTarget,
   type StatementType,
   type ViewDdlTarget,
   detectStatementType,
   parseFunctionDdl,
+  parseProcedureDdl,
   parseSchemaDdl,
   parseViewDdl,
   translate,
@@ -354,6 +356,9 @@ export async function executeQuery(
     statementType === 'DROP_TABLE_FUNCTION'
   ) {
     return executeFunctionDdl(db, project, query, statementType, options);
+  }
+  if (statementType === 'CREATE_PROCEDURE' || statementType === 'DROP_PROCEDURE') {
+    return executeProcedureDdl(db, project, query, statementType, options);
   }
 
   let result: QueryResult;
@@ -669,6 +674,90 @@ async function executeFunctionDdl(
     endedMs: now,
     totalRows: 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// DDL: PROCEDURE
+// ---------------------------------------------------------------------------
+
+async function executeProcedureDdl(
+  db: Db,
+  project: string,
+  originalQuery: string,
+  statementType: 'CREATE_PROCEDURE' | 'DROP_PROCEDURE',
+  options: { readonly jobId?: string },
+): Promise<QueryExecution> {
+  const target = parseProcedureDdl(originalQuery, project);
+  if (statementType === 'CREATE_PROCEDURE') {
+    await runCreateProcedure(db, target);
+  } else {
+    await runDropProcedure(db, target);
+  }
+  const jobId = options.jobId ?? randomUUID();
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType,
+    query: originalQuery,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: [] },
+    resultTotalRows: 0,
+  });
+  return {
+    jobId,
+    statementType,
+    schema: [],
+    wireRows: [],
+    startedMs: now,
+    endedMs: now,
+    totalRows: 0,
+  };
+}
+
+async function runCreateProcedure(db: Db, target: ProcedureDdlTarget): Promise<void> {
+  // Procedures live in datasets; require the dataset to exist first.
+  const ds = await getDataset(db, target.project, target.datasetId);
+  if (ds === null) {
+    throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
+  }
+  if (target.body === undefined) {
+    throw BqError.invalid('CREATE PROCEDURE requires a body.', 'query');
+  }
+  // Idempotency: respect IF NOT EXISTS / OR REPLACE.
+  const existing = await getRoutineSafe(db, target.project, target.datasetId, target.procedureId);
+  if (existing !== null && !target.orReplace) {
+    if (target.ifNotExists) return;
+    throw BqError.duplicate(
+      `Procedure "${target.project}:${target.datasetId}.${target.procedureId}" already exists.`,
+    );
+  }
+  await upsertRoutine(db, {
+    project: target.project,
+    datasetId: target.datasetId,
+    routineId: target.procedureId,
+    routineType: 'PROCEDURE',
+    language: 'SQL',
+    arguments: target.args.map((a) => ({
+      name: a.name,
+      mode: a.mode,
+      dataType: { typeKind: a.typeText },
+    })),
+    body: target.body,
+  });
+}
+
+async function runDropProcedure(db: Db, target: ProcedureDdlTarget): Promise<void> {
+  const existing = await getRoutineSafe(db, target.project, target.datasetId, target.procedureId);
+  if (existing === null) {
+    if (target.ifExists) return;
+    throw BqError.notFound(
+      `Procedure "${target.project}:${target.datasetId}.${target.procedureId}" not found.`,
+    );
+  }
+  await deleteRoutine(db, target.project, target.datasetId, target.procedureId);
 }
 
 async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<void> {

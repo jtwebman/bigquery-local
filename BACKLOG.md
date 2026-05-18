@@ -601,7 +601,7 @@ Scope: persistent + temporary SQL UDFs; type signatures stored in `_bq.routines`
 
 Scope: TVFs that return relations. Acceptance: TVF used in FROM clause returns expected rows.
 
-### BL-065 — Stored procedures (`CREATE PROCEDURE`) ⏳ · Est: 4h · Deps: BL-063, BL-066
+### BL-065 — Stored procedures (`CREATE PROCEDURE`) ✅ · Est: 4h · Deps: BL-063, BL-066
 
 Scope: procedure body parsed and executed via scripting runtime; `CALL` invokes. Acceptance: `CALL test.my_proc()` runs body's statements.
 
