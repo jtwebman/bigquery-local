@@ -1,6 +1,6 @@
 {
   "name": "bigquery-local",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Node.js + DuckDB local emulator for the Google BigQuery REST API. Drop-in for testing, CI, and local dev — with working PATCH.",
   "type": "module",
   "engines": {
@@ -16,6 +16,14 @@
       },
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./auth": {
+      "src": {
+        "types": "./src/client.ts",
+        "import": "./src/client.ts"
+      },
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
     }
   },
   "bin": {
@@ -62,11 +70,20 @@
     "@duckdb/node-api": "1.5.2-r.1",
     "js-yaml": "4.1.1"
   },
+  "peerDependencies": {
+    "google-auth-library": ">=10"
+  },
+  "peerDependenciesMeta": {
+    "google-auth-library": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "2.4.15",
     "@google-cloud/bigquery": "8.3.1",
     "@types/js-yaml": "4.0.9",
     "@types/node": "25.8.0",
+    "google-auth-library": "10.6.2",
     "typescript": "6.0.3"
   }
 }
