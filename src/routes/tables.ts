@@ -87,6 +87,7 @@ interface TableResourceWire {
   readonly view?: { readonly query: string; readonly useLegacySql: false };
   readonly timePartitioning?: TimePartitioningInput;
   readonly clustering?: ClusteringInput;
+  readonly labels?: Readonly<Record<string, string>>;
 }
 
 function fieldToWire(field: BqField): FieldWire {
@@ -127,6 +128,7 @@ function metaToResource(meta: TableMeta): TableResourceWire {
     ...(meta.clustering !== undefined && {
       clustering: meta.clustering as ClusteringInput,
     }),
+    ...(meta.labels !== undefined && { labels: meta.labels }),
   };
 }
 
@@ -237,6 +239,21 @@ interface ParsedTableBody {
   readonly expirationMs?: number;
   readonly timePartitioning?: TimePartitioningInput;
   readonly clustering?: ClusteringInput;
+  readonly labels?: Record<string, string>;
+}
+
+function expectLabels(value: unknown, field: string): Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw BqError.invalid(`${field} must be an object of string keys and string values.`, field);
+  }
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v !== 'string') {
+      throw BqError.invalid(`${field}.${k} must be a string.`, `${field}.${k}`);
+    }
+    result[k] = v;
+  }
+  return result;
 }
 
 function parseTableBody(body: unknown): ParsedTableBody {
@@ -300,6 +317,7 @@ function parseTableBody(body: unknown): ParsedTableBody {
     }),
     ...(timePartitioning !== undefined && { timePartitioning }),
     ...(clustering !== undefined && { clustering }),
+    ...(obj['labels'] !== undefined && { labels: expectLabels(obj['labels'], 'labels') }),
   };
 }
 
@@ -634,6 +652,7 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
             partitioning: parsed.timePartitioning,
           }),
           ...(parsed.clustering !== undefined && { clustering: parsed.clustering }),
+          ...(parsed.labels !== undefined && { labels: parsed.labels }),
         };
         const created = await upsertTable(db, input);
         return okResponse(created);
@@ -717,6 +736,11 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
           ...(parsed.clustering !== undefined
             ? { clustering: parsed.clustering }
             : existing.clustering !== undefined && { clustering: existing.clustering }),
+          // Labels CAN be updated via PATCH — replaces existing when present,
+          // preserves when absent (standard BQ PATCH semantics).
+          ...(parsed.labels !== undefined
+            ? { labels: parsed.labels }
+            : existing.labels !== undefined && { labels: existing.labels }),
         };
         const updated = await upsertTable(db, merged, ifMatchHeader(req));
         return okResponse(updated);

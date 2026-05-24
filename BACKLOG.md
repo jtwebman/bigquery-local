@@ -1035,11 +1035,11 @@ Scope: `totalBytesProcessed`, `totalSlotMs`. Acceptance: byte estimate matches a
 
 Scope: accept and surface; no actual scheduling. Acceptance: round-trips through job metadata.
 
-### BL-154 — Labels propagation ⏳ · Est: 2h · Deps: BL-008
+### BL-154 — Labels propagation ✅ · Est: 2h · Deps: BL-008
 
 Scope: labels on datasets/tables/jobs/models/routines round-trip via REST. Acceptance: labels survive PATCH.
 
-### BL-155 — Locations metadata ⏳ · Est: 2h · Deps: BL-008
+### BL-155 — Locations metadata ✅ · Est: 2h · Deps: BL-008
 
 Scope: store `location` on datasets; reject cross-location operations with the right error. Acceptance: dataset.location round-trips; mismatched-location job fails with `invalid`.
 

@@ -71,7 +71,10 @@ interface JobResourceWire {
   readonly kind: 'bigquery#job';
   readonly id: string;
   readonly jobReference: JobReferenceWire;
-  readonly configuration: { readonly query: { readonly query: string } };
+  readonly configuration: {
+    readonly query: { readonly query: string };
+    readonly labels?: Readonly<Record<string, string>>;
+  };
   readonly status: JobStatusWire;
   readonly statistics: JobStatisticsWire;
 }
@@ -133,15 +136,19 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
             ? { deletedRowCount: String(dmlAffected) }
             : undefined
       : undefined;
+  const location = meta.location ?? 'US';
   return {
     kind: 'bigquery#job',
-    id: `${meta.project}:US.${meta.jobId}`,
+    id: `${meta.project}:${location}.${meta.jobId}`,
     jobReference: {
       projectId: meta.project,
       jobId: meta.jobId,
-      location: 'US',
+      location,
     },
-    configuration: { query: { query: meta.query ?? '' } },
+    configuration: {
+      query: { query: meta.query ?? '' },
+      ...(meta.labels !== undefined && { labels: meta.labels }),
+    },
     status: {
       state: meta.state,
       ...(errorResult !== undefined && { errorResult }),
@@ -204,6 +211,25 @@ interface ParsedQueryJob {
   readonly parameters: readonly QueryParameterParsed[];
   readonly jobIdHint: string | undefined;
   readonly dryRun: boolean;
+  readonly labels?: Readonly<Record<string, string>>;
+  /** Region the job is supposed to run in. Defaults to 'US' when unset
+   *  by the client. Cross-location queries (referencing a dataset in
+   *  another location) fail with `invalid` (BL-155). */
+  readonly location?: string;
+}
+
+function expectLabelsMap(value: unknown, field: string): Readonly<Record<string, string>> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw BqError.invalid(`${field} must be an object of string keys and string values.`, field);
+  }
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v !== 'string') {
+      throw BqError.invalid(`${field}.${k} must be a string.`, `${field}.${k}`);
+    }
+    result[k] = v;
+  }
+  return result;
 }
 
 interface ParsedLoadJob {
@@ -275,15 +301,32 @@ function parseJobBody(body: unknown): ParsedJobBody {
   }
 
   let jobIdHint: string | undefined;
+  let location: string | undefined;
   const refRaw = obj['jobReference'];
   if (refRaw !== undefined && refRaw !== null) {
     const refObj = asObject(refRaw, 'jobReference');
     if (refObj['jobId'] !== undefined) {
       jobIdHint = expectString(refObj['jobId'], 'jobReference.jobId');
     }
+    if (refObj['location'] !== undefined) {
+      location = expectString(refObj['location'], 'jobReference.location');
+    }
   }
 
-  return { kind: 'query', query, parameters, jobIdHint, dryRun };
+  let labels: Readonly<Record<string, string>> | undefined;
+  if (configuration['labels'] !== undefined) {
+    labels = expectLabelsMap(configuration['labels'], 'configuration.labels');
+  }
+
+  return {
+    kind: 'query',
+    query,
+    parameters,
+    jobIdHint,
+    dryRun,
+    ...(labels !== undefined && { labels }),
+    ...(location !== undefined && { location }),
+  };
 }
 
 const SUPPORTED_LOAD_FORMATS: ReadonlySet<string> = new Set([
@@ -1133,6 +1176,8 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
 
         const exec = await executeQuery(db, project, parsed.query, parsed.parameters, {
           ...(parsed.jobIdHint !== undefined && { jobId: parsed.jobIdHint }),
+          ...(parsed.labels !== undefined && { labels: parsed.labels }),
+          ...(parsed.location !== undefined && { location: parsed.location }),
         });
         const meta = await getJob(db, project, exec.jobId);
         if (meta === null) {

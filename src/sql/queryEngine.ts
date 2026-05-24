@@ -333,22 +333,49 @@ export async function executeQuery(
   project: string,
   query: string,
   parameters: readonly QueryParameterParsed[],
-  options: { readonly jobId?: string } = {},
+  options: {
+    readonly jobId?: string;
+    readonly labels?: Readonly<Record<string, string>>;
+    /** Job-level region (BL-155). Defaults to 'US'. If the query
+     *  references a dataset stored with a different `location`, the
+     *  job fails with `invalid`. */
+    readonly location?: string;
+  } = {},
 ): Promise<QueryExecution> {
   const statementType = detectStatementType(query);
+  // BL-155 — cross-location guard. Walk backticked references in the
+  // query, find each dataset, and verify its `location` (when set)
+  // matches the job's location. Any divergence → 400 invalid.
+  await enforceJobLocation(db, project, query, options.location);
+
+  // Seed the job row up front so labels / location land in storage and
+  // are preserved through every subsequent branch-specific upsertJob
+  // (which use COALESCE on those fields).
+  const jobId = options.jobId ?? randomUUID();
+  const optionsWithJobId = { ...options, jobId };
+  if (options.labels !== undefined || options.location !== undefined) {
+    await upsertJob(db, {
+      project,
+      jobId,
+      state: 'RUNNING',
+      ...(options.labels !== undefined && { labels: options.labels }),
+      ...(options.location !== undefined && { location: options.location }),
+    });
+  }
+
   const expanded = await expandWildcardTables(query, db, project);
   const translated = translate(expanded, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 
   if (statementType === 'CREATE_VIEW' || statementType === 'DROP_VIEW') {
-    return executeViewDdl(db, project, query, sqlWithCasts, statementType, options);
+    return executeViewDdl(db, project, query, sqlWithCasts, statementType, optionsWithJobId);
   }
   if (statementType === 'CREATE_MATERIALIZED_VIEW' || statementType === 'DROP_MATERIALIZED_VIEW') {
-    return executeMaterializedViewDdl(db, project, query, statementType, options);
+    return executeMaterializedViewDdl(db, project, query, statementType, optionsWithJobId);
   }
   if (statementType === 'CREATE_SCHEMA' || statementType === 'DROP_SCHEMA') {
-    return executeSchemaDdl(db, project, query, statementType, options);
+    return executeSchemaDdl(db, project, query, statementType, optionsWithJobId);
   }
   if (statementType === 'SCRIPT') {
     // Intercept the BQ built-in procedure before the script interpreter
@@ -357,9 +384,9 @@ export async function executeQuery(
     // scripting runtime.
     const mvRefresh = parseRefreshMaterializedViewCall(query, project);
     if (mvRefresh !== null) {
-      return executeRefreshMaterializedView(db, project, query, mvRefresh, options);
+      return executeRefreshMaterializedView(db, project, query, mvRefresh, optionsWithJobId);
     }
-    return executeScript(db, project, query, options);
+    return executeScript(db, project, query, optionsWithJobId);
   }
   if (
     statementType === 'CREATE_FUNCTION' ||
@@ -367,10 +394,10 @@ export async function executeQuery(
     statementType === 'CREATE_TABLE_FUNCTION' ||
     statementType === 'DROP_TABLE_FUNCTION'
   ) {
-    return executeFunctionDdl(db, project, query, statementType, options);
+    return executeFunctionDdl(db, project, query, statementType, optionsWithJobId);
   }
   if (statementType === 'CREATE_PROCEDURE' || statementType === 'DROP_PROCEDURE') {
-    return executeProcedureDdl(db, project, query, statementType, options);
+    return executeProcedureDdl(db, project, query, statementType, optionsWithJobId);
   }
 
   let result: QueryResult;
@@ -380,7 +407,6 @@ export async function executeQuery(
     throw BqError.invalid(err instanceof Error ? err.message : 'Query execution failed.', 'query');
   }
 
-  const jobId = options.jobId ?? randomUUID();
   const startedMs = Date.now();
   const endedMs = startedMs;
 
@@ -622,6 +648,61 @@ async function executeMaterializedViewDdl(
     endedMs: now,
     totalRows: 0,
   };
+}
+
+/**
+ * Cross-location guard (BL-155).
+ *
+ * BigQuery scopes datasets to a region; queries that reference datasets
+ * in a different location than the job runs in fail. The emulator
+ * doesn't physically partition by region — every dataset lives in the
+ * same DuckDB — but we still enforce the contract: walk the
+ * backticked references in the SQL, extract the dataset names, and
+ * verify every dataset's stored `location` matches the job's location.
+ *
+ * A job with no explicit location (the BQ default 'US') is treated as
+ * matching any dataset that has no stored location. A dataset whose
+ * location is unset is also treated as compatible with any job —
+ * lenient by design, so existing tests that don't set location keep
+ * passing.
+ */
+async function enforceJobLocation(
+  db: Db,
+  defaultProject: string,
+  query: string,
+  jobLocation: string | undefined,
+): Promise<void> {
+  if (jobLocation === undefined) return;
+  const tokens = tokenize(query);
+  const seen = new Set<string>();
+  for (const tok of tokens) {
+    if (tok.kind !== 'backtick-identifier') continue;
+    const inner = tok.value.slice(1, -1);
+    const parts = inner.split('.').filter((p) => p !== '');
+    let proj: string;
+    let ds: string;
+    if (parts.length >= 3) {
+      proj = parts[0] as string;
+      ds = parts[1] as string;
+    } else if (parts.length === 2) {
+      proj = defaultProject;
+      ds = parts[0] as string;
+    } else {
+      continue;
+    }
+    const key = `${proj}:${ds}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const dataset = await getDataset(db, proj, ds);
+    if (dataset === null) continue;
+    if (dataset.location === undefined) continue;
+    if (dataset.location !== jobLocation) {
+      throw BqError.invalid(
+        `Cannot run job in location "${jobLocation}" against dataset "${proj}:${ds}" in location "${dataset.location}".`,
+        'jobReference.location',
+      );
+    }
+  }
 }
 
 /**

@@ -60,6 +60,7 @@ const DDL_STATEMENTS: readonly string[] = [
     partitioning JSON,
     clustering JSON,
     view_query VARCHAR,
+    labels JSON,
     PRIMARY KEY (project, dataset_id, table_id)
   )`,
   `CREATE TABLE IF NOT EXISTS _bq.jobs (
@@ -77,6 +78,8 @@ const DDL_STATEMENTS: readonly string[] = [
     result_schema JSON,
     result_total_rows BIGINT,
     dml_affected_rows BIGINT,
+    labels JSON,
+    location VARCHAR,
     PRIMARY KEY (project, job_id)
   )`,
   `CREATE TABLE IF NOT EXISTS _bq.job_rows (
@@ -664,6 +667,7 @@ export interface TableMetaInput {
   readonly clustering?: unknown;
   /** Raw view body when `type === 'VIEW'`. */
   readonly viewQuery?: string;
+  readonly labels?: Readonly<Record<string, string>>;
 }
 
 export interface TableMeta extends TableMetaInput {
@@ -674,7 +678,7 @@ export interface TableMeta extends TableMetaInput {
 
 const SELECT_TABLE = `SELECT
   project, dataset_id, table_id, type, etag, "schema", description,
-  num_rows, partitioning, clustering, view_query,
+  num_rows, partitioning, clustering, view_query, labels,
   epoch_ms(created_at) AS created_ms,
   epoch_ms(updated_at) AS updated_ms,
   epoch_ms(expires_at) AS expiration_ms
@@ -705,6 +709,7 @@ export async function getTable(
     ...optionalJson<'partitioning', unknown>('partitioning', row['partitioning']),
     ...optionalJson<'clustering', unknown>('clustering', row['clustering']),
     ...optional('viewQuery', row['view_query'] as string | null),
+    ...optionalJson<'labels', Readonly<Record<string, string>>>('labels', row['labels']),
   };
 }
 
@@ -866,12 +871,12 @@ export async function upsertTable(
     `INSERT INTO _bq.tables (
       project, dataset_id, table_id, type, etag, "schema", description,
       num_rows, created_at, updated_at, expires_at, partitioning, clustering,
-      view_query
+      view_query, labels
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7,
       $8, epoch_ms($9::BIGINT), epoch_ms($10::BIGINT),
       CASE WHEN $11 IS NULL THEN NULL ELSE epoch_ms($11::BIGINT) END,
-      $12, $13, $14
+      $12, $13, $14, $15
     )
     ON CONFLICT (project, dataset_id, table_id) DO UPDATE SET
       type = EXCLUDED.type,
@@ -883,7 +888,8 @@ export async function upsertTable(
       expires_at = EXCLUDED.expires_at,
       partitioning = EXCLUDED.partitioning,
       clustering = EXCLUDED.clustering,
-      view_query = EXCLUDED.view_query`,
+      view_query = EXCLUDED.view_query,
+      labels = EXCLUDED.labels`,
     [
       input.project,
       input.datasetId,
@@ -899,6 +905,7 @@ export async function upsertTable(
       jsonOrNull(input.partitioning),
       jsonOrNull(input.clustering),
       input.viewQuery ?? null,
+      jsonOrNull(input.labels),
     ],
   );
   await refreshTableInfoProjections(db, input);
@@ -954,7 +961,7 @@ export async function listTables(
   const rows = await db.query<Record<string, unknown>>(
     `SELECT
        project, dataset_id, table_id, type, etag, "schema", description,
-       num_rows, partitioning, clustering, view_query,
+       num_rows, partitioning, clustering, view_query, labels,
        epoch_ms(created_at) AS created_ms,
        epoch_ms(updated_at) AS updated_ms,
        epoch_ms(expires_at) AS expiration_ms
@@ -981,6 +988,7 @@ export async function listTables(
     ...optionalJson<'partitioning', unknown>('partitioning', row['partitioning']),
     ...optionalJson<'clustering', unknown>('clustering', row['clustering']),
     ...optional('viewQuery', row['view_query'] as string | null),
+    ...optionalJson<'labels', Readonly<Record<string, string>>>('labels', row['labels']),
   }));
   return {
     tables,
@@ -1008,6 +1016,9 @@ export interface JobMetaInput {
   readonly resultSchema?: unknown;
   readonly resultTotalRows?: number;
   readonly dmlAffectedRows?: number;
+  readonly labels?: Readonly<Record<string, string>>;
+  /** Region the job ran in. Defaults to 'US' when unset. */
+  readonly location?: string;
 }
 
 export interface JobMeta extends JobMetaInput {
@@ -1016,7 +1027,7 @@ export interface JobMeta extends JobMetaInput {
 
 const SELECT_JOB = `SELECT
   project, job_id, state, statement_type, error, query, params, types,
-  result_schema, result_total_rows, dml_affected_rows,
+  result_schema, result_total_rows, dml_affected_rows, labels, location,
   epoch_ms(created_at) AS created_ms,
   epoch_ms(started_at) AS started_ms,
   epoch_ms(ended_at) AS ended_ms
@@ -1042,6 +1053,8 @@ export async function getJob(db: Db, project: string, jobId: string): Promise<Jo
     ...optionalJson<'resultSchema', unknown>('resultSchema', row['result_schema']),
     ...optionalNumber('resultTotalRows', row['result_total_rows']),
     ...optionalNumber('dmlAffectedRows', row['dml_affected_rows']),
+    ...optionalJson<'labels', Readonly<Record<string, string>>>('labels', row['labels']),
+    ...optional('location', row['location'] as string | null),
   };
 }
 
@@ -1055,13 +1068,13 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
     `INSERT INTO _bq.jobs (
       project, job_id, state, statement_type, error, query, params, types,
       created_at, started_at, ended_at, result_schema, result_total_rows,
-      dml_affected_rows
+      dml_affected_rows, labels, location
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8,
       epoch_ms($9::BIGINT),
       CASE WHEN $10 IS NULL THEN NULL ELSE epoch_ms($10::BIGINT) END,
       CASE WHEN $11 IS NULL THEN NULL ELSE epoch_ms($11::BIGINT) END,
-      $12, $13, $14
+      $12, $13, $14, $15, $16
     )
     ON CONFLICT (project, job_id) DO UPDATE SET
       state = EXCLUDED.state,
@@ -1074,7 +1087,9 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
       ended_at = EXCLUDED.ended_at,
       result_schema = EXCLUDED.result_schema,
       result_total_rows = EXCLUDED.result_total_rows,
-      dml_affected_rows = EXCLUDED.dml_affected_rows`,
+      dml_affected_rows = EXCLUDED.dml_affected_rows,
+      labels = COALESCE(EXCLUDED.labels, _bq.jobs.labels),
+      location = COALESCE(EXCLUDED.location, _bq.jobs.location)`,
     [
       input.project,
       input.jobId,
@@ -1090,6 +1105,8 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
       jsonOrNull(input.resultSchema),
       bigintOrNull(input.resultTotalRows),
       bigintOrNull(input.dmlAffectedRows),
+      jsonOrNull(input.labels),
+      input.location ?? null,
     ],
   );
   return {
@@ -1147,7 +1164,7 @@ export async function listJobs(
 
   const sql = `SELECT
        project, job_id, state, statement_type, error, query, params, types,
-       result_schema, result_total_rows, dml_affected_rows,
+       result_schema, result_total_rows, dml_affected_rows, labels, location,
        epoch_ms(created_at) AS created_ms,
        epoch_ms(started_at) AS started_ms,
        epoch_ms(ended_at) AS ended_ms
@@ -1174,6 +1191,8 @@ export async function listJobs(
     ...optionalJson<'resultSchema', unknown>('resultSchema', row['result_schema']),
     ...optionalNumber('resultTotalRows', row['result_total_rows']),
     ...optionalNumber('dmlAffectedRows', row['dml_affected_rows']),
+    ...optionalJson<'labels', Readonly<Record<string, string>>>('labels', row['labels']),
+    ...optional('location', row['location'] as string | null),
   }));
   return { jobs, nextOffset: hasMore ? options.offset + options.limit : null };
 }
