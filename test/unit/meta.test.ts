@@ -40,6 +40,7 @@ test('ensureMetaSchema creates the _bq schema and the meta tables', async () => 
       'datasets',
       'job_rows',
       'jobs',
+      'models',
       'routines',
       'table_columns',
       'table_field_paths',

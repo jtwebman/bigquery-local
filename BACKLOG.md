@@ -679,11 +679,11 @@ Scope: sandboxed JS UDFs via `vm` module; BQ argument/return type marshalling. A
 
 ## Phase 12 — Routines / models / sessions
 
-### BL-071 — Routines REST CRUD ⏳ · Est: 2h · Deps: BL-063
+### BL-071 — Routines REST CRUD ✅ · Est: 2h · Deps: BL-063
 
 Scope: `GET`, `POST`, `PATCH`, `DELETE` on `/projects/{p}/datasets/{d}/routines[/{r}]`. Acceptance: routines CRUD via REST round-trips.
 
-### BL-072 — Models REST CRUD (metadata) ⏳ · Est: 2h · Deps: BL-008
+### BL-072 — Models REST CRUD (metadata) ✅ · Est: 2h · Deps: BL-008
 
 Scope: model metadata storage + endpoints. No actual training. Acceptance: model record visible via REST `GET` after `POST`.
 

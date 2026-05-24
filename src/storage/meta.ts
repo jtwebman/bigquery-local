@@ -100,6 +100,27 @@ const DDL_STATEMENTS: readonly string[] = [
     updated_at TIMESTAMP NOT NULL,
     PRIMARY KEY (project, dataset_id, routine_id)
   )`,
+  // BL-072 — models metadata. No training happens here; this is purely
+  // a REST surface so clients listing or describing models against the
+  // emulator get realistic shapes. feature_columns / label_columns are
+  // opaque JSON arrays (BQ wire shape).
+  `CREATE TABLE IF NOT EXISTS _bq.models (
+    project VARCHAR NOT NULL,
+    dataset_id VARCHAR NOT NULL,
+    model_id VARCHAR NOT NULL,
+    model_type VARCHAR NOT NULL,
+    description VARCHAR,
+    friendly_name VARCHAR,
+    labels JSON,
+    location VARCHAR,
+    feature_columns JSON,
+    label_columns JSON,
+    etag VARCHAR NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    expires_at TIMESTAMP,
+    PRIMARY KEY (project, dataset_id, model_id)
+  )`,
   // Denormalized projections of _bq.tables' schema JSON, refreshed by
   // upsertTable / deleteTable. They keep INFORMATION_SCHEMA.COLUMNS &
   // COLUMN_FIELD_PATHS as plain SQL views — no JSON unnesting at query
@@ -1274,4 +1295,226 @@ export async function deleteRoutine(
     [project, datasetId, routineId],
   );
   return true;
+}
+
+/** Paginated list of routines in a dataset, ordered by `routine_id`.
+ * Reads N+1 to detect "has more". */
+export async function listRoutines(
+  db: Db,
+  project: string,
+  datasetId: string,
+  options: { readonly offset: number; readonly limit: number },
+): Promise<{
+  readonly routines: readonly RoutineMeta[];
+  readonly nextOffset: number | null;
+}> {
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT project, dataset_id, routine_id, routine_type, language,
+            arguments, return_type, body, etag,
+            epoch_ms(created_at) AS created_ms,
+            epoch_ms(updated_at) AS updated_ms
+       FROM _bq.routines
+      WHERE project = $1 AND dataset_id = $2
+      ORDER BY routine_id
+      LIMIT $3::BIGINT OFFSET $4::BIGINT`,
+    [project, datasetId, BigInt(options.limit + 1), BigInt(options.offset)],
+  );
+  const hasMore = rows.length > options.limit;
+  const sliced = hasMore ? rows.slice(0, options.limit) : rows;
+  const routines: RoutineMeta[] = sliced.map((row) => ({
+    project: row['project'] as string,
+    datasetId: row['dataset_id'] as string,
+    routineId: row['routine_id'] as string,
+    routineType: row['routine_type'] as RoutineType,
+    language: row['language'] as RoutineLanguage,
+    body: row['body'] as string,
+    etag: row['etag'] as string,
+    createdMs: toNumber(row['created_ms']),
+    updatedMs: toNumber(row['updated_ms']),
+    ...optionalJson<'arguments', unknown>('arguments', row['arguments']),
+    ...optionalJson<'returnType', unknown>('returnType', row['return_type']),
+  }));
+  return { routines, nextOffset: hasMore ? options.offset + options.limit : null };
+}
+
+// ---------------------------------------------------------------------------
+// Models (BL-072 — metadata only, no training)
+// ---------------------------------------------------------------------------
+
+export interface ModelMetaInput {
+  readonly project: string;
+  readonly datasetId: string;
+  readonly modelId: string;
+  /** BQML model kind — 'LINEAR_REGRESSION', 'LOGISTIC_REGRESSION', etc.
+   * We don't validate the kind in v0; the wire format passes it through. */
+  readonly modelType: string;
+  readonly description?: string;
+  readonly friendlyName?: string;
+  readonly labels?: Readonly<Record<string, string>>;
+  readonly expirationMs?: number;
+  /** Feature columns — BQ wire shape, kept as opaque JSON. */
+  readonly featureColumns?: unknown;
+  /** Label columns — BQ wire shape, kept as opaque JSON. */
+  readonly labelColumns?: unknown;
+  readonly location?: string;
+}
+
+export interface ModelMeta extends ModelMetaInput {
+  readonly etag: string;
+  readonly createdMs: number;
+  readonly updatedMs: number;
+}
+
+const SELECT_MODEL = `SELECT
+  project, dataset_id, model_id, model_type, description, friendly_name,
+  labels, location, feature_columns, label_columns, etag,
+  epoch_ms(created_at) AS created_ms,
+  epoch_ms(updated_at) AS updated_ms,
+  epoch_ms(expires_at) AS expiration_ms
+FROM _bq.models
+WHERE project = $1 AND dataset_id = $2 AND model_id = $3`;
+
+export async function getModel(
+  db: Db,
+  project: string,
+  datasetId: string,
+  modelId: string,
+): Promise<ModelMeta | null> {
+  const rows = await db.query<Record<string, unknown>>(SELECT_MODEL, [project, datasetId, modelId]);
+  const row = rows[0];
+  if (row === undefined) return null;
+  return {
+    project: row['project'] as string,
+    datasetId: row['dataset_id'] as string,
+    modelId: row['model_id'] as string,
+    modelType: row['model_type'] as string,
+    etag: row['etag'] as string,
+    createdMs: toNumber(row['created_ms']),
+    updatedMs: toNumber(row['updated_ms']),
+    ...optional('description', row['description'] as string | null),
+    ...optional('friendlyName', row['friendly_name'] as string | null),
+    ...optionalJson<'labels', Readonly<Record<string, string>>>('labels', row['labels']),
+    ...optional('location', row['location'] as string | null),
+    ...optionalJson<'featureColumns', unknown>('featureColumns', row['feature_columns']),
+    ...optionalJson<'labelColumns', unknown>('labelColumns', row['label_columns']),
+    ...optionalNumber('expirationMs', row['expiration_ms']),
+  };
+}
+
+export async function upsertModel(
+  db: Db,
+  input: ModelMetaInput,
+  ifMatch?: string,
+): Promise<ModelMeta> {
+  const existing = await getModel(db, input.project, input.datasetId, input.modelId);
+  if (existing !== null) {
+    checkIfMatch(existing.etag, ifMatch);
+  } else if (ifMatch !== undefined) {
+    throw BqError.notFound(
+      `Model "${input.project}:${input.datasetId}.${input.modelId}" not found.`,
+    );
+  }
+  const newEtag = etag(input);
+  const now = Date.now();
+  const createdMs = existing?.createdMs ?? now;
+  const expiresAtParam = input.expirationMs === undefined ? null : BigInt(input.expirationMs);
+  await db.exec(
+    `INSERT INTO _bq.models (
+      project, dataset_id, model_id, model_type, description, friendly_name,
+      labels, location, feature_columns, label_columns, etag,
+      created_at, updated_at, expires_at
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+      epoch_ms($12::BIGINT), epoch_ms($13::BIGINT),
+      CASE WHEN $14 IS NULL THEN NULL ELSE epoch_ms($14::BIGINT) END
+    )
+    ON CONFLICT (project, dataset_id, model_id) DO UPDATE SET
+      model_type = EXCLUDED.model_type,
+      description = EXCLUDED.description,
+      friendly_name = EXCLUDED.friendly_name,
+      labels = EXCLUDED.labels,
+      location = EXCLUDED.location,
+      feature_columns = EXCLUDED.feature_columns,
+      label_columns = EXCLUDED.label_columns,
+      etag = EXCLUDED.etag,
+      updated_at = EXCLUDED.updated_at,
+      expires_at = EXCLUDED.expires_at`,
+    [
+      input.project,
+      input.datasetId,
+      input.modelId,
+      input.modelType,
+      input.description ?? null,
+      input.friendlyName ?? null,
+      jsonOrNull(input.labels),
+      input.location ?? null,
+      jsonOrNull(input.featureColumns),
+      jsonOrNull(input.labelColumns),
+      newEtag,
+      BigInt(createdMs),
+      BigInt(now),
+      expiresAtParam,
+    ],
+  );
+  return { ...input, etag: newEtag, createdMs, updatedMs: now };
+}
+
+export async function deleteModel(
+  db: Db,
+  project: string,
+  datasetId: string,
+  modelId: string,
+  ifMatch?: string,
+): Promise<boolean> {
+  const existing = await getModel(db, project, datasetId, modelId);
+  if (existing === null) return false;
+  checkIfMatch(existing.etag, ifMatch);
+  await db.exec(
+    `DELETE FROM _bq.models
+     WHERE project = $1 AND dataset_id = $2 AND model_id = $3`,
+    [project, datasetId, modelId],
+  );
+  return true;
+}
+
+export async function listModels(
+  db: Db,
+  project: string,
+  datasetId: string,
+  options: { readonly offset: number; readonly limit: number },
+): Promise<{
+  readonly models: readonly ModelMeta[];
+  readonly nextOffset: number | null;
+}> {
+  const rows = await db.query<Record<string, unknown>>(
+    `SELECT project, dataset_id, model_id, model_type, description, friendly_name,
+            labels, location, feature_columns, label_columns, etag,
+            epoch_ms(created_at) AS created_ms,
+            epoch_ms(updated_at) AS updated_ms,
+            epoch_ms(expires_at) AS expiration_ms
+       FROM _bq.models
+      WHERE project = $1 AND dataset_id = $2
+      ORDER BY model_id
+      LIMIT $3::BIGINT OFFSET $4::BIGINT`,
+    [project, datasetId, BigInt(options.limit + 1), BigInt(options.offset)],
+  );
+  const hasMore = rows.length > options.limit;
+  const sliced = hasMore ? rows.slice(0, options.limit) : rows;
+  const models: ModelMeta[] = sliced.map((row) => ({
+    project: row['project'] as string,
+    datasetId: row['dataset_id'] as string,
+    modelId: row['model_id'] as string,
+    modelType: row['model_type'] as string,
+    etag: row['etag'] as string,
+    createdMs: toNumber(row['created_ms']),
+    updatedMs: toNumber(row['updated_ms']),
+    ...optional('description', row['description'] as string | null),
+    ...optional('friendlyName', row['friendly_name'] as string | null),
+    ...optionalJson<'labels', Readonly<Record<string, string>>>('labels', row['labels']),
+    ...optional('location', row['location'] as string | null),
+    ...optionalJson<'featureColumns', unknown>('featureColumns', row['feature_columns']),
+    ...optionalJson<'labelColumns', unknown>('labelColumns', row['label_columns']),
+    ...optionalNumber('expirationMs', row['expiration_ms']),
+  }));
+  return { models, nextOffset: hasMore ? options.offset + options.limit : null };
 }
