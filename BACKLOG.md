@@ -705,7 +705,7 @@ Scope: virtual views over `_bq.tables`. Acceptance: `SELECT * FROM \`region-us\`
 
 Scope: virtual views over view metadata. Acceptance: view DDL appears in `view_definition` column.
 
-### BL-077 — ROUTINES / PARAMETERS / ROUTINE_OPTIONS ⏳ · Est: 2h · Deps: BL-063
+### BL-077 — ROUTINES / PARAMETERS / ROUTINE_OPTIONS ✅ · Est: 2h · Deps: BL-063
 
 Scope: virtual views over routine metadata. Acceptance: UDF rows present and well-shaped.
 

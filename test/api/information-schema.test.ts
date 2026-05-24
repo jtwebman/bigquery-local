@@ -91,6 +91,17 @@ before(async () => {
   await postJson(`/projects/${PROJECT}/queries`, {
     query: `CREATE VIEW \`${DATASET_A}.recent_orders\` AS SELECT order_id FROM \`${DATASET_A}.orders\``,
   });
+
+  // A SQL UDF and a procedure — visible to INFORMATION_SCHEMA.ROUTINES.
+  await postJson(`/projects/${PROJECT}/queries`, {
+    query: `CREATE FUNCTION \`${DATASET_A}.double_amount\`(x INT64) RETURNS INT64 AS (x * 2)`,
+  });
+  await postJson(`/projects/${PROJECT}/queries`, {
+    query: `CREATE PROCEDURE \`${DATASET_A}.log_msg\`(IN msg STRING, OUT result STRING)
+            BEGIN
+              SET result = CONCAT('logged: ', msg);
+            END`,
+  });
 });
 
 after(async () => {
@@ -254,6 +265,59 @@ test('INFORMATION_SCHEMA.VIEWS excludes base tables', async () => {
 test('INFORMATION_SCHEMA.MATERIALIZED_VIEWS returns no rows until MVs exist (BL-101)', async () => {
   const result = await rows(
     `SELECT count(*)::INT64 FROM \`region-us\`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS`,
+  );
+  assert.deepEqual(result, [['0']]);
+});
+
+// ---------------------------------------------------------------------------
+// ROUTINES / PARAMETERS / ROUTINE_OPTIONS (BL-077)
+// ---------------------------------------------------------------------------
+
+test('INFORMATION_SCHEMA.ROUTINES lists SQL functions and procedures', async () => {
+  const result = await rows(
+    `SELECT specific_name, routine_type, data_type, routine_body, routine_definition
+     FROM ${DATASET_A}.INFORMATION_SCHEMA.ROUTINES
+     ORDER BY specific_name`,
+  );
+  assert.equal(result.length, 2);
+  const [doubleAmount, logMsg] = result as Array<Array<string | null>>;
+  assert.equal(doubleAmount?.[0], 'double_amount');
+  assert.equal(doubleAmount?.[1], 'FUNCTION');
+  assert.equal(doubleAmount?.[2], 'INT64');
+  assert.equal(doubleAmount?.[3], 'SQL');
+  assert.match(doubleAmount?.[4] ?? '', /x\s*\*\s*2/);
+  assert.equal(logMsg?.[0], 'log_msg');
+  assert.equal(logMsg?.[1], 'PROCEDURE');
+  assert.equal(logMsg?.[2], null);
+  assert.equal(logMsg?.[3], 'SQL');
+});
+
+test('INFORMATION_SCHEMA.PARAMETERS unnests routine arguments with ordinals + modes', async () => {
+  const result = await rows(
+    `SELECT specific_name, ordinal_position, parameter_mode, parameter_name, data_type
+     FROM ${DATASET_A}.INFORMATION_SCHEMA.PARAMETERS
+     ORDER BY specific_name, ordinal_position`,
+  );
+  assert.deepEqual(result, [
+    ['double_amount', '1', 'IN', 'x', 'INT64'],
+    ['log_msg', '1', 'IN', 'msg', 'STRING'],
+    ['log_msg', '2', 'OUT', 'result', 'STRING'],
+  ]);
+});
+
+test('INFORMATION_SCHEMA.ROUTINE_OPTIONS is empty (we do not persist options)', async () => {
+  const result = await rows(
+    `SELECT count(*)::INT64 FROM ${DATASET_A}.INFORMATION_SCHEMA.ROUTINE_OPTIONS`,
+  );
+  assert.deepEqual(result, [['0']]);
+});
+
+test('Routine-shaped views filter by specific_catalog (not table_catalog)', async () => {
+  // Cross-project query against a different project's routines returns
+  // zero rows — confirms the project filter applies to the right column.
+  const result = await rows(
+    `SELECT count(*)::INT64
+     FROM \`other-project.${DATASET_A}\`.INFORMATION_SCHEMA.ROUTINES`,
   );
   assert.deepEqual(result, [['0']]);
 });

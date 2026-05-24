@@ -1169,16 +1169,37 @@ function translateRange(
 
 /**
  * Maps a BQ `INFORMATION_SCHEMA.<NAME>` to the backing DuckDB view in the
- * `_bq` schema. Names not in this map throw `unsupportedFeature` so the
- * caller gets a precise error instead of a DuckDB "table does not exist".
+ * `_bq` schema, plus the column names the project/dataset filter applies
+ * to. Most views use `table_catalog` / `table_schema`; the routine-shaped
+ * views (ROUTINES, PARAMETERS, ROUTINE_OPTIONS) use BQ's `specific_*`
+ * naming. Names not in this map throw `unsupportedFeature` so the caller
+ * gets a precise error instead of a DuckDB "table does not exist".
  */
-const INFORMATION_SCHEMA_VIEWS: ReadonlyMap<string, string> = new Map([
-  ['TABLES', 'info_tables'],
-  ['COLUMNS', 'info_columns'],
-  ['COLUMN_FIELD_PATHS', 'info_column_field_paths'],
-  ['TABLE_OPTIONS', 'info_table_options'],
-  ['VIEWS', 'info_views'],
-  ['MATERIALIZED_VIEWS', 'info_materialized_views'],
+interface InformationSchemaView {
+  readonly duckdbView: string;
+  readonly catalogColumn: string;
+  readonly schemaColumn: string;
+}
+
+const TABLE_SCOPED: Pick<InformationSchemaView, 'catalogColumn' | 'schemaColumn'> = {
+  catalogColumn: 'table_catalog',
+  schemaColumn: 'table_schema',
+};
+const ROUTINE_SCOPED: Pick<InformationSchemaView, 'catalogColumn' | 'schemaColumn'> = {
+  catalogColumn: 'specific_catalog',
+  schemaColumn: 'specific_schema',
+};
+
+const INFORMATION_SCHEMA_VIEWS: ReadonlyMap<string, InformationSchemaView> = new Map([
+  ['TABLES', { duckdbView: 'info_tables', ...TABLE_SCOPED }],
+  ['COLUMNS', { duckdbView: 'info_columns', ...TABLE_SCOPED }],
+  ['COLUMN_FIELD_PATHS', { duckdbView: 'info_column_field_paths', ...TABLE_SCOPED }],
+  ['TABLE_OPTIONS', { duckdbView: 'info_table_options', ...TABLE_SCOPED }],
+  ['VIEWS', { duckdbView: 'info_views', ...TABLE_SCOPED }],
+  ['MATERIALIZED_VIEWS', { duckdbView: 'info_materialized_views', ...TABLE_SCOPED }],
+  ['ROUTINES', { duckdbView: 'info_routines', ...ROUTINE_SCOPED }],
+  ['PARAMETERS', { duckdbView: 'info_parameters', ...ROUTINE_SCOPED }],
+  ['ROUTINE_OPTIONS', { duckdbView: 'info_routine_options', ...ROUTINE_SCOPED }],
 ]);
 
 /** A segment of an INFORMATION_SCHEMA prefix — one component before the
@@ -1275,11 +1296,11 @@ function buildInformationSchemaQuery(
     );
   }
   const { project, dataset } = resolveInformationSchemaScope(segments, currentProject);
-  const conditions: string[] = [`table_catalog = ${sqlString(project)}`];
+  const conditions: string[] = [`${view.catalogColumn} = ${sqlString(project)}`];
   if (dataset !== null) {
-    conditions.push(`table_schema = ${sqlString(dataset)}`);
+    conditions.push(`${view.schemaColumn} = ${sqlString(dataset)}`);
   }
-  return `(SELECT * FROM _bq."${view}" WHERE ${conditions.join(' AND ')})`;
+  return `(SELECT * FROM _bq."${view.duckdbView}" WHERE ${conditions.join(' AND ')})`;
 }
 
 function resolveInformationSchemaScope(

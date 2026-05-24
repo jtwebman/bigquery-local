@@ -230,6 +230,65 @@ const DDL_STATEMENTS: readonly string[] = [
      CAST(NULL AS TIMESTAMP) AS refresh_watermark
    FROM _bq.tables
    WHERE type = 'MATERIALIZED_VIEW'`,
+  // INFORMATION_SCHEMA.ROUTINES — one row per persistent routine (SQL
+  // UDFs, TVFs, procedures). BQ collapses both function flavors to
+  // `routine_type = 'FUNCTION'`; only `PROCEDURE` stands alone. `data_type`
+  // is the return-type kind for FUNCTION rows, NULL for PROCEDURE and
+  // table-valued functions. `routine_body` distinguishes SQL ('SQL') from
+  // external-language bodies ('EXTERNAL', currently unused — lands when
+  // BL-070 JS UDFs do).
+  `CREATE OR REPLACE VIEW _bq.info_routines AS
+   SELECT
+     project AS specific_catalog,
+     dataset_id AS specific_schema,
+     routine_id AS specific_name,
+     project AS routine_catalog,
+     dataset_id AS routine_schema,
+     routine_id AS routine_name,
+     CASE routine_type WHEN 'PROCEDURE' THEN 'PROCEDURE' ELSE 'FUNCTION' END AS routine_type,
+     CASE
+       WHEN routine_type = 'SCALAR_FUNCTION' THEN json_extract_string(return_type, '$.typeKind')
+       ELSE NULL
+     END AS data_type,
+     CASE language WHEN 'SQL' THEN 'SQL' ELSE 'EXTERNAL' END AS routine_body,
+     body AS routine_definition,
+     CASE language WHEN 'SQL' THEN NULL ELSE language END AS external_language,
+     'YES' AS is_deterministic,
+     CAST(NULL AS VARCHAR) AS security_type,
+     created_at AS created,
+     updated_at AS last_altered,
+     body AS ddl
+   FROM _bq.routines`,
+  // INFORMATION_SCHEMA.PARAMETERS — unnests the routine `arguments` JSON
+  // into one row per parameter. Argument shape (set by queryEngine when
+  // it persists a routine): `[{ name, mode?, dataType: { typeKind } }]`.
+  // Procedures may carry mode = IN / OUT / INOUT; functions default to IN.
+  `CREATE OR REPLACE VIEW _bq.info_parameters AS
+   SELECT
+     r.project AS specific_catalog,
+     r.dataset_id AS specific_schema,
+     r.routine_id AS specific_name,
+     CAST(a.key AS BIGINT) + 1 AS ordinal_position,
+     COALESCE(json_extract_string(a.value, '$.mode'), 'IN') AS parameter_mode,
+     'NO' AS is_result,
+     json_extract_string(a.value, '$.name') AS parameter_name,
+     json_extract_string(a.value, '$.dataType.typeKind') AS data_type
+   FROM _bq.routines r,
+        json_each(r.arguments) a
+   WHERE r.arguments IS NOT NULL`,
+  // INFORMATION_SCHEMA.ROUTINE_OPTIONS — we don't currently persist any
+  // options on routines, so the view returns no rows. Wired so clients
+  // get an empty result rather than an unsupportedFeature error.
+  `CREATE OR REPLACE VIEW _bq.info_routine_options AS
+   SELECT
+     project AS specific_catalog,
+     dataset_id AS specific_schema,
+     routine_id AS specific_name,
+     CAST(NULL AS VARCHAR) AS option_name,
+     CAST(NULL AS VARCHAR) AS option_type,
+     CAST(NULL AS VARCHAR) AS option_value
+   FROM _bq.routines
+   WHERE FALSE`,
   `CREATE OR REPLACE VIEW _bq.info_table_options AS
    SELECT project AS table_catalog, dataset_id AS table_schema, table_id AS table_name,
           'description' AS option_name, 'STRING' AS option_type,
