@@ -323,6 +323,92 @@ test('Routine-shaped views filter by specific_catalog (not table_catalog)', asyn
 });
 
 // ---------------------------------------------------------------------------
+// JOBS / JOBS_BY_* / JOBS_TIMELINE_* (BL-078)
+// ---------------------------------------------------------------------------
+
+test('INFORMATION_SCHEMA.JOBS lists previously-run queries with shape and state', async () => {
+  // The CREATE VIEW + CREATE FUNCTION + CREATE PROCEDURE from setup all
+  // ran as queries → they appear here.
+  const result = await rows(
+    `SELECT job_type, state, statement_type IS NOT NULL AS has_stmt
+     FROM \`region-us\`.INFORMATION_SCHEMA.JOBS
+     ORDER BY creation_time`,
+  );
+  // We don't pin the exact list (subsequent tests in this run add jobs),
+  // but every row should be a DONE QUERY job with a statement_type.
+  assert.ok(result.length >= 3, `expected ≥3 jobs, got ${result.length}`);
+  for (const row of result) {
+    assert.equal(row[0], 'QUERY');
+    assert.equal(row[1], 'DONE');
+    assert.equal(row[2], 'true');
+  }
+});
+
+test('JOBS / JOBS_BY_USER / JOBS_BY_PROJECT / JOBS_BY_ORGANIZATION return the same rows', async () => {
+  const counts = await Promise.all(
+    ['JOBS', 'JOBS_BY_USER', 'JOBS_BY_PROJECT', 'JOBS_BY_ORGANIZATION'].map((view) =>
+      rows(`SELECT count(*)::INT64 FROM \`region-us\`.INFORMATION_SCHEMA.${view}`),
+    ),
+  );
+  const [a, b, c, d] = counts;
+  assert.deepEqual(b, a);
+  assert.deepEqual(c, a);
+  assert.deepEqual(d, a);
+});
+
+test('INFORMATION_SCHEMA.JOBS_TIMELINE_BY_PROJECT emits buckets with period_slot_ms = 0', async () => {
+  const result = await rows(
+    `SELECT count(*)::INT64,
+            CAST(max(period_slot_ms) AS VARCHAR),
+            CAST(count(period_start) AS VARCHAR)
+     FROM \`region-us\`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_PROJECT`,
+  );
+  const [count, slotMs, periodStartCount] = result[0] as Array<string | null>;
+  assert.ok(Number(count) >= 1, `expected ≥1 timeline row, got ${count}`);
+  // We don't track slots — every row reports 0 slot ms.
+  assert.equal(slotMs, '0');
+  // Every row has a non-null period_start (bucket).
+  assert.equal(periodStartCount, count);
+});
+
+test('JOBS views ignore dataset filter (project-scoped only)', async () => {
+  // Even with `dataset.INFORMATION_SCHEMA.JOBS` syntax, the dataset
+  // filter should not be applied — every JOBS query observes ≥1 row,
+  // and a misapplied dataset filter would force the count to zero.
+  const datasetScoped = await rows(
+    `SELECT count(*)::INT64 FROM ${DATASET_A}.INFORMATION_SCHEMA.JOBS`,
+  );
+  assert.ok(
+    Number(datasetScoped[0]?.[0]) > 0,
+    `dataset-scoped JOBS should ignore the dataset filter, got ${datasetScoped[0]?.[0]}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// SCHEMATA / SCHEMATA_OPTIONS (BL-079)
+// ---------------------------------------------------------------------------
+
+test('INFORMATION_SCHEMA.SCHEMATA enumerates datasets in the project', async () => {
+  const result = await rows(
+    `SELECT catalog_name, schema_name, location
+     FROM \`region-us\`.INFORMATION_SCHEMA.SCHEMATA
+     ORDER BY schema_name`,
+  );
+  assert.deepEqual(result, [
+    [PROJECT, DATASET_B, 'US'],
+    [PROJECT, DATASET_A, 'US'],
+  ]);
+});
+
+test('INFORMATION_SCHEMA.SCHEMATA_OPTIONS returns empty when no options are set', async () => {
+  // Our setup datasets are bare — no description, no default expiration.
+  const result = await rows(
+    `SELECT count(*)::INT64 FROM \`region-us\`.INFORMATION_SCHEMA.SCHEMATA_OPTIONS`,
+  );
+  assert.deepEqual(result, [['0']]);
+});
+
+// ---------------------------------------------------------------------------
 // Unsupported view → clear error
 // ---------------------------------------------------------------------------
 
@@ -331,7 +417,8 @@ test('Querying an unsupported INFORMATION_SCHEMA view fails with unsupportedFeat
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      query: `SELECT * FROM \`region-us\`.INFORMATION_SCHEMA.JOBS`,
+      // SEARCH_INDEXES is one of the BL-080+ post-1.0 deferrals.
+      query: `SELECT * FROM \`region-us\`.INFORMATION_SCHEMA.SEARCH_INDEXES`,
     }),
   });
   assert.equal(res.status, 400);

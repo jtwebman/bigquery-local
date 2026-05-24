@@ -709,11 +709,11 @@ Scope: virtual views over view metadata. Acceptance: view DDL appears in `view_d
 
 Scope: virtual views over routine metadata. Acceptance: UDF rows present and well-shaped.
 
-### BL-078 — JOBS / JOBS*BY_USER / JOBS_BY_PROJECT / JOBS_BY_ORGANIZATION / JOBS_TIMELINE*\* ⏳ · Est: 4h · Deps: BL-016
+### BL-078 — JOBS / JOBS*BY_USER / JOBS_BY_PROJECT / JOBS_BY_ORGANIZATION / JOBS_TIMELINE*\* ✅ · Est: 4h · Deps: BL-016
 
 Scope: virtual views over `_bq.jobs`. Acceptance: jobs visible per filter scope; `JOBS_TIMELINE` returns plausible numbers.
 
-### BL-079 — SCHEMATA + SCHEMATA_OPTIONS ⏳ · Est: 1h · Deps: BL-010
+### BL-079 — SCHEMATA + SCHEMATA_OPTIONS ✅ · Est: 1h · Deps: BL-010
 
 Scope: virtual views over datasets. Acceptance: shape matches BQ doc.
 

@@ -289,6 +289,92 @@ const DDL_STATEMENTS: readonly string[] = [
      CAST(NULL AS VARCHAR) AS option_value
    FROM _bq.routines
    WHERE FALSE`,
+  // INFORMATION_SCHEMA.JOBS — base shape over _bq.jobs. BQ scopes this
+  // by visibility (your jobs vs. all in project vs. all in org); we
+  // don't track user identity, so JOBS / JOBS_BY_USER / JOBS_BY_PROJECT /
+  // JOBS_BY_ORGANIZATION all return the same rows. Columns we don't yet
+  // populate (slot ms, bytes processed, labels, cache_hit) are NULL —
+  // schema parity is what matters for dbt + BI tools introspecting.
+  `CREATE OR REPLACE VIEW _bq.info_jobs AS
+   SELECT
+     created_at AS creation_time,
+     project AS project_id,
+     CAST(NULL AS BIGINT) AS project_number,
+     CAST(NULL AS VARCHAR) AS user_email,
+     job_id,
+     'QUERY' AS job_type,
+     statement_type,
+     'INTERACTIVE' AS priority,
+     started_at AS start_time,
+     ended_at AS end_time,
+     query,
+     state,
+     CAST(NULL AS VARCHAR) AS reservation_id,
+     CAST(NULL AS BIGINT) AS total_bytes_processed,
+     CAST(NULL AS BIGINT) AS total_slot_ms,
+     error AS error_result,
+     CAST(NULL AS BOOLEAN) AS cache_hit,
+     CAST(NULL AS VARCHAR) AS destination_table,
+     CAST(NULL AS VARCHAR) AS referenced_tables,
+     CAST(NULL AS VARCHAR) AS labels,
+     CAST(NULL AS VARCHAR) AS parent_job_id,
+     dml_affected_rows AS total_modified_partitions
+   FROM _bq.jobs`,
+  `CREATE OR REPLACE VIEW _bq.info_jobs_by_user AS SELECT * FROM _bq.info_jobs`,
+  `CREATE OR REPLACE VIEW _bq.info_jobs_by_project AS SELECT * FROM _bq.info_jobs`,
+  `CREATE OR REPLACE VIEW _bq.info_jobs_by_organization AS SELECT * FROM _bq.info_jobs`,
+  // INFORMATION_SCHEMA.JOBS_TIMELINE_* — one row per (job, 1-minute
+  // bucket from job start). period_slot_ms is 0 since we don't track
+  // slot consumption — backlog acceptance only asks for "plausible
+  // numbers". elapsed_ms is real (job end − start).
+  `CREATE OR REPLACE VIEW _bq.info_jobs_timeline AS
+   SELECT
+     date_trunc('minute', created_at) AS period_start,
+     project AS project_id,
+     CAST(NULL AS BIGINT) AS project_number,
+     CAST(NULL AS VARCHAR) AS user_email,
+     job_id,
+     'QUERY' AS job_type,
+     statement_type,
+     state,
+     CAST(epoch_ms(COALESCE(ended_at, started_at, created_at)) - epoch_ms(created_at) AS BIGINT)
+       AS elapsed_ms,
+     0::BIGINT AS period_slot_ms,
+     CAST(NULL AS BIGINT) AS period_shuffle_ram_usage_ratio,
+     CAST(NULL AS BIGINT) AS period_estimated_runnable_units
+   FROM _bq.jobs`,
+  `CREATE OR REPLACE VIEW _bq.info_jobs_timeline_by_user AS SELECT * FROM _bq.info_jobs_timeline`,
+  `CREATE OR REPLACE VIEW _bq.info_jobs_timeline_by_project AS SELECT * FROM _bq.info_jobs_timeline`,
+  `CREATE OR REPLACE VIEW _bq.info_jobs_timeline_by_organization AS SELECT * FROM _bq.info_jobs_timeline`,
+  // INFORMATION_SCHEMA.SCHEMATA — datasets visible at the project level.
+  // catalog_name = project, schema_name = dataset.
+  `CREATE OR REPLACE VIEW _bq.info_schemata AS
+   SELECT
+     project AS catalog_name,
+     dataset_id AS schema_name,
+     COALESCE(location, 'US') AS location,
+     created_at AS creation_time,
+     updated_at AS last_modified_time,
+     CAST(NULL AS VARCHAR) AS ddl,
+     CAST(NULL AS VARCHAR) AS default_collation_name
+   FROM _bq.datasets`,
+  // INFORMATION_SCHEMA.SCHEMATA_OPTIONS — dataset options as
+  // (option_name, option_type, option_value) rows. We expose what we
+  // store today: description (when set) and default_table_expiration_days
+  // (when default_table_expiration_ms is set; BQ surface uses days as
+  // FLOAT64).
+  `CREATE OR REPLACE VIEW _bq.info_schemata_options AS
+   SELECT project AS catalog_name, dataset_id AS schema_name,
+          'description' AS option_name, 'STRING' AS option_type,
+          '"' || replace(description, '"', '\\"') || '"' AS option_value
+     FROM _bq.datasets
+    WHERE description IS NOT NULL
+   UNION ALL
+   SELECT project AS catalog_name, dataset_id AS schema_name,
+          'default_table_expiration_days' AS option_name, 'FLOAT64' AS option_type,
+          CAST(CAST(default_table_expiration_ms AS DOUBLE) / 86400000 AS VARCHAR) AS option_value
+     FROM _bq.datasets
+    WHERE default_table_expiration_ms IS NOT NULL`,
   `CREATE OR REPLACE VIEW _bq.info_table_options AS
    SELECT project AS table_catalog, dataset_id AS table_schema, table_id AS table_name,
           'description' AS option_name, 'STRING' AS option_type,

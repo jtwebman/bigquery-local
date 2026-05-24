@@ -1178,7 +1178,11 @@ function translateRange(
 interface InformationSchemaView {
   readonly duckdbView: string;
   readonly catalogColumn: string;
-  readonly schemaColumn: string;
+  /** Some views (JOBS*, SCHEMATA*) are project-scoped only — no
+   * per-dataset filter applies even when the caller wrote
+   * `dataset.INFORMATION_SCHEMA.X`. `undefined` means "ignore dataset
+   * even if one was named". */
+  readonly schemaColumn: string | undefined;
 }
 
 const TABLE_SCOPED: Pick<InformationSchemaView, 'catalogColumn' | 'schemaColumn'> = {
@@ -1188,6 +1192,14 @@ const TABLE_SCOPED: Pick<InformationSchemaView, 'catalogColumn' | 'schemaColumn'
 const ROUTINE_SCOPED: Pick<InformationSchemaView, 'catalogColumn' | 'schemaColumn'> = {
   catalogColumn: 'specific_catalog',
   schemaColumn: 'specific_schema',
+};
+const JOB_SCOPED: Pick<InformationSchemaView, 'catalogColumn' | 'schemaColumn'> = {
+  catalogColumn: 'project_id',
+  schemaColumn: undefined,
+};
+const SCHEMA_SCOPED: Pick<InformationSchemaView, 'catalogColumn' | 'schemaColumn'> = {
+  catalogColumn: 'catalog_name',
+  schemaColumn: undefined,
 };
 
 const INFORMATION_SCHEMA_VIEWS: ReadonlyMap<string, InformationSchemaView> = new Map([
@@ -1200,6 +1212,19 @@ const INFORMATION_SCHEMA_VIEWS: ReadonlyMap<string, InformationSchemaView> = new
   ['ROUTINES', { duckdbView: 'info_routines', ...ROUTINE_SCOPED }],
   ['PARAMETERS', { duckdbView: 'info_parameters', ...ROUTINE_SCOPED }],
   ['ROUTINE_OPTIONS', { duckdbView: 'info_routine_options', ...ROUTINE_SCOPED }],
+  ['JOBS', { duckdbView: 'info_jobs', ...JOB_SCOPED }],
+  ['JOBS_BY_USER', { duckdbView: 'info_jobs_by_user', ...JOB_SCOPED }],
+  ['JOBS_BY_PROJECT', { duckdbView: 'info_jobs_by_project', ...JOB_SCOPED }],
+  ['JOBS_BY_ORGANIZATION', { duckdbView: 'info_jobs_by_organization', ...JOB_SCOPED }],
+  ['JOBS_TIMELINE', { duckdbView: 'info_jobs_timeline', ...JOB_SCOPED }],
+  ['JOBS_TIMELINE_BY_USER', { duckdbView: 'info_jobs_timeline_by_user', ...JOB_SCOPED }],
+  ['JOBS_TIMELINE_BY_PROJECT', { duckdbView: 'info_jobs_timeline_by_project', ...JOB_SCOPED }],
+  [
+    'JOBS_TIMELINE_BY_ORGANIZATION',
+    { duckdbView: 'info_jobs_timeline_by_organization', ...JOB_SCOPED },
+  ],
+  ['SCHEMATA', { duckdbView: 'info_schemata', ...SCHEMA_SCOPED }],
+  ['SCHEMATA_OPTIONS', { duckdbView: 'info_schemata_options', ...SCHEMA_SCOPED }],
 ]);
 
 /** A segment of an INFORMATION_SCHEMA prefix — one component before the
@@ -1297,7 +1322,7 @@ function buildInformationSchemaQuery(
   }
   const { project, dataset } = resolveInformationSchemaScope(segments, currentProject);
   const conditions: string[] = [`${view.catalogColumn} = ${sqlString(project)}`];
-  if (dataset !== null) {
+  if (dataset !== null && view.schemaColumn !== undefined) {
     conditions.push(`${view.schemaColumn} = ${sqlString(dataset)}`);
   }
   return `(SELECT * FROM _bq."${view.duckdbView}" WHERE ${conditions.join(' AND ')})`;
