@@ -697,7 +697,7 @@ Scope: session ID tracked in `_bq.sessions`; TEMP tables/functions scoped per se
 
 ## Phase 13 — INFORMATION_SCHEMA
 
-### BL-075 — TABLES / COLUMNS / COLUMN_FIELD_PATHS / TABLE_OPTIONS ⏳ · Est: 3h · Deps: BL-011
+### BL-075 — TABLES / COLUMNS / COLUMN_FIELD_PATHS / TABLE_OPTIONS ✅ · Est: 3h · Deps: BL-011
 
 Scope: virtual views over `_bq.tables`. Acceptance: `SELECT * FROM \`region-us\`.INFORMATION_SCHEMA.TABLES` returns sane rows.
 
