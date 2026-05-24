@@ -181,12 +181,23 @@ prefixed with `/bigquery/v2/...`; the emulator strips that prefix
 internally, so a single route table serves both raw HTTP callers and
 the client library.
 
-If you don't want a fake auth client at all, the BigQuery client also
-has a built-in fallthrough: when ADC finds **no** credentials, the
-client sends unauthenticated requests, which the emulator accepts.
-That works on clean CI runners but is flaky on dev machines that have
-stale `gcloud auth login` state — the helper above makes it
-deterministic.
+**When you need `authClient` vs. when you can skip it.** The emulator
+accepts any (or no) `Authorization` header — so on the *wire* an
+`authClient` is never required. The catch is on the *client* side:
+`@google-cloud/bigquery` runs `google-auth-library` before sending the
+request. Two outcomes:
+
+- **ADC is empty** (no `gcloud auth login` state, no
+  `GOOGLE_APPLICATION_CREDENTIALS`) → the client falls through to
+  unauthenticated and everything works. You can drop the `authClient`
+  line. Typical of clean CI runners.
+- **ADC has something** (e.g. you've ever run `gcloud auth login` on
+  this machine) → the client tries to mint a real Google token, hits
+  Google, fails, and never sends the request. You need
+  `authClient: emulatorGoogleAuth()` to short-circuit that.
+
+If you're not sure which state your machine is in, just use
+`emulatorGoogleAuth()` — it's deterministic in both cases.
 
 If you can't use the `authClient` option (different client library,
 constructed deep inside framework code, etc.), the
@@ -201,6 +212,19 @@ node my-app.js
 `fake-creds.json` can be any valid-shaped service-account JSON — the
 client lib uses it to skip the ADC lookup, then the request still
 lands on the emulator.
+
+**Heads up if you're coming from Datastore / Firestore / Pub/Sub /
+Spanner / Storage:** those emulators' client libraries detect their
+`*_EMULATOR_HOST` env var and skip auth entirely. `@google-cloud/bigquery`
+is the odd one out — it reads `BIGQUERY_EMULATOR_HOST` only to redirect
+the URL and still runs the full `google-auth-library` pipeline. That's
+why setting the env var alone isn't enough; you need one of:
+
+1. `authClient: emulatorGoogleAuth()` (deterministic, recommended),
+2. **empty ADC state (clean CI runners work out of the box)**, or
+3. `BIGQUERY_EMULATOR_HOST` + a fake `GOOGLE_APPLICATION_CREDENTIALS`
+   file (matches the workaround used by other BQ emulators like
+   `goccy/bigquery-emulator`).
 
 ### Embedding it in your tests
 
