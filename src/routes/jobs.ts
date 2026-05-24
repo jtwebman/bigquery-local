@@ -76,6 +76,35 @@ interface JobResourceWire {
   readonly statistics: JobStatisticsWire;
 }
 
+/** Per-column bytes estimate, mirroring src/sql/queryEngine.ts's
+ *  `BQ_TYPE_BYTES`. Kept in sync as a constant table here so this
+ *  module doesn't have to reach into the engine's internals. */
+const BYTES_PER_BQ_TYPE: Readonly<Record<string, number>> = {
+  STRING: 16,
+  BYTES: 32,
+  INT64: 8,
+  FLOAT64: 8,
+  BOOL: 1,
+  NUMERIC: 16,
+  BIGNUMERIC: 16,
+  TIMESTAMP: 8,
+  DATETIME: 8,
+  DATE: 4,
+  TIME: 8,
+  JSON: 64,
+  GEOGRAPHY: 64,
+  STRUCT: 32,
+};
+
+function estimateBytesPerRow(fields: readonly BqField[]): number {
+  let total = 0;
+  for (const field of fields) {
+    const base = BYTES_PER_BQ_TYPE[field.type] ?? 16;
+    total += field.mode === 'REPEATED' ? base * 3 : base;
+  }
+  return total === 0 ? 1 : total;
+}
+
 function jobMetaToResource(meta: JobMeta): JobResourceWire {
   const schemaFields =
     (meta.resultSchema as { fields?: readonly BqField[] } | undefined)?.fields ?? [];
@@ -123,13 +152,23 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
         startTime: String(meta.startedMs),
       }),
       ...(meta.endedMs !== undefined && { endTime: String(meta.endedMs) }),
-      totalBytesProcessed: '0',
+      // BL-152 — execute-path cost estimation. Mirror the same
+      // per-row-bytes formula the dry-run uses (BL-099) so a dry-run
+      // followed by an actual run produces comparable numbers. Returns
+      // 0 for DML / scripts / DDL with no result schema.
+      totalBytesProcessed: String((meta.resultTotalRows ?? 0) * estimateBytesPerRow(schemaFields)),
       ...(dmlAffected !== undefined && {
         numDmlAffectedRows: String(dmlAffected),
       }),
       query: {
         statementType,
-        totalSlotMs: '0',
+        // Slot-ms is BQ's compute-time accounting. For a single-threaded
+        // emulator the natural proxy is wall-clock duration of the job.
+        totalSlotMs: String(
+          meta.startedMs !== undefined && meta.endedMs !== undefined
+            ? Math.max(0, meta.endedMs - meta.startedMs)
+            : 0,
+        ),
         ...(schemaFields.length > 0 && {
           schema: { fields: schemaFields.map(fieldToWire) },
         }),

@@ -351,6 +351,14 @@ export async function executeQuery(
     return executeSchemaDdl(db, project, query, statementType, options);
   }
   if (statementType === 'SCRIPT') {
+    // Intercept the BQ built-in procedure before the script interpreter
+    // sees it. `CALL BQ.REFRESH_MATERIALIZED_VIEW('ds.mv')` is the only
+    // BQ-procedure we support in v0; everything else flows to the
+    // scripting runtime.
+    const mvRefresh = parseRefreshMaterializedViewCall(query, project);
+    if (mvRefresh !== null) {
+      return executeRefreshMaterializedView(db, project, query, mvRefresh, options);
+    }
     return executeScript(db, project, query, options);
   }
   if (
@@ -608,6 +616,150 @@ async function executeMaterializedViewDdl(
   return {
     jobId,
     statementType,
+    schema: [],
+    wireRows: [],
+    startedMs: now,
+    endedMs: now,
+    totalRows: 0,
+  };
+}
+
+/**
+ * MV refresh (BL-102).
+ *
+ * Recognizes `CALL BQ.REFRESH_MATERIALIZED_VIEW('<name>')` where
+ * `<name>` is `dataset.mv` (current project) or `project.dataset.mv`.
+ * Returns the parsed (project, dataset, mv) triple, or null if the
+ * SQL isn't this specific procedure call.
+ */
+interface RefreshMvTarget {
+  readonly project: string;
+  readonly datasetId: string;
+  readonly mvId: string;
+}
+
+function parseRefreshMaterializedViewCall(
+  sql: string,
+  defaultProject: string,
+): RefreshMvTarget | null {
+  const tokens = tokenize(sql);
+  let i = 0;
+  while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
+  // CALL
+  const t0 = tokens[i];
+  if (t0 === undefined || t0.kind !== 'identifier' || t0.value.toUpperCase() !== 'CALL') {
+    return null;
+  }
+  i += 1;
+  while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
+  // BQ
+  const t1 = tokens[i];
+  if (t1 === undefined || t1.kind !== 'identifier' || t1.value.toUpperCase() !== 'BQ') {
+    return null;
+  }
+  i += 1;
+  while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
+  // .
+  const t2 = tokens[i];
+  if (t2 === undefined || t2.kind !== 'punctuation' || t2.value !== '.') return null;
+  i += 1;
+  while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
+  // REFRESH_MATERIALIZED_VIEW
+  const t3 = tokens[i];
+  if (
+    t3 === undefined ||
+    t3.kind !== 'identifier' ||
+    t3.value.toUpperCase() !== 'REFRESH_MATERIALIZED_VIEW'
+  ) {
+    return null;
+  }
+  i += 1;
+  while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
+  // (
+  const t4 = tokens[i];
+  if (t4 === undefined || t4.kind !== 'punctuation' || t4.value !== '(') return null;
+  i += 1;
+  while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
+  // 'name'
+  const nameTok = tokens[i];
+  if (nameTok === undefined || nameTok.kind !== 'string') return null;
+  const rawValue = nameTok.value;
+  // Strip surrounding quotes.
+  const stripped = rawValue.replace(/^['"]|['"]$/g, '');
+  const parts = stripped.split('.');
+  let projectId: string;
+  let datasetId: string;
+  let mvId: string;
+  if (parts.length === 3) {
+    [projectId, datasetId, mvId] = parts as [string, string, string];
+  } else if (parts.length === 2) {
+    projectId = defaultProject;
+    [datasetId, mvId] = parts as [string, string];
+  } else {
+    return null;
+  }
+  return { project: projectId, datasetId, mvId };
+}
+
+/** Run a single MV refresh: clear the backing table, then re-INSERT from
+ *  the stored source query. Implemented as a SCRIPT-shaped job (it's a
+ *  CALL, after all). */
+async function executeRefreshMaterializedView(
+  db: Db,
+  project: string,
+  originalQuery: string,
+  target: RefreshMvTarget,
+  options: { readonly jobId?: string },
+): Promise<QueryExecution> {
+  const existing = await getTable(db, target.project, target.datasetId, target.mvId);
+  if (existing === null) {
+    throw BqError.notFound(
+      `Materialized view "${target.project}:${target.datasetId}.${target.mvId}" not found.`,
+    );
+  }
+  if (existing.type !== 'MATERIALIZED_VIEW') {
+    throw BqError.invalid(
+      `Table "${target.project}:${target.datasetId}.${target.mvId}" is not a materialized view.`,
+      'query',
+    );
+  }
+  if (existing.viewQuery === undefined) {
+    /* node:coverage ignore next 3 */
+    throw BqError.internalError(
+      `Materialized view "${target.mvId}" has no stored source query — cannot refresh.`,
+    );
+  }
+
+  const qualified = `${quoteIdent(datasetSchemaName(target.project, target.datasetId))}.${quoteIdent(target.mvId)}`;
+  const translatedBody = translate(existing.viewQuery, { project: target.project }).sql;
+
+  try {
+    await db.exec(`DELETE FROM ${qualified}`);
+    await db.exec(`INSERT INTO ${qualified} SELECT * FROM (${translatedBody})`);
+  } catch (err) {
+    throw BqError.invalid(
+      err instanceof Error ? err.message : 'Materialized view refresh failed.',
+      'query',
+    );
+  }
+
+  const jobId = options.jobId ?? randomUUID();
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType: 'SCRIPT',
+    query: originalQuery,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: [] },
+    resultTotalRows: 0,
+  });
+
+  return {
+    jobId,
+    statementType: 'SCRIPT',
     schema: [],
     wireRows: [],
     startedMs: now,

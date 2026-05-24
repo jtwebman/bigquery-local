@@ -809,7 +809,7 @@ Scope: store clustering metadata; on write, sort buffers by cluster keys before 
 
 Scope: `CREATE MATERIALIZED VIEW`; materialize as a real table backed by `_bq.tables`. Acceptance: MV row count matches its source query at creation time.
 
-### BL-102 — MV manual refresh ⏳ · Est: 3h · Deps: BL-101
+### BL-102 — MV manual refresh ✅ · Est: 3h · Deps: BL-101
 
 Scope: `CALL BQ.REFRESH_MATERIALIZED_VIEW()`. Acceptance: refresh updates MV rows from source.
 
@@ -1027,7 +1027,7 @@ Scope: Bigtable / Spanner / Cloud SQL federation. **Heavy; may never ship.** Acc
 
 Scope: synthesize plan stages from DuckDB's EXPLAIN; expose under `statistics.query.queryPlan`. Acceptance: response includes a recognizable plan tree.
 
-### BL-152 — Cost estimation ⏳ · Est: 4h · Deps: BL-035
+### BL-152 — Cost estimation ✅ · Est: 4h · Deps: BL-035
 
 Scope: `totalBytesProcessed`, `totalSlotMs`. Acceptance: byte estimate matches actual bytes within ±20% for fixture queries.
 
