@@ -25,8 +25,56 @@ arrives.
 
 - v0 (Phases 1–7): **~40 focused hours**.
 - v0.x polish (Phase 8): ~30h.
+- v1.0.0 remaining (see milestone below): **~75–85 focused hours**.
 - Full BigQuery parity (everything): **~1,500 hours** before BQML and
   federated; see `plan.md` Appendix for the cost breakdown.
+
+---
+
+## v1.0.0 milestone
+
+The remaining v1.0.0 scope is the minimum set of features needed for
+the emulator to be the obvious choice over `goccy/bigquery-emulator`
+for **dbt + Node-client users**. Total estimate: ~75–85h.
+
+Positioning at 1.0.0: *bigquery-local has better SQL & scripting
+coverage (procedures, MERGE, QUALIFY, PIVOT, transactions, EXECUTE
+IMMEDIATE, etc.) and a comprehensive `INFORMATION_SCHEMA`; goccy has
+the gRPC Storage Read/Write APIs.* Both have equivalent REST surface
+once 1.0.0 lands.
+
+**In v1.0.0 (by phase):**
+
+- **Phase 12** — BL-071 Routines REST CRUD · BL-072 Models REST CRUD · BL-073 getServiceAccount
+- **Phase 13** — BL-075 TABLES/COLUMNS/COLUMN_FIELD_PATHS/TABLE_OPTIONS · BL-076 VIEWS/MATERIALIZED_VIEWS · BL-077 ROUTINES/PARAMETERS/ROUTINE_OPTIONS · BL-078 JOBS\* · BL-079 SCHEMATA
+- **Phase 14** — BL-083 Load CSV · BL-084 Load NDJSON · BL-085 Load Parquet · BL-090 schema autodetect · BL-093 GCS reads · BL-094 Extract jobs · BL-095 Copy jobs
+- **Phase 15** — BL-096 ingestion-time partitioning · BL-097 column partitioning · BL-099 partition pruning · BL-100 clustering · BL-101 MV DDL + storage · BL-102 MV manual refresh
+- **Phase 24** — BL-152 cost estimation · BL-154 labels propagation · BL-155 locations metadata · BL-157 useQueryCache
+
+**Explicitly deferred to post-1.0 (with rationale):**
+
+- **BL-069 EXCEPTION handlers · BL-070 JS UDFs** — already ⏸; SQL UDF / procedure / scripting story we have is enough for dbt users.
+- **BL-074 Sessions** — minor; TEMP scoping is the only common case and it works inside scripts already.
+- **BL-080–082 INFORMATION_SCHEMA** (SEARCH/VECTOR/SESSIONS/STREAMING) — depend on deferred features.
+- **BL-086 Avro · BL-087 ORC · BL-088 Datastore export · BL-089 Iceberg** — niche file formats; CSV/JSON/Parquet cover ≥95% of real loads.
+- **BL-091 Hive partitioning · BL-092 resumable upload** — niche.
+- **BL-098 Integer-range partitioning** — niche vs date partitioning.
+- **BL-103 MV query rewrite** — planner-complex; defer until users ask.
+- **Phase 16 (BL-104–107) Snapshots / clones / time travel** — expensive versioned storage; emulators rarely need it.
+- **Phase 17 (BL-108–115) IAM / RLS / CLS / CMEK** — emulators shouldn't enforce access control; aligns with Datastore/Firestore convention.
+- **Phase 18 (BL-116–121) gRPC Storage Read API** — used by Spark/Beam, not by dbt/Node apps. Point users to goccy if they need it.
+- **Phase 19 (BL-122–127) gRPC Storage Write API** — same calculus as Storage Read.
+- **Phase 20 (BL-128–133) Geography** — GIS-team niche.
+- **Phase 21 (BL-134–139) Search & vector indexes** — newer; not yet mainstream.
+- **Phase 22 (BL-140–145) BigQuery ML** — separate product surface; most BQ users never touch it.
+- **Phase 23 (BL-146–150) Federated external queries** — already flagged "may never ship".
+- **BL-151 queryPlan · BL-153 priorities · BL-156 slot reservations** — operational metadata that real BQ exposes but rarely drives client behavior.
+- **Phase 25 (BL-158–159) Connections + DTS** — separate APIs.
+
+Anything not listed above stays in its existing phase and is in 1.0.0
+scope by virtue of already being ✅. Once an item moves from
+post-1.0 back into scope, edit this section *and* the per-item entry
+below.
 
 ---
 
