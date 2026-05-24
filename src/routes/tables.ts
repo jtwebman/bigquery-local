@@ -680,6 +680,25 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
           nextFields = parsed.schema.fields;
         }
 
+        // timePartitioning is largely immutable in real BQ — reject any
+        // attempt to change it, but allow re-asserting the same value
+        // (so a full-resource PATCH that echoes back what GET returned
+        // still works).
+        if (parsed.timePartitioning !== undefined) {
+          const existingTp = existing.partitioning as { type?: string; field?: string } | undefined;
+          const proposed = parsed.timePartitioning;
+          if (
+            existingTp === undefined ||
+            existingTp.type !== proposed.type ||
+            (existingTp.field ?? undefined) !== (proposed.field ?? undefined)
+          ) {
+            throw BqError.invalid(
+              'timePartitioning cannot be changed via PATCH.',
+              'timePartitioning',
+            );
+          }
+        }
+
         const merged: TableMetaInput = {
           project: existing.project,
           datasetId: existing.datasetId,
@@ -694,7 +713,10 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
             : existing.expirationMs !== undefined && { expirationMs: existing.expirationMs }),
           ...(existing.numRows !== undefined && { numRows: existing.numRows }),
           ...(existing.partitioning !== undefined && { partitioning: existing.partitioning }),
-          ...(existing.clustering !== undefined && { clustering: existing.clustering }),
+          // Clustering CAN be updated via PATCH — replaces existing.
+          ...(parsed.clustering !== undefined
+            ? { clustering: parsed.clustering }
+            : existing.clustering !== undefined && { clustering: existing.clustering }),
         };
         const updated = await upsertTable(db, merged, ifMatchHeader(req));
         return okResponse(updated);

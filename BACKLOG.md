@@ -789,7 +789,7 @@ Scope: snapshot / clone / deep copy via `configuration.copy`. Acceptance: copied
 
 Scope: `_PARTITIONTIME` / `_PARTITIONDATE` pseudo columns; partition by ingestion time. Acceptance: queries scoped to a partition only read that partition's rows.
 
-### BL-097 — Column partitioning (DATE/TIMESTAMP/DATETIME) ⏳ · Est: 3h · Deps: BL-011
+### BL-097 — Column partitioning (DATE/TIMESTAMP/DATETIME) ✅ · Est: 3h · Deps: BL-011
 
 Scope: declare a partition column; expose `_PARTITION*` pseudo columns. Acceptance: `WHERE date_col = '2026-05-15'` reads only that partition.
 
@@ -801,7 +801,7 @@ Scope: `range_partitioning` with start/end/interval. Acceptance: integer-buckete
 
 Scope: parse WHERE clause partition predicates and route reads to only matching partitions. Acceptance: `_PARTITIONTIME` filter cuts bytes-processed in the dry-run estimate.
 
-### BL-100 — Clustering keys ⏳ · Est: 4h · Deps: BL-011
+### BL-100 — Clustering keys ✅ · Est: 4h · Deps: BL-011
 
 Scope: store clustering metadata; on write, sort buffers by cluster keys before flushing. Acceptance: cluster keys reduce scanned bytes on point lookups.
 
