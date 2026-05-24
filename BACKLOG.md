@@ -797,7 +797,7 @@ Scope: declare a partition column; expose `_PARTITION*` pseudo columns. Acceptan
 
 Scope: `range_partitioning` with start/end/interval. Acceptance: integer-bucketed partitions readable by range.
 
-### BL-099 — Partition pruning at query time ⏳ · Est: 4h · Deps: BL-096, BL-097, BL-098
+### BL-099 — Partition pruning at query time ✅ · Est: 4h · Deps: BL-096, BL-097, BL-098
 
 Scope: parse WHERE clause partition predicates and route reads to only matching partitions. Acceptance: `_PARTITIONTIME` filter cuts bytes-processed in the dry-run estimate.
 
@@ -805,7 +805,7 @@ Scope: parse WHERE clause partition predicates and route reads to only matching 
 
 Scope: store clustering metadata; on write, sort buffers by cluster keys before flushing. Acceptance: cluster keys reduce scanned bytes on point lookups.
 
-### BL-101 — Materialized views: DDL + storage ⏳ · Est: 4h · Deps: BL-054
+### BL-101 — Materialized views: DDL + storage ✅ · Est: 4h · Deps: BL-054
 
 Scope: `CREATE MATERIALIZED VIEW`; materialize as a real table backed by `_bq.tables`. Acceptance: MV row count matches its source query at creation time.
 

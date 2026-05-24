@@ -136,7 +136,13 @@ test('POST /queries dryRun=true returns schema with no rows', async () => {
   assert.equal(body.jobComplete, true);
   assert.equal(body.totalRows, '0');
   assert.deepEqual(body.rows, []);
-  assert.equal(body.totalBytesProcessed, '0');
+  // BL-099: totalBytesProcessed = output rows × per-row schema estimate.
+  // For SELECT 1 AS one, ... AS two the output is one row of two
+  // 8-byte numbers, so we expect a small positive value (≥1).
+  assert.ok(
+    Number(body.totalBytesProcessed) > 0,
+    `expected > 0 bytes, got ${body.totalBytesProcessed}`,
+  );
   // Schema is filled in.
   assert.equal(body.schema.fields.length, 2);
   assert.equal(body.schema.fields[0]?.name, 'one');

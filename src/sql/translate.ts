@@ -130,6 +130,8 @@ export type StatementType =
   | 'TRUNCATE_TABLE'
   | 'CREATE_VIEW'
   | 'DROP_VIEW'
+  | 'CREATE_MATERIALIZED_VIEW'
+  | 'DROP_MATERIALIZED_VIEW'
   | 'CREATE_SCHEMA'
   | 'DROP_SCHEMA'
   | 'CREATE_FUNCTION'
@@ -182,8 +184,16 @@ export function detectStatementType(sql: string): StatementType {
       'SCHEMA',
       'FUNCTION',
       'PROCEDURE',
+      'MATERIALIZED',
     ]);
     const kw = kindIdx !== null ? tokens[kindIdx]?.value.toUpperCase() : undefined;
+    if (kw === 'MATERIALIZED' && kindIdx !== null) {
+      // `MATERIALIZED VIEW` — distinct from `VIEW` (BL-101).
+      const after = nextNonSkippable(tokens, kindIdx + 1);
+      if (tokens[after]?.kind === 'identifier' && tokens[after]?.value.toUpperCase() === 'VIEW') {
+        return 'CREATE_MATERIALIZED_VIEW';
+      }
+    }
     if (kw === 'VIEW') return 'CREATE_VIEW';
     if (kw === 'SCHEMA') return 'CREATE_SCHEMA';
     if (kw === 'FUNCTION') return 'CREATE_FUNCTION';
@@ -206,8 +216,15 @@ export function detectStatementType(sql: string): StatementType {
       'SCHEMA',
       'FUNCTION',
       'PROCEDURE',
+      'MATERIALIZED',
     ]);
     const kw = kindIdx !== null ? tokens[kindIdx]?.value.toUpperCase() : undefined;
+    if (kw === 'MATERIALIZED' && kindIdx !== null) {
+      const after = nextNonSkippable(tokens, kindIdx + 1);
+      if (tokens[after]?.kind === 'identifier' && tokens[after]?.value.toUpperCase() === 'VIEW') {
+        return 'DROP_MATERIALIZED_VIEW';
+      }
+    }
     if (kw === 'VIEW') return 'DROP_VIEW';
     if (kw === 'SCHEMA') return 'DROP_SCHEMA';
     if (kw === 'FUNCTION') return 'DROP_FUNCTION';
@@ -246,7 +263,11 @@ export function detectStatementType(sql: string): StatementType {
  * tables.get). The default project applies when the SQL omits one.
  */
 export interface ViewDdlTarget {
-  readonly kind: 'CREATE_VIEW' | 'DROP_VIEW';
+  readonly kind:
+    | 'CREATE_VIEW'
+    | 'DROP_VIEW'
+    | 'CREATE_MATERIALIZED_VIEW'
+    | 'DROP_MATERIALIZED_VIEW';
   readonly project: string;
   readonly datasetId: string;
   readonly viewId: string;
@@ -266,10 +287,13 @@ export function parseViewDdl(sql: string, defaultProject: string): ViewDdlTarget
   if (head !== 'CREATE' && head !== 'DROP') {
     throw BqError.invalid('Expected a CREATE VIEW or DROP VIEW statement.', 'query');
   }
+  // Optional `MATERIALIZED` modifier — turns this into a MV DDL.
+  const materializedKw = findNextKeyword(tokens, i + 1, ['MATERIALIZED']);
   const viewKw = findNextKeyword(tokens, i + 1, ['VIEW']);
   if (viewKw === null) {
     throw BqError.invalid('Expected VIEW keyword after CREATE / DROP.', 'query');
   }
+  const materialized = materializedKw !== null && materializedKw < viewKw;
   // Move past VIEW, then optional IF [NOT] EXISTS.
   let j = nextNonSkippable(tokens, viewKw + 1);
   if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'IF') {
@@ -287,7 +311,12 @@ export function parseViewDdl(sql: string, defaultProject: string): ViewDdlTarget
   }
   const { project, datasetId, viewId } = parseTableTarget(tokens, j, defaultProject);
   if (head === 'DROP') {
-    return { kind: 'DROP_VIEW', project, datasetId, viewId };
+    return {
+      kind: materialized ? 'DROP_MATERIALIZED_VIEW' : 'DROP_VIEW',
+      project,
+      datasetId,
+      viewId,
+    };
   }
   // CREATE: find the AS keyword and capture everything past it as the view body.
   const after = advancePastTarget(tokens, j);
@@ -297,7 +326,13 @@ export function parseViewDdl(sql: string, defaultProject: string): ViewDdlTarget
   }
   const bodyStart = tokens[asIdx]?.end ?? sql.length;
   const viewQuery = sql.slice(bodyStart).trim();
-  return { kind: 'CREATE_VIEW', project, datasetId, viewId, viewQuery };
+  return {
+    kind: materialized ? 'CREATE_MATERIALIZED_VIEW' : 'CREATE_VIEW',
+    project,
+    datasetId,
+    viewId,
+    viewQuery,
+  };
 }
 
 function parseTableTarget(

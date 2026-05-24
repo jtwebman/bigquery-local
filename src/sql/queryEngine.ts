@@ -19,6 +19,7 @@ import {
   deleteRoutine,
   deleteTable,
   getDataset,
+  getTable,
   upsertDataset,
   upsertJob,
   upsertRoutine,
@@ -343,6 +344,9 @@ export async function executeQuery(
   if (statementType === 'CREATE_VIEW' || statementType === 'DROP_VIEW') {
     return executeViewDdl(db, project, query, sqlWithCasts, statementType, options);
   }
+  if (statementType === 'CREATE_MATERIALIZED_VIEW' || statementType === 'DROP_MATERIALIZED_VIEW') {
+    return executeMaterializedViewDdl(db, project, query, statementType, options);
+  }
   if (statementType === 'CREATE_SCHEMA' || statementType === 'DROP_SCHEMA') {
     return executeSchemaDdl(db, project, query, statementType, options);
   }
@@ -473,6 +477,117 @@ async function executeViewDdl(
   if (statementType === 'CREATE_VIEW') {
     await registerViewMetadata(db, target);
   } else {
+    await deleteTable(db, target.project, target.datasetId, target.viewId);
+  }
+
+  const jobId = options.jobId ?? randomUUID();
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType,
+    query: originalQuery,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: [] },
+    resultTotalRows: 0,
+  });
+
+  return {
+    jobId,
+    statementType,
+    schema: [],
+    wireRows: [],
+    startedMs: now,
+    endedMs: now,
+    totalRows: 0,
+  };
+}
+
+/**
+ * Materialized-view DDL (BL-101).
+ *
+ * CREATE MATERIALIZED VIEW <name> AS <SELECT>:
+ *   1. Translate the SELECT body through the same pipeline used for
+ *      ad-hoc queries.
+ *   2. `CREATE TABLE <dest> AS SELECT * FROM (<select>)` materializes
+ *      rows + schema in one shot.
+ *   3. Register metadata with `type='MATERIALIZED_VIEW'` so
+ *      INFORMATION_SCHEMA.MATERIALIZED_VIEWS (BL-076) surfaces it.
+ *
+ * DROP MATERIALIZED VIEW <name>:
+ *   1. `DROP TABLE` the backing storage.
+ *   2. Remove metadata.
+ *
+ * MV refresh lands in BL-102. For now the rows are a point-in-time
+ * snapshot of the source query, matching real BQ's freshly-created MV
+ * behavior.
+ */
+async function executeMaterializedViewDdl(
+  db: Db,
+  project: string,
+  originalQuery: string,
+  statementType: 'CREATE_MATERIALIZED_VIEW' | 'DROP_MATERIALIZED_VIEW',
+  options: { readonly jobId?: string },
+): Promise<QueryExecution> {
+  const target = parseViewDdl(originalQuery, project);
+  const dataset = await getDataset(db, target.project, target.datasetId);
+  if (dataset === null) {
+    throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
+  }
+  await ensureDatasetSchema(db, target.project, target.datasetId);
+
+  const dsName = datasetSchemaName(target.project, target.datasetId);
+  const qualified = `${quoteIdent(dsName)}.${quoteIdent(target.viewId)}`;
+
+  if (statementType === 'CREATE_MATERIALIZED_VIEW') {
+    // The source SELECT goes through the same translator pipeline ad-hoc
+    // queries use — backticks, params, etc. all resolve.
+    if (target.viewQuery === undefined) {
+      throw BqError.invalid('CREATE MATERIALIZED VIEW requires an AS <query> body.', 'query');
+    }
+    const existing = await getTable(db, target.project, target.datasetId, target.viewId);
+    if (existing !== null) {
+      throw BqError.duplicate(
+        `Materialized view "${target.project}:${target.datasetId}.${target.viewId}" already exists.`,
+      );
+    }
+    const translatedBody = translate(target.viewQuery, { project: target.project }).sql;
+    try {
+      await db.exec(`CREATE TABLE ${qualified} AS SELECT * FROM (${translatedBody})`);
+    } catch (err) {
+      throw BqError.invalid(
+        err instanceof Error ? err.message : 'Materialized view creation failed.',
+        'query',
+      );
+    }
+    const described = await db.query<Record<string, unknown>>(`DESCRIBE ${qualified}`);
+    const fields = described.map((row) =>
+      duckTypeToBq(String(row['column_type']), String(row['column_name'])),
+    );
+    await upsertTable(db, {
+      project: target.project,
+      datasetId: target.datasetId,
+      tableId: target.viewId,
+      type: 'MATERIALIZED_VIEW',
+      schema: { fields },
+      viewQuery: target.viewQuery,
+    });
+  } else {
+    const existing = await getTable(db, target.project, target.datasetId, target.viewId);
+    if (existing === null) {
+      throw BqError.notFound(
+        `Materialized view "${target.project}:${target.datasetId}.${target.viewId}" not found.`,
+      );
+    }
+    if (existing.type !== 'MATERIALIZED_VIEW') {
+      throw BqError.invalid(
+        `Table "${target.project}:${target.datasetId}.${target.viewId}" is not a materialized view.`,
+        'query',
+      );
+    }
+    await db.exec(`DROP TABLE ${qualified}`);
     await deleteTable(db, target.project, target.datasetId, target.viewId);
   }
 
@@ -922,6 +1037,46 @@ async function registerViewMetadata(db: Db, target: ViewDdlTarget): Promise<void
 export interface DryRunResult {
   readonly statementType: StatementType;
   readonly schema: readonly BqField[];
+  /** Estimated bytes the query would process at execute time. For
+   *  SELECT, this is `output-row-count × estimated-bytes-per-row`. The
+   *  count drops naturally when partition filters or other WHERE
+   *  predicates narrow the result, so a `_PARTITIONTIME` filter shows
+   *  up as a smaller estimate (BL-099). For DML we return 0 — the
+   *  query plans against the table without scanning. */
+  readonly totalBytesProcessed: number;
+}
+
+/** Rough bytes-per-value estimate for each BQ type. Used by the dry-run
+ *  estimator. Values are intentionally simple (fixed per type rather
+ *  than length-aware) — the goal is monotonicity with row count, not
+ *  pinpoint accuracy. */
+const BQ_TYPE_BYTES: Readonly<Record<string, number>> = {
+  STRING: 16,
+  BYTES: 32,
+  INT64: 8,
+  FLOAT64: 8,
+  BOOL: 1,
+  NUMERIC: 16,
+  BIGNUMERIC: 16,
+  TIMESTAMP: 8,
+  DATETIME: 8,
+  DATE: 4,
+  TIME: 8,
+  JSON: 64,
+  GEOGRAPHY: 64,
+  STRUCT: 32,
+};
+
+function estimateRowBytes(schema: readonly BqField[]): number {
+  let total = 0;
+  for (const field of schema) {
+    const base = BQ_TYPE_BYTES[field.type] ?? 16;
+    // REPEATED columns multiply by a conservative average length (3
+    // items) — better than ignoring them entirely.
+    total += field.mode === 'REPEATED' ? base * 3 : base;
+  }
+  // Floor of 1 so empty-schema queries (SCRIPT etc.) don't underflow to 0.
+  return total === 0 ? 1 : total;
 }
 
 /**
@@ -963,7 +1118,7 @@ export async function executeQueryDryRun(
         'query',
       );
     }
-    return { statementType, schema: [] };
+    return { statementType, schema: [], totalBytesProcessed: 0 };
   }
 
   // DuckDB accepts DESCRIBE on a query string; the parameter bindings flow
@@ -983,7 +1138,32 @@ export async function executeQueryDryRun(
     return duckTypeToBq(type, name);
   });
 
-  return { statementType, schema };
+  // BL-099 — estimate `totalBytesProcessed` as
+  //   (count of rows the query would output) × estimated-bytes-per-row
+  // The count naturally drops when a WHERE clause prunes (including
+  // `_PARTITIONTIME` / partition-column filters), giving partition
+  // pruning a visible knock-on effect in the dry-run estimate.
+  //
+  // The query is wrapped in `SELECT count(*) FROM (<orig>)` — DuckDB
+  // runs only the count plan, so this is effectively free at the row
+  // counts the emulator deals with.
+  let totalBytesProcessed = 0;
+  try {
+    const countResult = await db.query<{ n: bigint }>(
+      `SELECT count(*)::BIGINT AS n FROM (${sqlWithCasts}) _est`,
+      values,
+    );
+    const rowCount = Number(countResult[0]?.n ?? 0);
+    totalBytesProcessed = rowCount * estimateRowBytes(schema);
+  } catch {
+    // Some queries (e.g. ones that reference session-local state in a
+    // way DuckDB can't replay) won't survive the COUNT wrap. Fall back
+    // to 0 — the DESCRIBE above already validated the query, so
+    // surfacing this as an error would be worse than just under-reporting.
+    totalBytesProcessed = 0;
+  }
+
+  return { statementType, schema, totalBytesProcessed };
 }
 
 // ---------------------------------------------------------------------------

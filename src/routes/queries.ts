@@ -102,7 +102,7 @@ export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
             },
             totalRows: '0',
             rows: [],
-            totalBytesProcessed: '0',
+            totalBytesProcessed: String(dry.totalBytesProcessed),
             jobComplete: true,
             cacheHit: false,
           };

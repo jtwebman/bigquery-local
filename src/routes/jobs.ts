@@ -1079,7 +1079,7 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
               creationTime: String(now),
               startTime: String(now),
               endTime: String(now),
-              totalBytesProcessed: '0',
+              totalBytesProcessed: String(dry.totalBytesProcessed),
               query: {
                 statementType: dry.statementType,
                 totalSlotMs: '0',
