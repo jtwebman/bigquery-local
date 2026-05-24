@@ -112,3 +112,33 @@ export async function readGcsObjectText(uri: string): Promise<string> {
   const bytes = await readGcsObject(uri);
   return new TextDecoder('utf-8').decode(bytes);
 }
+
+/**
+ * Upload an object to GCS via a simple media upload
+ * (`POST /upload/storage/v1/b/{bucket}/o?uploadType=media&name=<object>`).
+ *
+ * That's the protocol both real GCS and `fake-gcs-server` accept for
+ * single-shot uploads. For real GCS this would need OAuth on the
+ * request — the same auth caveat as the read path applies.
+ *
+ * Returns the size of the uploaded body, useful for surfacing in
+ * extract-job statistics.
+ */
+export async function writeGcsObject(
+  uri: string,
+  body: Uint8Array | string,
+  contentType: string,
+): Promise<{ readonly size: number }> {
+  const ref = parseGcsUri(uri);
+  const url = `${gcsApiHost()}/upload/storage/v1/b/${ref.bucket}/o?uploadType=media&name=${encodeURIComponent(ref.object)}`;
+  const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': contentType },
+    body: bytes,
+  });
+  if (!res.ok) {
+    throw new Error(`GCS upload failed (${res.status}): ${uri}`);
+  }
+  return { size: bytes.byteLength };
+}

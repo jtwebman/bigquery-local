@@ -21,10 +21,13 @@
  *   - wrap the run in a try/catch that records the job's final state.
  */
 
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import csvBatch from 'csv-batch';
 
-import { readGcsObjectText } from '../storage/gcs.ts';
+import { readGcsObject, readGcsObjectText } from '../storage/gcs.ts';
 import type { Db } from '../storage/db.ts';
 import { getTable, upsertTable } from '../storage/meta.ts';
 import {
@@ -33,11 +36,11 @@ import {
   qualifiedTableName,
   quoteIdent,
 } from '../routes/tables.ts';
-import { type BqField, bqInsertExpression, bqValueToDuck } from '../storage/types.ts';
+import { type BqField, bqInsertExpression, bqValueToDuck, duckTypeToBq } from '../storage/types.ts';
 import { BqError } from '../util/errors.ts';
 import { inferSchema, type SampleRow } from './autodetect.ts';
 
-export type LoadSourceFormat = 'CSV' | 'NEWLINE_DELIMITED_JSON';
+export type LoadSourceFormat = 'CSV' | 'NEWLINE_DELIMITED_JSON' | 'PARQUET';
 
 export interface LoadJobConfig {
   readonly project: string;
@@ -74,27 +77,30 @@ export async function runLoadJob(db: Db, config: LoadJobConfig): Promise<LoadJob
     throw BqError.invalid('configuration.load.sourceUris must contain at least one URI.');
   }
 
-  // 1 + 2 — fetch + parse all source URIs, concatenating rows.
+  // PARQUET goes through a one-shot SQL path: download → DESCRIBE for
+  // schema → `INSERT INTO dest SELECT * FROM read_parquet(file)`.
+  // DuckDB handles parsing + insertion in a single statement, so we
+  // skip the parse-to-rows step entirely.
+  if (config.sourceFormat === 'PARQUET') {
+    return await runParquetLoad(db, config);
+  }
+
+  // CSV / NDJSON: fetch + parse all source URIs, concatenating rows.
   const { rows, columnOrder, totalBytes } = await fetchAndParse(
     config.sourceUris,
     config.sourceFormat,
     config.skipLeadingRows,
   );
 
-  // 3 — resolve schema.
+  // Resolve the schema, ensure destination table exists, optionally
+  // truncate, and insert row-by-row through the typed-insert pipeline.
   const schema = await resolveSchema(db, config, rows, columnOrder);
-
-  // 4 — ensure destination table exists.
   await ensureDestinationTable(db, config, schema);
-
-  // Handle WRITE_TRUNCATE by clearing existing rows first.
   if (config.writeDisposition === 'WRITE_TRUNCATE') {
     await db.exec(
       `DELETE FROM ${qualifiedTableName(config.project, config.datasetId, config.tableId)}`,
     );
   }
-
-  // 5 — insert.
   const inserted = await insertRows(db, config, schema, rows);
 
   return {
@@ -102,6 +108,105 @@ export async function runLoadJob(db: Db, config: LoadJobConfig): Promise<LoadJob
     outputBytes: totalBytes,
     schema: { fields: schema },
   };
+}
+
+/** Parquet load path — DuckDB's `read_parquet` does the heavy lifting.
+ *
+ *   1. Download every source URI to a temp directory; remember the
+ *      cumulative byte count.
+ *   2. Build a `read_parquet([...])` expression covering all temp files.
+ *   3. If we need the schema (autodetect or no destination + no schema)
+ *      run a one-row DESCRIBE to extract column types and map them via
+ *      `duckTypeToBq`.
+ *   4. CREATE TABLE if needed, optionally TRUNCATE, then a single
+ *      `INSERT INTO dest SELECT * FROM read_parquet(...)`.
+ *   5. Read back the row count via `SELECT changes()` substitute —
+ *      DuckDB doesn't expose RETURNING for INSERT-FROM-SELECT in v0, so
+ *      we count after the fact. Cheap on a freshly-loaded set. */
+async function runParquetLoad(db: Db, config: LoadJobConfig): Promise<LoadJobResult> {
+  const tmpDir = await mkdtemp(join(tmpdir(), 'bq-load-parquet-'));
+  try {
+    let totalBytes = 0;
+    const localPaths: string[] = [];
+    for (let i = 0; i < config.sourceUris.length; i += 1) {
+      const uri = config.sourceUris[i] as string;
+      const bytes = await readGcsObject(uri);
+      totalBytes += bytes.byteLength;
+      const local = join(tmpDir, `src-${i}.parquet`);
+      await writeFile(local, bytes);
+      localPaths.push(local);
+    }
+    const readExpr = `read_parquet([${localPaths.map((p) => sqlString(p)).join(', ')}])`;
+
+    // Resolve schema.
+    let schema: readonly BqField[];
+    if (config.schema !== undefined) {
+      schema = config.schema.fields;
+    } else {
+      const existing = await getTable(db, config.project, config.datasetId, config.tableId);
+      const stored = (existing?.schema as { fields?: readonly BqField[] } | undefined)?.fields;
+      if (stored !== undefined && stored.length > 0) {
+        schema = stored;
+      } else if (config.autodetect === true || existing === null) {
+        schema = await describeParquetSchema(db, readExpr);
+      } else {
+        throw BqError.invalid(
+          'configuration.load needs either an explicit schema, autodetect=true, or an existing destination table with a schema.',
+          'configuration.load.schema',
+        );
+      }
+    }
+
+    await ensureDestinationTable(db, config, schema);
+    if (config.writeDisposition === 'WRITE_TRUNCATE') {
+      await db.exec(
+        `DELETE FROM ${qualifiedTableName(config.project, config.datasetId, config.tableId)}`,
+      );
+    }
+
+    // INSERT — DuckDB's read_parquet preserves column order, but our
+    // destination column order matches `schema`. Project to that order
+    // explicitly so any column-name-collision edge cases throw a clear
+    // DuckDB error instead of silently misaligning.
+    const cols = schema.map((f) => quoteIdent(f.name)).join(', ');
+    const select = schema.map((f) => quoteIdent(f.name)).join(', ');
+    await db.exec(
+      `INSERT INTO ${qualifiedTableName(
+        config.project,
+        config.datasetId,
+        config.tableId,
+      )} (${cols}) SELECT ${select} FROM ${readExpr}`,
+    );
+
+    // Count the rows we just inserted via the parquet read; this matches
+    // BQ's `outputRows` more closely than the dest table count (which
+    // could include pre-existing rows on WRITE_APPEND).
+    const rowCountResult = await db.query<{ n: bigint }>(
+      `SELECT count(*)::BIGINT AS n FROM ${readExpr}`,
+    );
+    const rowCount = Number(rowCountResult[0]?.n ?? 0);
+
+    return {
+      outputRows: rowCount,
+      outputBytes: totalBytes,
+      schema: { fields: schema },
+    };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
+/** Run `DESCRIBE SELECT * FROM read_parquet(...)` to infer schema. */
+async function describeParquetSchema(db: Db, readExpr: string): Promise<readonly BqField[]> {
+  // DuckDB's DESCRIBE returns rows of (column_name, column_type, …).
+  const rows = await db.query<{ column_name: string; column_type: string }>(
+    `DESCRIBE SELECT * FROM ${readExpr}`,
+  );
+  return rows.map((r) => duckTypeToBq(r.column_type, r.column_name));
+}
+
+function sqlString(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
 }
 
 // ---------------------------------------------------------------------------

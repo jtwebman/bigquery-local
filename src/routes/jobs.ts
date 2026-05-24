@@ -14,6 +14,7 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { type ExtractJobConfig, runExtractJob } from '../load/extract.ts';
 import { type LoadJobConfig, runLoadJob } from '../load/load.ts';
 import type { Db } from '../storage/db.ts';
 import { cancelJob, deleteJob, getJob, listJobs, upsertJob } from '../storage/meta.ts';
@@ -155,7 +156,7 @@ function expectString(value: unknown, path: string): string {
   return value;
 }
 
-type ParsedJobBody = ParsedQueryJob | ParsedLoadJob;
+type ParsedJobBody = ParsedQueryJob | ParsedLoadJob | ParsedExtractJob;
 
 interface ParsedQueryJob {
   readonly kind: 'query';
@@ -171,6 +172,12 @@ interface ParsedLoadJob {
   readonly config: LoadJobConfig;
 }
 
+interface ParsedExtractJob {
+  readonly kind: 'extract';
+  readonly jobIdHint?: string;
+  readonly config: ExtractJobConfig;
+}
+
 function expectBoolean(value: unknown, path: string): boolean {
   if (typeof value !== 'boolean') {
     throw BqError.invalid(`${path} must be a boolean.`, path);
@@ -183,9 +190,8 @@ function parseJobBody(body: unknown): ParsedJobBody {
   const configuration = asObject(obj['configuration'], 'configuration');
 
   // Reject job types we still don't support up front so the client sees
-  // a clear error. (Load lands in BL-083/084; copy lands in BL-095;
-  // extract lands in BL-094 — flip these off the list as each ships.)
-  for (const otherType of ['copy', 'extract']) {
+  // a clear error. Copy lands in BL-095.
+  for (const otherType of ['copy']) {
     if (configuration[otherType] !== undefined) {
       throw BqError.unsupportedFeature(
         `configuration.${otherType} jobs are not supported in v0.`,
@@ -194,10 +200,15 @@ function parseJobBody(body: unknown): ParsedJobBody {
     }
   }
 
-  // Load jobs (BL-083/084) take a completely different path — bypass the
-  // query branch entirely and return a `kind: 'load'` body.
+  // Load jobs (BL-083/084/085) take a completely different path —
+  // bypass the query branch entirely and return a `kind: 'load'` body.
   if (configuration['load'] !== undefined) {
     return parseLoadConfig(configuration, obj);
+  }
+
+  // Extract jobs (BL-094) — similarly distinct path.
+  if (configuration['extract'] !== undefined) {
+    return parseExtractConfig(configuration, obj);
   }
 
   const queryConfig = configuration['query'];
@@ -235,7 +246,11 @@ function parseJobBody(body: unknown): ParsedJobBody {
   return { kind: 'query', query, parameters, jobIdHint, dryRun };
 }
 
-const SUPPORTED_LOAD_FORMATS: ReadonlySet<string> = new Set(['CSV', 'NEWLINE_DELIMITED_JSON']);
+const SUPPORTED_LOAD_FORMATS: ReadonlySet<string> = new Set([
+  'CSV',
+  'NEWLINE_DELIMITED_JSON',
+  'PARQUET',
+]);
 const VALID_WRITE_DISPOSITIONS: ReadonlySet<string> = new Set([
   'WRITE_APPEND',
   'WRITE_TRUNCATE',
@@ -351,7 +366,7 @@ function parseLoadConfig(
     datasetId: destDataset,
     tableId: destTable,
     sourceUris,
-    sourceFormat: sourceFormat as 'CSV' | 'NEWLINE_DELIMITED_JSON',
+    sourceFormat: sourceFormat as 'CSV' | 'NEWLINE_DELIMITED_JSON' | 'PARQUET',
     ...(autodetect !== undefined && { autodetect }),
     ...(schema !== undefined && { schema }),
     ...(skipLeadingRows !== undefined && { skipLeadingRows }),
@@ -380,6 +395,85 @@ function parseLoadField(raw: unknown): BqField {
     mode = m;
   }
   return { name, type, ...(mode !== undefined && { mode }) };
+}
+
+const SUPPORTED_EXTRACT_FORMATS: ReadonlySet<string> = new Set([
+  'CSV',
+  'NEWLINE_DELIMITED_JSON',
+  'PARQUET',
+]);
+
+/** Parse `configuration.extract`. */
+function parseExtractConfig(
+  configuration: Readonly<Record<string, unknown>>,
+  body: Readonly<Record<string, unknown>>,
+): ParsedExtractJob {
+  const extractObj = asObject(configuration['extract'], 'configuration.extract');
+  const sourceObj = asObject(extractObj['sourceTable'], 'configuration.extract.sourceTable');
+  const srcProject = expectString(
+    sourceObj['projectId'],
+    'configuration.extract.sourceTable.projectId',
+  );
+  const srcDataset = expectString(
+    sourceObj['datasetId'],
+    'configuration.extract.sourceTable.datasetId',
+  );
+  const srcTable = expectString(sourceObj['tableId'], 'configuration.extract.sourceTable.tableId');
+
+  const urisRaw = extractObj['destinationUris'];
+  if (!Array.isArray(urisRaw) || urisRaw.length === 0) {
+    throw BqError.invalid(
+      'configuration.extract.destinationUris must be a non-empty array of gs:// URIs.',
+      'configuration.extract.destinationUris',
+    );
+  }
+  const destinationUris: string[] = urisRaw.map((value, idx) =>
+    expectString(value, `configuration.extract.destinationUris[${idx}]`),
+  );
+
+  const destinationFormat = expectString(
+    extractObj['destinationFormat'],
+    'configuration.extract.destinationFormat',
+  );
+  if (!SUPPORTED_EXTRACT_FORMATS.has(destinationFormat)) {
+    throw BqError.unsupportedFeature(
+      `configuration.extract.destinationFormat="${destinationFormat}" is not supported in v0. Supported: CSV, NEWLINE_DELIMITED_JSON, PARQUET.`,
+      'configuration.extract.destinationFormat',
+    );
+  }
+
+  let printHeader: boolean | undefined;
+  if (extractObj['printHeader'] !== undefined) {
+    printHeader = expectBoolean(extractObj['printHeader'], 'configuration.extract.printHeader');
+  }
+
+  let fieldDelimiter: string | undefined;
+  if (extractObj['fieldDelimiter'] !== undefined) {
+    fieldDelimiter = expectString(
+      extractObj['fieldDelimiter'],
+      'configuration.extract.fieldDelimiter',
+    );
+  }
+
+  let jobIdHint: string | undefined;
+  const refRaw = body['jobReference'];
+  if (refRaw !== undefined && refRaw !== null) {
+    const refObj = asObject(refRaw, 'jobReference');
+    if (refObj['jobId'] !== undefined) {
+      jobIdHint = expectString(refObj['jobId'], 'jobReference.jobId');
+    }
+  }
+
+  const config: ExtractJobConfig = {
+    project: srcProject,
+    datasetId: srcDataset,
+    tableId: srcTable,
+    destinationUris,
+    destinationFormat: destinationFormat as 'CSV' | 'NEWLINE_DELIMITED_JSON' | 'PARQUET',
+    ...(printHeader !== undefined && { printHeader }),
+    ...(fieldDelimiter !== undefined && { fieldDelimiter }),
+  };
+  return { kind: 'extract', config, ...(jobIdHint !== undefined && { jobIdHint }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -664,6 +758,89 @@ async function handleLoadJob(
   }
 }
 
+/** Drive an extract job. Mirrors `handleLoadJob`'s lifecycle: persist a
+ *  RUNNING row up front, run the export synchronously, flip to DONE
+ *  (success) or DONE-with-error (failure). */
+async function handleExtractJob(
+  db: Db,
+  project: string,
+  parsed: ParsedExtractJob,
+): Promise<RouteResponse> {
+  const jobId = parsed.jobIdHint ?? randomUUID();
+  const startedMs = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'RUNNING',
+    statementType: 'EXTRACT',
+    startedMs,
+  });
+
+  try {
+    const result = await runExtractJob(db, parsed.config);
+    const endedMs = Date.now();
+    await upsertJob(db, {
+      project,
+      jobId,
+      state: 'DONE',
+      statementType: 'EXTRACT',
+      startedMs,
+      endedMs,
+      dmlAffectedRows: result.rowCount,
+    });
+    const meta = await getJob(db, project, jobId);
+    /* node:coverage ignore next */
+    if (meta === null) throw BqError.internalError(`Job ${jobId} was created but missing.`);
+    return {
+      status: 200,
+      body: {
+        ...jobMetaToResource(meta),
+        configuration: {
+          extract: {
+            sourceTable: {
+              projectId: parsed.config.project,
+              datasetId: parsed.config.datasetId,
+              tableId: parsed.config.tableId,
+            },
+            destinationUris: parsed.config.destinationUris,
+            destinationFormat: parsed.config.destinationFormat,
+            ...(parsed.config.printHeader !== undefined && {
+              printHeader: parsed.config.printHeader,
+            }),
+          },
+        },
+        statistics: {
+          ...jobMetaToResource(meta).statistics,
+          extract: {
+            destinationUriFileCounts: result.destinationUriFileCounts.map((n) => String(n)),
+            inputBytes: String(result.outputBytes),
+          },
+        },
+      },
+    } satisfies RouteResponse;
+  } catch (err) {
+    const endedMs = Date.now();
+    const bqErr =
+      err instanceof BqError
+        ? err
+        : BqError.invalid(err instanceof Error ? err.message : 'Extract job failed.');
+    await upsertJob(db, {
+      project,
+      jobId,
+      state: 'DONE',
+      statementType: 'EXTRACT',
+      startedMs,
+      endedMs,
+      error: {
+        reason: bqErr.reason,
+        message: bqErr.message,
+        ...(bqErr.location !== undefined && { location: bqErr.location }),
+      },
+    });
+    throw bqErr;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -708,6 +885,9 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
 
         if (parsed.kind === 'load') {
           return await handleLoadJob(db, project, parsed);
+        }
+        if (parsed.kind === 'extract') {
+          return await handleExtractJob(db, project, parsed);
         }
 
         if (parsed.dryRun) {

@@ -739,7 +739,7 @@ Scope: jobs.insert with `configuration.load`, sourceFormat=CSV, from GCS emulato
 
 Scope: sourceFormat=NEWLINE_DELIMITED_JSON. Acceptance: NDJSON file becomes rows; nested types map to STRUCT/ARRAY.
 
-### BL-085 — Load: Parquet ⏳ · Est: 2h · Deps: BL-083
+### BL-085 — Load: Parquet ✅ · Est: 2h · Deps: BL-083
 
 Scope: sourceFormat=PARQUET via DuckDB's native `read_parquet`. Acceptance: Parquet file becomes rows; schema autodetected from file.
 
@@ -775,7 +775,7 @@ Scope: implement the resumable upload protocol the gcloud client uses for `bq lo
 
 Scope: HTTP client honoring the env var; minimal range-get support. Acceptance: load against fake-gcs-server works.
 
-### BL-094 — Extract jobs ⏳ · Est: 6h · Deps: BL-093
+### BL-094 — Extract jobs ✅ · Est: 6h · Deps: BL-093
 
 Scope: destination format CSV / JSON / Avro / Parquet, optional compression, to GCS. Acceptance: extract writes the file; round-trip via load returns the same rows.
 
