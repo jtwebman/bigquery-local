@@ -779,13 +779,13 @@ Scope: HTTP client honoring the env var; minimal range-get support. Acceptance: 
 
 Scope: destination format CSV / JSON / Avro / Parquet, optional compression, to GCS. Acceptance: extract writes the file; round-trip via load returns the same rows.
 
-### BL-095 — Copy table jobs ⏳ · Est: 3h · Deps: BL-016
+### BL-095 — Copy table jobs ✅ · Est: 3h · Deps: BL-016
 
 Scope: snapshot / clone / deep copy via `configuration.copy`. Acceptance: copied table has the source's rows + schema.
 
 ## Phase 15 — Partitioning, clustering, materialized views
 
-### BL-096 — Ingestion-time partitioning ⏳ · Est: 4h · Deps: BL-011
+### BL-096 — Ingestion-time partitioning ✅ · Est: 4h · Deps: BL-011
 
 Scope: `_PARTITIONTIME` / `_PARTITIONDATE` pseudo columns; partition by ingestion time. Acceptance: queries scoped to a partition only read that partition's rows.
 

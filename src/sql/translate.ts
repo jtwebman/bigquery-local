@@ -1518,6 +1518,18 @@ function handleIdentifier(
         tok.value,
       );
     }
+    // BL-096 — pseudo columns for ingestion-time partitioning. BigQuery
+    // exposes the partition boundary as `_PARTITIONTIME` (TIMESTAMP)
+    // and `_PARTITIONDATE` (DATE). We back both with a hidden
+    // `_partition_time` column that insertAll auto-populates.
+    if (upper === '_PARTITIONTIME') {
+      out.push('"_partition_time"');
+      return i + 1;
+    }
+    if (upper === '_PARTITIONDATE') {
+      out.push('CAST("_partition_time" AS DATE)');
+      return i + 1;
+    }
     out.push(tok.value);
     return i + 1;
   }

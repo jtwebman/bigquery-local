@@ -38,7 +38,14 @@
 import type { Db } from '../storage/db.ts';
 import { getTable, upsertTable } from '../storage/meta.ts';
 import type { TableMeta } from '../storage/meta.ts';
-import { buildCreateTableSql, ensureDatasetSchema, qualifiedTableName } from './tables.ts';
+import {
+  PARTITION_TIME_COLUMN,
+  buildCreateTableSql,
+  ensureDatasetSchema,
+  isIngestionTimePartitioned,
+  partitionTruncUnit,
+  qualifiedTableName,
+} from './tables.ts';
 import {
   type BqField,
   bqInsertExpression,
@@ -158,9 +165,18 @@ function tableSchemaFields(meta: TableMeta): readonly BqField[] {
 }
 
 function buildInsertSql(meta: TableMeta, fields: readonly BqField[]): string {
-  const cols = fields.map((f) => quoteIdent(f.name)).join(', ');
-  const placeholders = fields.map((f, i) => bqInsertExpression(i + 1, f)).join(', ');
-  return `INSERT INTO ${qualifiedTableName(meta.project, meta.datasetId, meta.tableId)} (${cols}) VALUES (${placeholders})`;
+  const cols = fields.map((f) => quoteIdent(f.name));
+  const placeholders = fields.map((f, i) => bqInsertExpression(i + 1, f));
+  // Ingestion-time partitioning: auto-fill the hidden _partition_time
+  // column with the partition-truncated insertion timestamp. Real BQ
+  // exposes that value as _PARTITIONTIME; the translator rewrites
+  // queries on _PARTITIONTIME / _PARTITIONDATE to point at this column.
+  if (isIngestionTimePartitioned(meta.partitioning)) {
+    const tpType = (meta.partitioning as { type: string }).type;
+    cols.push(quoteIdent(PARTITION_TIME_COLUMN));
+    placeholders.push(`date_trunc('${partitionTruncUnit(tpType)}', CURRENT_TIMESTAMP)`);
+  }
+  return `INSERT INTO ${qualifiedTableName(meta.project, meta.datasetId, meta.tableId)} (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`;
 }
 
 interface RowOutcome {

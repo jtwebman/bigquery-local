@@ -85,6 +85,8 @@ interface TableResourceWire {
   readonly description?: string;
   readonly numRows?: string;
   readonly view?: { readonly query: string; readonly useLegacySql: false };
+  readonly timePartitioning?: TimePartitioningInput;
+  readonly clustering?: ClusteringInput;
 }
 
 function fieldToWire(field: BqField): FieldWire {
@@ -119,6 +121,12 @@ function metaToResource(meta: TableMeta): TableResourceWire {
       meta.viewQuery !== undefined && {
         view: { query: meta.viewQuery, useLegacySql: false as const },
       }),
+    ...(meta.partitioning !== undefined && {
+      timePartitioning: meta.partitioning as TimePartitioningInput,
+    }),
+    ...(meta.clustering !== undefined && {
+      clustering: meta.clustering as ClusteringInput,
+    }),
   };
 }
 
@@ -207,11 +215,28 @@ function parseBqFields(value: unknown, path: string): readonly BqField[] {
   return value.map((f, i) => parseBqField(f, `${path}[${i}]`));
 }
 
+interface TimePartitioningInput {
+  /** 'DAY' / 'HOUR' / 'MONTH' / 'YEAR'. v0 only treats this as
+   *  informational — bucketing is by partition column, not partition
+   *  type granularity. */
+  readonly type: string;
+  /** Column to partition by. Omitted for ingestion-time partitioning
+   *  (the hidden `_partition_time` column is used). */
+  readonly field?: string;
+  readonly expirationMs?: number;
+}
+
+interface ClusteringInput {
+  readonly fields: readonly string[];
+}
+
 interface ParsedTableBody {
   readonly tableIdFromBody?: string;
   readonly schema?: { readonly fields: readonly BqField[] };
   readonly description?: string;
   readonly expirationMs?: number;
+  readonly timePartitioning?: TimePartitioningInput;
+  readonly clustering?: ClusteringInput;
 }
 
 function parseTableBody(body: unknown): ParsedTableBody {
@@ -230,6 +255,40 @@ function parseTableBody(body: unknown): ParsedTableBody {
     const fields = parseBqFields(schemaObj['fields'] ?? [], 'schema.fields');
     schema = { fields };
   }
+  let timePartitioning: TimePartitioningInput | undefined;
+  if (obj['timePartitioning'] !== undefined) {
+    const tpObj = asObject(obj['timePartitioning'], 'timePartitioning');
+    const type = expectString(tpObj['type'], 'timePartitioning.type');
+    if (type !== 'DAY' && type !== 'HOUR' && type !== 'MONTH' && type !== 'YEAR') {
+      throw BqError.invalid(
+        `timePartitioning.type must be one of DAY, HOUR, MONTH, YEAR (got "${type}").`,
+        'timePartitioning.type',
+      );
+    }
+    const field =
+      tpObj['field'] !== undefined
+        ? expectString(tpObj['field'], 'timePartitioning.field')
+        : undefined;
+    const expirationMs =
+      tpObj['expirationMs'] !== undefined
+        ? expectNonNegativeInteger(tpObj['expirationMs'], 'timePartitioning.expirationMs')
+        : undefined;
+    timePartitioning = {
+      type,
+      ...(field !== undefined && { field }),
+      ...(expirationMs !== undefined && { expirationMs }),
+    };
+  }
+  let clustering: ClusteringInput | undefined;
+  if (obj['clustering'] !== undefined) {
+    const cObj = asObject(obj['clustering'], 'clustering');
+    const fieldsRaw = cObj['fields'];
+    if (!Array.isArray(fieldsRaw)) {
+      throw BqError.invalid('clustering.fields must be an array.', 'clustering.fields');
+    }
+    const fields = fieldsRaw.map((f, i) => expectString(f, `clustering.fields[${i}]`));
+    clustering = { fields };
+  }
   return {
     ...(tableIdFromBody !== undefined && { tableIdFromBody }),
     ...(schema !== undefined && { schema }),
@@ -239,6 +298,8 @@ function parseTableBody(body: unknown): ParsedTableBody {
     ...(obj['expirationTime'] !== undefined && {
       expirationMs: expectNonNegativeInteger(obj['expirationTime'], 'expirationTime'),
     }),
+    ...(timePartitioning !== undefined && { timePartitioning }),
+    ...(clustering !== undefined && { clustering }),
   };
 }
 
@@ -362,16 +423,54 @@ function columnDefinition(field: BqField): string {
   return `${quoteIdent(field.name)} ${bqTypeToDuck(field)}${constraint}`;
 }
 
+/** Hidden DuckDB column added to ingestion-time-partitioned tables. The
+ *  query translator rewrites `_PARTITIONTIME` → this column and
+ *  `_PARTITIONDATE` → `CAST(this AS DATE)`. */
+export const PARTITION_TIME_COLUMN = '_partition_time';
+
 export function buildCreateTableSql(
   project: string,
   datasetId: string,
   tableId: string,
   fields: readonly BqField[],
-  options: { readonly ifNotExists?: boolean } = {},
+  options: {
+    readonly ifNotExists?: boolean;
+    /** When true, adds a hidden `_partition_time TIMESTAMP WITH TIME ZONE`
+     *  column that `insertAll` populates with the truncated ingestion
+     *  timestamp (ingestion-time partitioning, BL-096). */
+    readonly ingestionPartitioned?: boolean;
+  } = {},
 ): string {
-  const columns = fields.map(columnDefinition).join(', ');
+  const userCols = fields.map(columnDefinition);
+  if (options.ingestionPartitioned === true) {
+    userCols.push(`${quoteIdent(PARTITION_TIME_COLUMN)} TIMESTAMP WITH TIME ZONE`);
+  }
+  const columns = userCols.join(', ');
   const guard = options.ifNotExists === true ? 'IF NOT EXISTS ' : '';
   return `CREATE TABLE ${guard}${qualifiedTableName(project, datasetId, tableId)} (${columns})`;
+}
+
+/** True when the table's stored partitioning describes ingestion-time
+ *  partitioning (TIME / DAY / HOUR / etc. without a `field`). */
+export function isIngestionTimePartitioned(partitioning: unknown): boolean {
+  if (partitioning === null || partitioning === undefined) return false;
+  const obj = partitioning as { type?: string; field?: string };
+  if (typeof obj.type !== 'string') return false;
+  return obj.field === undefined || obj.field === null;
+}
+
+/** DuckDB `date_trunc` unit for a BQ partition type. */
+export function partitionTruncUnit(partitioningType: string): string {
+  switch (partitioningType.toUpperCase()) {
+    case 'HOUR':
+      return 'hour';
+    case 'MONTH':
+      return 'month';
+    case 'YEAR':
+      return 'year';
+    default:
+      return 'day';
+  }
 }
 
 function buildAddColumnSql(
@@ -515,9 +614,13 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
           throw BqError.duplicate(`Table "${project}:${datasetId}.${tableId}" already exists.`);
         }
         const fields = parsed.schema?.fields ?? [];
+        const ingestionPartitioned =
+          parsed.timePartitioning !== undefined && parsed.timePartitioning.field === undefined;
         // Ensure the dataset's DuckDB schema exists, then create the data table.
         await ensureDatasetSchema(db, project, datasetId);
-        await db.exec(buildCreateTableSql(project, datasetId, tableId, fields));
+        await db.exec(
+          buildCreateTableSql(project, datasetId, tableId, fields, { ingestionPartitioned }),
+        );
         // Persist metadata.
         const input: TableMetaInput = {
           project,
@@ -527,6 +630,10 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
           schema: { fields },
           ...(parsed.description !== undefined && { description: parsed.description }),
           ...(parsed.expirationMs !== undefined && { expirationMs: parsed.expirationMs }),
+          ...(parsed.timePartitioning !== undefined && {
+            partitioning: parsed.timePartitioning,
+          }),
+          ...(parsed.clustering !== undefined && { clustering: parsed.clustering }),
         };
         const created = await upsertTable(db, input);
         return okResponse(created);

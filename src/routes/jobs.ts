@@ -14,6 +14,7 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { type CopyJobConfig, runCopyJob } from '../load/copy.ts';
 import { type ExtractJobConfig, runExtractJob } from '../load/extract.ts';
 import { type LoadJobConfig, runLoadJob } from '../load/load.ts';
 import type { Db } from '../storage/db.ts';
@@ -156,7 +157,7 @@ function expectString(value: unknown, path: string): string {
   return value;
 }
 
-type ParsedJobBody = ParsedQueryJob | ParsedLoadJob | ParsedExtractJob;
+type ParsedJobBody = ParsedQueryJob | ParsedLoadJob | ParsedExtractJob | ParsedCopyJob;
 
 interface ParsedQueryJob {
   readonly kind: 'query';
@@ -178,6 +179,12 @@ interface ParsedExtractJob {
   readonly config: ExtractJobConfig;
 }
 
+interface ParsedCopyJob {
+  readonly kind: 'copy';
+  readonly jobIdHint?: string;
+  readonly config: CopyJobConfig;
+}
+
 function expectBoolean(value: unknown, path: string): boolean {
   if (typeof value !== 'boolean') {
     throw BqError.invalid(`${path} must be a boolean.`, path);
@@ -189,17 +196,6 @@ function parseJobBody(body: unknown): ParsedJobBody {
   const obj = asObject(body, 'request body');
   const configuration = asObject(obj['configuration'], 'configuration');
 
-  // Reject job types we still don't support up front so the client sees
-  // a clear error. Copy lands in BL-095.
-  for (const otherType of ['copy']) {
-    if (configuration[otherType] !== undefined) {
-      throw BqError.unsupportedFeature(
-        `configuration.${otherType} jobs are not supported in v0.`,
-        `configuration.${otherType}`,
-      );
-    }
-  }
-
   // Load jobs (BL-083/084/085) take a completely different path —
   // bypass the query branch entirely and return a `kind: 'load'` body.
   if (configuration['load'] !== undefined) {
@@ -209,6 +205,11 @@ function parseJobBody(body: unknown): ParsedJobBody {
   // Extract jobs (BL-094) — similarly distinct path.
   if (configuration['extract'] !== undefined) {
     return parseExtractConfig(configuration, obj);
+  }
+
+  // Copy jobs (BL-095).
+  if (configuration['copy'] !== undefined) {
+    return parseCopyConfig(configuration, obj);
   }
 
   const queryConfig = configuration['query'];
@@ -474,6 +475,82 @@ function parseExtractConfig(
     ...(fieldDelimiter !== undefined && { fieldDelimiter }),
   };
   return { kind: 'extract', config, ...(jobIdHint !== undefined && { jobIdHint }) };
+}
+
+const VALID_OPERATION_TYPES: ReadonlySet<string> = new Set(['COPY', 'CLONE', 'SNAPSHOT']);
+
+/** Parse `configuration.copy`. */
+function parseCopyConfig(
+  configuration: Readonly<Record<string, unknown>>,
+  body: Readonly<Record<string, unknown>>,
+): ParsedCopyJob {
+  const copyObj = asObject(configuration['copy'], 'configuration.copy');
+
+  // BQ accepts either a single `sourceTable` or an array `sourceTables`;
+  // v0 only supports the single form (multi-source copy is a niche
+  // append-style use case).
+  const sourceObj = asObject(copyObj['sourceTable'], 'configuration.copy.sourceTable');
+  const srcProject = expectString(
+    sourceObj['projectId'],
+    'configuration.copy.sourceTable.projectId',
+  );
+  const srcDataset = expectString(
+    sourceObj['datasetId'],
+    'configuration.copy.sourceTable.datasetId',
+  );
+  const srcTable = expectString(sourceObj['tableId'], 'configuration.copy.sourceTable.tableId');
+
+  const destObj = asObject(copyObj['destinationTable'], 'configuration.copy.destinationTable');
+  const dstProject = expectString(
+    destObj['projectId'],
+    'configuration.copy.destinationTable.projectId',
+  );
+  const dstDataset = expectString(
+    destObj['datasetId'],
+    'configuration.copy.destinationTable.datasetId',
+  );
+  const dstTable = expectString(destObj['tableId'], 'configuration.copy.destinationTable.tableId');
+
+  let operationType: 'COPY' | 'CLONE' | 'SNAPSHOT' | undefined;
+  if (copyObj['operationType'] !== undefined) {
+    const op = expectString(copyObj['operationType'], 'configuration.copy.operationType');
+    if (!VALID_OPERATION_TYPES.has(op)) {
+      throw BqError.invalid(
+        `configuration.copy.operationType must be COPY / CLONE / SNAPSHOT (got "${op}").`,
+        'configuration.copy.operationType',
+      );
+    }
+    operationType = op as 'COPY' | 'CLONE' | 'SNAPSHOT';
+  }
+
+  let writeDisposition: 'WRITE_APPEND' | 'WRITE_TRUNCATE' | 'WRITE_EMPTY' | undefined;
+  if (copyObj['writeDisposition'] !== undefined) {
+    const value = expectString(copyObj['writeDisposition'], 'configuration.copy.writeDisposition');
+    if (value !== 'WRITE_APPEND' && value !== 'WRITE_TRUNCATE' && value !== 'WRITE_EMPTY') {
+      throw BqError.invalid(
+        `configuration.copy.writeDisposition must be one of WRITE_APPEND, WRITE_TRUNCATE, WRITE_EMPTY (got "${value}").`,
+        'configuration.copy.writeDisposition',
+      );
+    }
+    writeDisposition = value;
+  }
+
+  let jobIdHint: string | undefined;
+  const refRaw = body['jobReference'];
+  if (refRaw !== undefined && refRaw !== null) {
+    const refObj = asObject(refRaw, 'jobReference');
+    if (refObj['jobId'] !== undefined) {
+      jobIdHint = expectString(refObj['jobId'], 'jobReference.jobId');
+    }
+  }
+
+  const config: CopyJobConfig = {
+    source: { project: srcProject, datasetId: srcDataset, tableId: srcTable },
+    destination: { project: dstProject, datasetId: dstDataset, tableId: dstTable },
+    ...(operationType !== undefined && { operationType }),
+    ...(writeDisposition !== undefined && { writeDisposition }),
+  };
+  return { kind: 'copy', config, ...(jobIdHint !== undefined && { jobIdHint }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -841,6 +918,93 @@ async function handleExtractJob(
   }
 }
 
+/** Drive a copy job. Same lifecycle as load/extract — RUNNING row up
+ *  front, run synchronously, persist DONE / failed. */
+async function handleCopyJob(
+  db: Db,
+  project: string,
+  parsed: ParsedCopyJob,
+): Promise<RouteResponse> {
+  const jobId = parsed.jobIdHint ?? randomUUID();
+  const startedMs = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'RUNNING',
+    statementType: 'COPY',
+    startedMs,
+  });
+
+  try {
+    const result = await runCopyJob(db, parsed.config);
+    const endedMs = Date.now();
+    await upsertJob(db, {
+      project,
+      jobId,
+      state: 'DONE',
+      statementType: 'COPY',
+      startedMs,
+      endedMs,
+      dmlAffectedRows: result.outputRows,
+    });
+    const meta = await getJob(db, project, jobId);
+    /* node:coverage ignore next */
+    if (meta === null) throw BqError.internalError(`Job ${jobId} was created but missing.`);
+    return {
+      status: 200,
+      body: {
+        ...jobMetaToResource(meta),
+        configuration: {
+          copy: {
+            sourceTable: {
+              projectId: parsed.config.source.project,
+              datasetId: parsed.config.source.datasetId,
+              tableId: parsed.config.source.tableId,
+            },
+            destinationTable: {
+              projectId: parsed.config.destination.project,
+              datasetId: parsed.config.destination.datasetId,
+              tableId: parsed.config.destination.tableId,
+            },
+            ...(parsed.config.operationType !== undefined && {
+              operationType: parsed.config.operationType,
+            }),
+            ...(parsed.config.writeDisposition !== undefined && {
+              writeDisposition: parsed.config.writeDisposition,
+            }),
+          },
+        },
+        statistics: {
+          ...jobMetaToResource(meta).statistics,
+          copy: {
+            copiedRows: String(result.outputRows),
+          },
+        },
+      },
+    } satisfies RouteResponse;
+  } catch (err) {
+    const endedMs = Date.now();
+    const bqErr =
+      err instanceof BqError
+        ? err
+        : BqError.invalid(err instanceof Error ? err.message : 'Copy job failed.');
+    await upsertJob(db, {
+      project,
+      jobId,
+      state: 'DONE',
+      statementType: 'COPY',
+      startedMs,
+      endedMs,
+      error: {
+        reason: bqErr.reason,
+        message: bqErr.message,
+        ...(bqErr.location !== undefined && { location: bqErr.location }),
+      },
+    });
+    throw bqErr;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -888,6 +1052,9 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
         }
         if (parsed.kind === 'extract') {
           return await handleExtractJob(db, project, parsed);
+        }
+        if (parsed.kind === 'copy') {
+          return await handleCopyJob(db, project, parsed);
         }
 
         if (parsed.dryRun) {
