@@ -701,7 +701,7 @@ Scope: session ID tracked in `_bq.sessions`; TEMP tables/functions scoped per se
 
 Scope: virtual views over `_bq.tables`. Acceptance: `SELECT * FROM \`region-us\`.INFORMATION_SCHEMA.TABLES` returns sane rows.
 
-### BL-076 — VIEWS / MATERIALIZED_VIEWS ⏳ · Est: 2h · Deps: BL-054
+### BL-076 — VIEWS / MATERIALIZED_VIEWS ✅ · Est: 2h · Deps: BL-054
 
 Scope: virtual views over view metadata. Acceptance: view DDL appears in `view_definition` column.
 

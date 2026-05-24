@@ -1177,6 +1177,8 @@ const INFORMATION_SCHEMA_VIEWS: ReadonlyMap<string, string> = new Map([
   ['COLUMNS', 'info_columns'],
   ['COLUMN_FIELD_PATHS', 'info_column_field_paths'],
   ['TABLE_OPTIONS', 'info_table_options'],
+  ['VIEWS', 'info_views'],
+  ['MATERIALIZED_VIEWS', 'info_materialized_views'],
 ]);
 
 /** A segment of an INFORMATION_SCHEMA prefix — one component before the

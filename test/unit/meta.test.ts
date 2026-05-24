@@ -50,8 +50,10 @@ test('ensureMetaSchema creates the _bq schema and the meta tables', async () => 
     assert.deepEqual(views, [
       'info_column_field_paths',
       'info_columns',
+      'info_materialized_views',
       'info_table_options',
       'info_tables',
+      'info_views',
     ]);
   } finally {
     await db.close();

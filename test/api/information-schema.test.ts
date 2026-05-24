@@ -86,6 +86,11 @@ before(async () => {
       ],
     },
   });
+
+  // A view over sales.orders — visible to INFORMATION_SCHEMA.VIEWS.
+  await postJson(`/projects/${PROJECT}/queries`, {
+    query: `CREATE VIEW \`${DATASET_A}.recent_orders\` AS SELECT order_id FROM \`${DATASET_A}.orders\``,
+  });
 });
 
 after(async () => {
@@ -127,7 +132,7 @@ async function rows(sql: string): Promise<Array<Array<string | null>>> {
 // TABLES
 // ---------------------------------------------------------------------------
 
-test('region-scoped `region-us`.INFORMATION_SCHEMA.TABLES lists all tables in project', async () => {
+test('region-scoped `region-us`.INFORMATION_SCHEMA.TABLES lists all tables + views in project', async () => {
   const result = await rows(
     `SELECT table_schema, table_name, table_type, is_insertable_into
      FROM \`region-us\`.INFORMATION_SCHEMA.TABLES
@@ -137,6 +142,7 @@ test('region-scoped `region-us`.INFORMATION_SCHEMA.TABLES lists all tables in pr
     ['logs', 'events', 'BASE TABLE', 'YES'],
     ['sales', 'customers', 'BASE TABLE', 'YES'],
     ['sales', 'orders', 'BASE TABLE', 'YES'],
+    ['sales', 'recent_orders', 'VIEW', 'NO'],
   ]);
 });
 
@@ -145,14 +151,14 @@ test('dataset-scoped `<dataset>.INFORMATION_SCHEMA.TABLES filters to that datase
     `SELECT table_name FROM ${DATASET_A}.INFORMATION_SCHEMA.TABLES
      ORDER BY table_name`,
   );
-  assert.deepEqual(result, [['customers'], ['orders']]);
+  assert.deepEqual(result, [['customers'], ['orders'], ['recent_orders']]);
 });
 
 test('`project.region`.INFORMATION_SCHEMA.TABLES scopes by project', async () => {
   const result = await rows(
     `SELECT count(*)::INT64 FROM \`${PROJECT}.region-us\`.INFORMATION_SCHEMA.TABLES`,
   );
-  assert.deepEqual(result, [['3']]);
+  assert.deepEqual(result, [['4']]);
 });
 
 // ---------------------------------------------------------------------------
@@ -218,6 +224,38 @@ test('INFORMATION_SCHEMA.TABLE_OPTIONS exposes description as a string-typed opt
      WHERE table_name = 'orders'`,
   );
   assert.deepEqual(result, [['orders', 'description', 'STRING', '"Order facts"']]);
+});
+
+// ---------------------------------------------------------------------------
+// VIEWS / MATERIALIZED_VIEWS (BL-076)
+// ---------------------------------------------------------------------------
+
+test('INFORMATION_SCHEMA.VIEWS lists views with view_definition + use_standard_sql=YES', async () => {
+  const result = await rows(
+    `SELECT table_schema, table_name, view_definition, check_option, use_standard_sql
+     FROM ${DATASET_A}.INFORMATION_SCHEMA.VIEWS`,
+  );
+  assert.equal(result.length, 1);
+  const [schema, name, definition, checkOption, useStd] = result[0] as Array<string | null>;
+  assert.equal(schema, DATASET_A);
+  assert.equal(name, 'recent_orders');
+  assert.match(definition ?? '', /SELECT order_id FROM/);
+  assert.equal(checkOption, null);
+  assert.equal(useStd, 'YES');
+});
+
+test('INFORMATION_SCHEMA.VIEWS excludes base tables', async () => {
+  const result = await rows(
+    `SELECT table_name FROM \`region-us\`.INFORMATION_SCHEMA.VIEWS ORDER BY table_name`,
+  );
+  assert.deepEqual(result, [['recent_orders']]);
+});
+
+test('INFORMATION_SCHEMA.MATERIALIZED_VIEWS returns no rows until MVs exist (BL-101)', async () => {
+  const result = await rows(
+    `SELECT count(*)::INT64 FROM \`region-us\`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS`,
+  );
+  assert.deepEqual(result, [['0']]);
 });
 
 // ---------------------------------------------------------------------------

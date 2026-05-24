@@ -201,6 +201,35 @@ const DDL_STATEMENTS: readonly string[] = [
   // _bq.tables (description, expiration_timestamp). Labels become
   // available when BL-154 lands; the view will pick them up automatically
   // once the column exists in _bq.tables.
+  // INFORMATION_SCHEMA.VIEWS — one row per `type = 'VIEW'` table, exposing
+  // the SQL body in `view_definition`. `check_option` is always NULL in BQ
+  // (no WITH CHECK OPTION clause exists); `use_standard_sql` is always
+  // 'YES' since legacy SQL is deprecated and we don't accept it.
+  `CREATE OR REPLACE VIEW _bq.info_views AS
+   SELECT
+     project AS table_catalog,
+     dataset_id AS table_schema,
+     table_id AS table_name,
+     view_query AS view_definition,
+     CAST(NULL AS VARCHAR) AS check_option,
+     'YES' AS use_standard_sql
+   FROM _bq.tables
+   WHERE type = 'VIEW'`,
+  // INFORMATION_SCHEMA.MATERIALIZED_VIEWS — populated once BL-101 stores
+  // MVs with `type = 'MATERIALIZED_VIEW'`. The view is wired now so
+  // clients querying it today get a clean empty result instead of an
+  // unsupportedFeature error (matches real BQ behavior for projects with
+  // no MVs).
+  `CREATE OR REPLACE VIEW _bq.info_materialized_views AS
+   SELECT
+     project AS table_catalog,
+     dataset_id AS table_schema,
+     table_id AS table_name,
+     view_query AS view_definition,
+     updated_at AS last_refresh_time,
+     CAST(NULL AS TIMESTAMP) AS refresh_watermark
+   FROM _bq.tables
+   WHERE type = 'MATERIALIZED_VIEW'`,
   `CREATE OR REPLACE VIEW _bq.info_table_options AS
    SELECT project AS table_catalog, dataset_id AS table_schema, table_id AS table_name,
           'description' AS option_name, 'STRING' AS option_type,
