@@ -20,6 +20,7 @@ import { createDatasetRoutes } from './routes/datasets.ts';
 import { discoveryRoutes } from './routes/discovery.ts';
 import { createJobsRoutes } from './routes/jobs.ts';
 import { createModelRoutes } from './routes/models.ts';
+import { createProjectRoutes } from './routes/projects.ts';
 import { createQueriesRoutes } from './routes/queries.ts';
 import { createRoutineRoutes } from './routes/routines.ts';
 import { createTabledataRoutes } from './routes/tabledata.ts';
@@ -59,6 +60,7 @@ export async function createServer(config: ServerConfig = {}): Promise<Server> {
   const inner = createRouterServer({
     routes: [
       ...discoveryRoutes,
+      ...createProjectRoutes(db),
       ...createDatasetRoutes(db),
       ...createTableRoutes(db),
       ...createTabledataRoutes(db),

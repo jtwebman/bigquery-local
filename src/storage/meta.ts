@@ -462,6 +462,34 @@ function bigintOrNull(value: number | undefined): bigint | null {
 }
 
 // ---------------------------------------------------------------------------
+// Projects (BL-073)
+// ---------------------------------------------------------------------------
+
+/** Distinct project ids the emulator has seen, in lexicographic order.
+ * The list is derived from `_bq.datasets` — any project with at least
+ * one dataset shows up; an empty server returns []. The route layer
+ * unions this with the URL-path project so the *current* caller's
+ * project is always visible even if no datasets exist yet. */
+export async function listProjects(
+  db: Db,
+  options: { readonly offset: number; readonly limit: number },
+): Promise<{ readonly projects: readonly string[]; readonly nextOffset: number | null }> {
+  const rows = await db.query<{ project: string }>(
+    `SELECT DISTINCT project
+       FROM _bq.datasets
+      ORDER BY project
+      LIMIT $1::BIGINT OFFSET $2::BIGINT`,
+    [BigInt(options.limit + 1), BigInt(options.offset)],
+  );
+  const hasMore = rows.length > options.limit;
+  const sliced = hasMore ? rows.slice(0, options.limit) : rows;
+  return {
+    projects: sliced.map((r) => r.project),
+    nextOffset: hasMore ? options.offset + options.limit : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Datasets
 // ---------------------------------------------------------------------------
 

@@ -687,7 +687,7 @@ Scope: `GET`, `POST`, `PATCH`, `DELETE` on `/projects/{p}/datasets/{d}/routines[
 
 Scope: model metadata storage + endpoints. No actual training. Acceptance: model record visible via REST `GET` after `POST`.
 
-### BL-073 — Projects + getServiceAccount endpoints ⏳ · Est: 30m · Deps: BL-004
+### BL-073 — Projects + getServiceAccount endpoints ✅ · Est: 30m · Deps: BL-004
 
 Scope: minimal stubs returning configured projects list and a fake service account. Acceptance: BQ client `getProjects()` returns the right list.
 
@@ -771,7 +771,7 @@ Scope: `hivePartitioningOptions.mode=AUTO|STRINGS|CUSTOM`; expose partition colu
 
 Scope: implement the resumable upload protocol the gcloud client uses for `bq load`. Acceptance: `bq load` from local file works.
 
-### BL-093 — GCS reads via `STORAGE_EMULATOR_HOST` ⏳ · Est: 3h · Deps: BL-001
+### BL-093 — GCS reads via `STORAGE_EMULATOR_HOST` ✅ · Est: 3h · Deps: BL-001
 
 Scope: HTTP client honoring the env var; minimal range-get support. Acceptance: load against fake-gcs-server works.
 
