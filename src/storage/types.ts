@@ -282,6 +282,14 @@ function bqValueToDuckLeaf(value: unknown, field: BqField): unknown {
     case 'FLOAT64':
       return Number(value);
     case 'BOOL':
+      // `Boolean("false")` is `true` because non-empty strings are
+      // truthy; honor CSV / BQ-wire conventions where boolean values
+      // arrive as the literal strings "true" / "false" (case-insensitive).
+      if (typeof value === 'string') {
+        const lower = value.toLowerCase();
+        if (lower === 'true') return true;
+        if (lower === 'false') return false;
+      }
       return Boolean(value);
     case 'JSON':
       return typeof value === 'string' ? value : JSON.stringify(value);

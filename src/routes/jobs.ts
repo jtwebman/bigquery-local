@@ -14,8 +14,9 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { type LoadJobConfig, runLoadJob } from '../load/load.ts';
 import type { Db } from '../storage/db.ts';
-import { cancelJob, deleteJob, getJob, listJobs } from '../storage/meta.ts';
+import { cancelJob, deleteJob, getJob, listJobs, upsertJob } from '../storage/meta.ts';
 import type { JobMeta, JobState } from '../storage/meta.ts';
 import {
   type FieldWire,
@@ -26,7 +27,8 @@ import {
   fieldToWire,
   parseQueryParameters,
 } from '../sql/queryEngine.ts';
-import type { BqField } from '../storage/types.ts';
+import type { BqField, BqMode } from '../storage/types.ts';
+import { normalizeBqType } from '../storage/types.ts';
 import type { RouteDefinition, RouteResponse } from '../types.ts';
 import { BqError } from '../util/errors.ts';
 
@@ -153,11 +155,20 @@ function expectString(value: unknown, path: string): string {
   return value;
 }
 
-interface ParsedJobBody {
+type ParsedJobBody = ParsedQueryJob | ParsedLoadJob;
+
+interface ParsedQueryJob {
+  readonly kind: 'query';
   readonly query: string;
   readonly parameters: readonly QueryParameterParsed[];
   readonly jobIdHint: string | undefined;
   readonly dryRun: boolean;
+}
+
+interface ParsedLoadJob {
+  readonly kind: 'load';
+  readonly jobIdHint?: string;
+  readonly config: LoadJobConfig;
 }
 
 function expectBoolean(value: unknown, path: string): boolean {
@@ -171,14 +182,22 @@ function parseJobBody(body: unknown): ParsedJobBody {
   const obj = asObject(body, 'request body');
   const configuration = asObject(obj['configuration'], 'configuration');
 
-  // Reject every other job type up front so the client sees a clear error.
-  for (const otherType of ['load', 'copy', 'extract']) {
+  // Reject job types we still don't support up front so the client sees
+  // a clear error. (Load lands in BL-083/084; copy lands in BL-095;
+  // extract lands in BL-094 — flip these off the list as each ships.)
+  for (const otherType of ['copy', 'extract']) {
     if (configuration[otherType] !== undefined) {
       throw BqError.unsupportedFeature(
         `configuration.${otherType} jobs are not supported in v0.`,
         `configuration.${otherType}`,
       );
     }
+  }
+
+  // Load jobs (BL-083/084) take a completely different path — bypass the
+  // query branch entirely and return a `kind: 'load'` body.
+  if (configuration['load'] !== undefined) {
+    return parseLoadConfig(configuration, obj);
   }
 
   const queryConfig = configuration['query'];
@@ -213,7 +232,154 @@ function parseJobBody(body: unknown): ParsedJobBody {
     }
   }
 
-  return { query, parameters, jobIdHint, dryRun };
+  return { kind: 'query', query, parameters, jobIdHint, dryRun };
+}
+
+const SUPPORTED_LOAD_FORMATS: ReadonlySet<string> = new Set(['CSV', 'NEWLINE_DELIMITED_JSON']);
+const VALID_WRITE_DISPOSITIONS: ReadonlySet<string> = new Set([
+  'WRITE_APPEND',
+  'WRITE_TRUNCATE',
+  'WRITE_EMPTY',
+]);
+
+/** Parse `configuration.load` into our internal LoadJobConfig.
+ *
+ * BigQuery accepts a sprawling load config; we honor the subset the
+ * Phase-14 1.0.0 work covers (sourceUris, sourceFormat,
+ * destinationTable, autodetect, schema, skipLeadingRows,
+ * writeDisposition). Unknown formats throw `unsupportedFeature` so the
+ * caller sees a precise error. */
+function parseLoadConfig(
+  configuration: Readonly<Record<string, unknown>>,
+  body: Readonly<Record<string, unknown>>,
+): ParsedLoadJob {
+  const loadObj = asObject(configuration['load'], 'configuration.load');
+
+  const destObj = asObject(loadObj['destinationTable'], 'configuration.load.destinationTable');
+  const destProject = expectString(
+    destObj['projectId'],
+    'configuration.load.destinationTable.projectId',
+  );
+  const destDataset = expectString(
+    destObj['datasetId'],
+    'configuration.load.destinationTable.datasetId',
+  );
+  const destTable = expectString(destObj['tableId'], 'configuration.load.destinationTable.tableId');
+
+  const sourceUrisRaw = loadObj['sourceUris'];
+  if (!Array.isArray(sourceUrisRaw) || sourceUrisRaw.length === 0) {
+    throw BqError.invalid(
+      'configuration.load.sourceUris must be a non-empty array of gs:// URIs.',
+      'configuration.load.sourceUris',
+    );
+  }
+  const sourceUris: string[] = sourceUrisRaw.map((value, idx) =>
+    expectString(value, `configuration.load.sourceUris[${idx}]`),
+  );
+
+  const sourceFormat = expectString(loadObj['sourceFormat'], 'configuration.load.sourceFormat');
+  if (!SUPPORTED_LOAD_FORMATS.has(sourceFormat)) {
+    throw BqError.unsupportedFeature(
+      `configuration.load.sourceFormat="${sourceFormat}" is not supported in v0. Supported: CSV, NEWLINE_DELIMITED_JSON.`,
+      'configuration.load.sourceFormat',
+    );
+  }
+
+  let autodetect: boolean | undefined;
+  if (loadObj['autodetect'] !== undefined) {
+    autodetect = expectBoolean(loadObj['autodetect'], 'configuration.load.autodetect');
+  }
+
+  let schema: { readonly fields: readonly BqField[] } | undefined;
+  if (loadObj['schema'] !== undefined) {
+    const schemaObj = asObject(loadObj['schema'], 'configuration.load.schema');
+    const rawFields = schemaObj['fields'];
+    if (!Array.isArray(rawFields)) {
+      throw BqError.invalid(
+        'configuration.load.schema.fields must be an array.',
+        'configuration.load.schema.fields',
+      );
+    }
+    schema = { fields: rawFields.map((raw) => parseLoadField(raw)) };
+  }
+
+  let skipLeadingRows: number | undefined;
+  if (loadObj['skipLeadingRows'] !== undefined) {
+    const v = loadObj['skipLeadingRows'];
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 0) {
+      skipLeadingRows = v;
+    } else if (typeof v === 'string') {
+      const parsed = Number(v);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        throw BqError.invalid(
+          'configuration.load.skipLeadingRows must be a non-negative integer.',
+          'configuration.load.skipLeadingRows',
+        );
+      }
+      skipLeadingRows = parsed;
+    } else {
+      throw BqError.invalid(
+        'configuration.load.skipLeadingRows must be a non-negative integer.',
+        'configuration.load.skipLeadingRows',
+      );
+    }
+  }
+
+  let writeDisposition: 'WRITE_APPEND' | 'WRITE_TRUNCATE' | 'WRITE_EMPTY' | undefined;
+  if (loadObj['writeDisposition'] !== undefined) {
+    const value = expectString(loadObj['writeDisposition'], 'configuration.load.writeDisposition');
+    if (!VALID_WRITE_DISPOSITIONS.has(value)) {
+      throw BqError.invalid(
+        `configuration.load.writeDisposition must be one of WRITE_APPEND, WRITE_TRUNCATE, WRITE_EMPTY (got "${value}").`,
+        'configuration.load.writeDisposition',
+      );
+    }
+    writeDisposition = value as 'WRITE_APPEND' | 'WRITE_TRUNCATE' | 'WRITE_EMPTY';
+  }
+
+  let jobIdHint: string | undefined;
+  const refRaw = body['jobReference'];
+  if (refRaw !== undefined && refRaw !== null) {
+    const refObj = asObject(refRaw, 'jobReference');
+    if (refObj['jobId'] !== undefined) {
+      jobIdHint = expectString(refObj['jobId'], 'jobReference.jobId');
+    }
+  }
+
+  const config: LoadJobConfig = {
+    project: destProject,
+    datasetId: destDataset,
+    tableId: destTable,
+    sourceUris,
+    sourceFormat: sourceFormat as 'CSV' | 'NEWLINE_DELIMITED_JSON',
+    ...(autodetect !== undefined && { autodetect }),
+    ...(schema !== undefined && { schema }),
+    ...(skipLeadingRows !== undefined && { skipLeadingRows }),
+    ...(writeDisposition !== undefined && { writeDisposition }),
+  };
+  return { kind: 'load', config, ...(jobIdHint !== undefined && { jobIdHint }) };
+}
+
+/** Minimal BQ field parser shared with tables.ts schema parsing, but
+ *  scoped to load — we accept what BL-009/011 already supports. */
+function parseLoadField(raw: unknown): BqField {
+  const obj = asObject(raw, 'configuration.load.schema.fields[]');
+  const name = expectString(obj['name'], 'configuration.load.schema.fields[].name');
+  const typeRaw = expectString(obj['type'], 'configuration.load.schema.fields[].type');
+  // Don't trust arbitrary strings — round-trip through the type map.
+  const type = normalizeBqType(typeRaw);
+  let mode: BqMode | undefined;
+  if (obj['mode'] !== undefined) {
+    const m = expectString(obj['mode'], 'configuration.load.schema.fields[].mode');
+    if (m !== 'NULLABLE' && m !== 'REQUIRED' && m !== 'REPEATED') {
+      throw BqError.invalid(
+        `mode must be NULLABLE / REQUIRED / REPEATED (got "${m}").`,
+        'configuration.load.schema.fields[].mode',
+      );
+    }
+    mode = m;
+  }
+  return { name, type, ...(mode !== undefined && { mode }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +568,102 @@ function metaToListEntry(meta: JobMeta, projection: Projection): JobListEntryWir
   };
 }
 
+/**
+ * Drive a load job: persist a PENDING row up front so callers polling
+ * `GET /projects/{p}/jobs/{j}` see it, run the load synchronously, then
+ * either flip the persisted row to DONE (success) or DONE-with-error
+ * (failure). The HTTP response always reflects the final state — the
+ * emulator is synchronous, unlike real BQ which queues long-running
+ * jobs.
+ */
+async function handleLoadJob(
+  db: Db,
+  project: string,
+  parsed: ParsedLoadJob,
+): Promise<RouteResponse> {
+  const jobId = parsed.jobIdHint ?? randomUUID();
+  const startedMs = Date.now();
+  // RUNNING row up front. statement_type = 'LOAD' so the JOBS view + the
+  // listing filters can pick it up. `createdMs` is set by upsertJob from
+  // the existing row on update, so we don't need to pass it on the
+  // transition to DONE.
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'RUNNING',
+    statementType: 'LOAD',
+    startedMs,
+  });
+
+  try {
+    const result = await runLoadJob(db, parsed.config);
+    const endedMs = Date.now();
+    await upsertJob(db, {
+      project,
+      jobId,
+      state: 'DONE',
+      statementType: 'LOAD',
+      startedMs,
+      endedMs,
+      dmlAffectedRows: result.outputRows,
+    });
+    const meta = await getJob(db, project, jobId);
+    /* node:coverage ignore next */
+    if (meta === null) throw BqError.internalError(`Job ${jobId} was created but missing.`);
+    return {
+      status: 200,
+      body: {
+        ...jobMetaToResource(meta),
+        configuration: {
+          load: {
+            sourceUris: parsed.config.sourceUris,
+            sourceFormat: parsed.config.sourceFormat,
+            destinationTable: {
+              projectId: parsed.config.project,
+              datasetId: parsed.config.datasetId,
+              tableId: parsed.config.tableId,
+            },
+            ...(parsed.config.autodetect !== undefined && { autodetect: parsed.config.autodetect }),
+            ...(parsed.config.writeDisposition !== undefined && {
+              writeDisposition: parsed.config.writeDisposition,
+            }),
+          },
+        },
+        statistics: {
+          ...jobMetaToResource(meta).statistics,
+          load: {
+            inputFiles: String(parsed.config.sourceUris.length),
+            inputFileBytes: String(result.outputBytes),
+            outputRows: String(result.outputRows),
+            outputBytes: String(result.outputBytes),
+          },
+        },
+      },
+    } satisfies RouteResponse;
+  } catch (err) {
+    const endedMs = Date.now();
+    const bqErr =
+      err instanceof BqError
+        ? err
+        : BqError.invalid(err instanceof Error ? err.message : 'Load job failed.');
+    await upsertJob(db, {
+      project,
+      jobId,
+      state: 'DONE',
+      statementType: 'LOAD',
+      startedMs,
+      endedMs,
+      error: {
+        reason: bqErr.reason,
+        message: bqErr.message,
+        ...(bqErr.location !== undefined && { location: bqErr.location }),
+      },
+    });
+    // Re-throw so the standard error middleware shapes the response.
+    throw bqErr;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -443,6 +705,10 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
       handler: async (req) => {
         const project = req.params['p'] as string;
         const parsed = parseJobBody(req.body);
+
+        if (parsed.kind === 'load') {
+          return await handleLoadJob(db, project, parsed);
+        }
 
         if (parsed.dryRun) {
           // Plan-only: validate + schema, no execution, no row persistence.

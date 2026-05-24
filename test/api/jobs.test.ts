@@ -147,14 +147,17 @@ test('POST /jobs with parameterized query persists the parameters', async () => 
   assert.equal(job.status.state, 'DONE');
 });
 
-test('POST /jobs rejects configuration.load with unsupportedFeature', async () => {
+test('POST /jobs configuration.load with missing required fields returns 400 invalid', async () => {
+  // BL-083/084 added support for configuration.load (CSV + NDJSON). A
+  // load body without sourceUris / sourceFormat still fails — but with
+  // `invalid` (well-formed shape, missing fields) rather than
+  // `unsupportedFeature` (entire job type unsupported).
   const { status, json } = await postJob({
     configuration: { load: { destinationTable: { tableId: 't' } } },
   });
   assert.equal(status, 400);
   const err = json as GoogleErrorBody;
-  assert.equal(err.error.errors[0]?.reason, 'unsupportedFeature');
-  assert.match(err.error.errors[0]?.message ?? '', /load/);
+  assert.equal(err.error.errors[0]?.reason, 'invalid');
 });
 
 test('POST /jobs rejects configuration.copy with unsupportedFeature', async () => {

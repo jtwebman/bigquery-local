@@ -731,11 +731,11 @@ Scope: time-bucketed counts of streaming inserts. Acceptance: inserted rows show
 
 ## Phase 14 — Load / extract / copy jobs
 
-### BL-083 — Load: CSV ⏳ · Est: 4h · Deps: BL-016, BL-093
+### BL-083 — Load: CSV ✅ · Est: 4h · Deps: BL-016, BL-093
 
 Scope: jobs.insert with `configuration.load`, sourceFormat=CSV, from GCS emulator. Honor quoting, header detection, schema autodetect (BL-090). Acceptance: a CSV in the GCS emulator becomes table rows.
 
-### BL-084 — Load: NDJSON ⏳ · Est: 2h · Deps: BL-083
+### BL-084 — Load: NDJSON ✅ · Est: 2h · Deps: BL-083
 
 Scope: sourceFormat=NEWLINE_DELIMITED_JSON. Acceptance: NDJSON file becomes rows; nested types map to STRUCT/ARRAY.
 
@@ -759,7 +759,7 @@ Scope: parse LevelDB-style export format. Acceptance: a sample export becomes ro
 
 Scope: Iceberg manifest + snapshot resolution; read underlying Parquet via DuckDB. Acceptance: pointing load at an Iceberg location reads the current snapshot.
 
-### BL-090 — Schema autodetect ⏳ · Est: 4h · Deps: BL-083
+### BL-090 — Schema autodetect ✅ · Est: 4h · Deps: BL-083
 
 Scope: when no schema provided, infer from first N rows. Acceptance: load with `autodetect: true` produces correct schema.
 

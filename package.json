@@ -68,6 +68,7 @@
   "homepage": "https://github.com/jtwebman/bigquery-local#readme",
   "dependencies": {
     "@duckdb/node-api": "1.5.2-r.1",
+    "csv-batch": "2.0.6",
     "js-yaml": "4.1.1"
   },
   "peerDependencies": {
