@@ -29,14 +29,30 @@ async function freshDb(): Promise<Db> {
 test('ensureMetaSchema creates the _bq schema and the meta tables', async () => {
   const db = await freshDb();
   try {
-    const rows = await db.query<{ name: string }>(
-      `SELECT table_name AS name FROM information_schema.tables
-       WHERE table_schema = '_bq' ORDER BY table_name`,
+    const rows = await db.query<{ name: string; type: string }>(
+      `SELECT table_name AS name, table_type AS type
+         FROM information_schema.tables
+        WHERE table_schema = '_bq' ORDER BY table_name`,
     );
-    assert.deepEqual(
-      rows.map((r) => r.name),
-      ['datasets', 'job_rows', 'jobs', 'routines', 'tables'],
-    );
+    // Base metadata tables — the storage substrate.
+    const baseTables = rows.filter((r) => r.type === 'BASE TABLE').map((r) => r.name);
+    assert.deepEqual(baseTables, [
+      'datasets',
+      'job_rows',
+      'jobs',
+      'routines',
+      'table_columns',
+      'table_field_paths',
+      'tables',
+    ]);
+    // INFORMATION_SCHEMA-backing views — populated when tables get created.
+    const views = rows.filter((r) => r.type === 'VIEW').map((r) => r.name);
+    assert.deepEqual(views, [
+      'info_column_field_paths',
+      'info_columns',
+      'info_table_options',
+      'info_tables',
+    ]);
   } finally {
     await db.close();
   }
@@ -221,6 +237,114 @@ test('upsertTable + getTable round-trip with schema and partitioning JSON', asyn
     const fetched = await getTable(db, 'p', 'd', 't');
     assert.deepEqual(fetched, created);
     assert.deepEqual((fetched?.schema as { fields: unknown[] }).fields.length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test('upsertTable refreshes table_columns / table_field_paths from schema + partitioning + clustering', async () => {
+  const db = await freshDb();
+  try {
+    await upsertTable(db, {
+      project: 'p',
+      datasetId: 'd',
+      tableId: 'orders',
+      type: 'TABLE',
+      schema: {
+        fields: [
+          { name: 'id', type: 'STRING', mode: 'REQUIRED' },
+          { name: 'tags', type: 'STRING', mode: 'REPEATED' },
+          { name: 'order_ts', type: 'TIMESTAMP' },
+          {
+            name: 'addr',
+            type: 'STRUCT',
+            fields: [
+              { name: 'city', type: 'STRING' },
+              { name: 'zip', type: 'STRING' },
+            ],
+          },
+        ],
+      },
+      partitioning: { type: 'DAY', field: 'order_ts' },
+      clustering: { fields: ['id', 'tags'] },
+    });
+
+    const cols = await db.query<{
+      column_name: string;
+      ordinal_position: bigint;
+      is_nullable: string;
+      data_type: string;
+      is_partitioning_column: string;
+      clustering_ordinal_position: bigint | null;
+    }>(
+      `SELECT column_name, ordinal_position, is_nullable, data_type,
+              is_partitioning_column, clustering_ordinal_position
+         FROM _bq.table_columns
+        WHERE project = 'p' AND dataset_id = 'd' AND table_id = 'orders'
+     ORDER BY ordinal_position`,
+    );
+    assert.deepEqual(
+      cols.map((c) => ({
+        column_name: c.column_name,
+        ordinal_position: Number(c.ordinal_position),
+        is_nullable: c.is_nullable,
+        data_type: c.data_type,
+        is_partitioning_column: c.is_partitioning_column,
+        clustering_ordinal_position:
+          c.clustering_ordinal_position === null ? null : Number(c.clustering_ordinal_position),
+      })),
+      [
+        {
+          column_name: 'id',
+          ordinal_position: 1,
+          is_nullable: 'NO',
+          data_type: 'STRING',
+          is_partitioning_column: 'NO',
+          clustering_ordinal_position: 1,
+        },
+        {
+          column_name: 'tags',
+          ordinal_position: 2,
+          is_nullable: 'YES',
+          data_type: 'ARRAY<STRING>',
+          is_partitioning_column: 'NO',
+          clustering_ordinal_position: 2,
+        },
+        {
+          column_name: 'order_ts',
+          ordinal_position: 3,
+          is_nullable: 'YES',
+          data_type: 'TIMESTAMP',
+          is_partitioning_column: 'YES',
+          clustering_ordinal_position: null,
+        },
+        {
+          column_name: 'addr',
+          ordinal_position: 4,
+          is_nullable: 'YES',
+          data_type: 'STRUCT<city STRING, zip STRING>',
+          is_partitioning_column: 'NO',
+          clustering_ordinal_position: null,
+        },
+      ],
+    );
+
+    const paths = await db.query<{
+      column_name: string;
+      field_path: string;
+      data_type: string;
+    }>(
+      `SELECT column_name, field_path, data_type
+         FROM _bq.table_field_paths
+        WHERE project = 'p' AND dataset_id = 'd' AND table_id = 'orders'
+          AND column_name = 'addr'
+     ORDER BY field_path`,
+    );
+    assert.deepEqual(paths, [
+      { column_name: 'addr', field_path: 'addr', data_type: 'STRUCT<city STRING, zip STRING>' },
+      { column_name: 'addr', field_path: 'addr.city', data_type: 'STRING' },
+      { column_name: 'addr', field_path: 'addr.zip', data_type: 'STRING' },
+    ]);
   } finally {
     await db.close();
   }

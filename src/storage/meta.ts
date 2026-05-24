@@ -22,6 +22,7 @@
  */
 
 import type { Db } from './db.ts';
+import { type BqField, renderBqType } from './types.ts';
 import { BqError } from '../util/errors.ts';
 import { checkIfMatch, etag } from '../util/etag.ts';
 
@@ -99,6 +100,119 @@ const DDL_STATEMENTS: readonly string[] = [
     updated_at TIMESTAMP NOT NULL,
     PRIMARY KEY (project, dataset_id, routine_id)
   )`,
+  // Denormalized projections of _bq.tables' schema JSON, refreshed by
+  // upsertTable / deleteTable. They keep INFORMATION_SCHEMA.COLUMNS &
+  // COLUMN_FIELD_PATHS as plain SQL views — no JSON unnesting at query
+  // time. The is_partitioning_column / clustering_ordinal_position values
+  // are computed from _bq.tables.partitioning / .clustering when these
+  // rows are written.
+  `CREATE TABLE IF NOT EXISTS _bq.table_columns (
+    project VARCHAR NOT NULL,
+    dataset_id VARCHAR NOT NULL,
+    table_id VARCHAR NOT NULL,
+    column_name VARCHAR NOT NULL,
+    ordinal_position BIGINT NOT NULL,
+    is_nullable VARCHAR NOT NULL,
+    data_type VARCHAR NOT NULL,
+    is_partitioning_column VARCHAR NOT NULL,
+    clustering_ordinal_position BIGINT,
+    description VARCHAR,
+    PRIMARY KEY (project, dataset_id, table_id, column_name)
+  )`,
+  `CREATE TABLE IF NOT EXISTS _bq.table_field_paths (
+    project VARCHAR NOT NULL,
+    dataset_id VARCHAR NOT NULL,
+    table_id VARCHAR NOT NULL,
+    column_name VARCHAR NOT NULL,
+    field_path VARCHAR NOT NULL,
+    data_type VARCHAR NOT NULL,
+    description VARCHAR,
+    PRIMARY KEY (project, dataset_id, table_id, column_name, field_path)
+  )`,
+  // INFORMATION_SCHEMA views — read-only projections over the metadata
+  // tables. The query translator rewrites
+  //   `region-us`.INFORMATION_SCHEMA.TABLES
+  //   <dataset>.INFORMATION_SCHEMA.TABLES
+  // into SELECTs against these views (with table_catalog / table_schema
+  // filters applied as a WHERE).
+  `CREATE OR REPLACE VIEW _bq.info_tables AS
+   SELECT
+     project AS table_catalog,
+     dataset_id AS table_schema,
+     table_id AS table_name,
+     CASE type
+       WHEN 'TABLE' THEN 'BASE TABLE'
+       WHEN 'VIEW' THEN 'VIEW'
+       WHEN 'MATERIALIZED_VIEW' THEN 'MATERIALIZED VIEW'
+       WHEN 'EXTERNAL' THEN 'EXTERNAL'
+       WHEN 'SNAPSHOT' THEN 'SNAPSHOT'
+       ELSE type
+     END AS table_type,
+     CASE WHEN type = 'TABLE' THEN 'YES' ELSE 'NO' END AS is_insertable_into,
+     'NO' AS is_typed,
+     created_at AS creation_time,
+     CAST(NULL AS VARCHAR) AS base_table_catalog,
+     CAST(NULL AS VARCHAR) AS base_table_schema,
+     CAST(NULL AS VARCHAR) AS base_table_name,
+     CAST(NULL AS BIGINT) AS snapshot_time_ms,
+     view_query AS ddl,
+     CAST(NULL AS VARCHAR) AS default_collation_name,
+     CAST(NULL AS TIMESTAMP) AS upsert_stream_apply_watermark
+   FROM _bq.tables`,
+  `CREATE OR REPLACE VIEW _bq.info_columns AS
+   SELECT
+     c.project AS table_catalog,
+     c.dataset_id AS table_schema,
+     c.table_id AS table_name,
+     c.column_name,
+     c.ordinal_position,
+     c.is_nullable,
+     c.data_type,
+     'NEVER' AS is_generated,
+     CAST(NULL AS VARCHAR) AS generation_expression,
+     'NEVER' AS is_stored,
+     'NO' AS is_hidden,
+     CASE WHEN t.type = 'VIEW' THEN 'NO' ELSE 'YES' END AS is_updatable,
+     'NO' AS is_system_defined,
+     c.is_partitioning_column,
+     c.clustering_ordinal_position,
+     CAST(NULL AS VARCHAR) AS collation_name,
+     CAST(NULL AS VARCHAR) AS column_default,
+     CAST(NULL AS VARCHAR) AS rounding_mode
+   FROM _bq.table_columns c
+   JOIN _bq.tables t
+     ON t.project = c.project
+    AND t.dataset_id = c.dataset_id
+    AND t.table_id = c.table_id`,
+  `CREATE OR REPLACE VIEW _bq.info_column_field_paths AS
+   SELECT
+     project AS table_catalog,
+     dataset_id AS table_schema,
+     table_id AS table_name,
+     column_name,
+     field_path,
+     data_type,
+     description,
+     CAST(NULL AS VARCHAR) AS collation_name,
+     CAST(NULL AS VARCHAR) AS rounding_mode
+   FROM _bq.table_field_paths`,
+  // TABLE_OPTIONS exposes per-table options as (option_name, option_type,
+  // option_value) rows. We populate the ones we currently store on
+  // _bq.tables (description, expiration_timestamp). Labels become
+  // available when BL-154 lands; the view will pick them up automatically
+  // once the column exists in _bq.tables.
+  `CREATE OR REPLACE VIEW _bq.info_table_options AS
+   SELECT project AS table_catalog, dataset_id AS table_schema, table_id AS table_name,
+          'description' AS option_name, 'STRING' AS option_type,
+          '"' || replace(description, '"', '\\"') || '"' AS option_value
+     FROM _bq.tables
+    WHERE description IS NOT NULL
+   UNION ALL
+   SELECT project AS table_catalog, dataset_id AS table_schema, table_id AS table_name,
+          'expiration_timestamp' AS option_name, 'TIMESTAMP' AS option_type,
+          'TIMESTAMP "' || strftime(expires_at, '%Y-%m-%d %H:%M:%S+00') || '"' AS option_value
+     FROM _bq.tables
+    WHERE expires_at IS NOT NULL`,
 ];
 
 export async function ensureMetaSchema(db: Db): Promise<void> {
@@ -371,6 +485,143 @@ export async function getTable(
   };
 }
 
+/** Top-level row for `_bq.table_columns`. */
+interface ColumnRow {
+  readonly columnName: string;
+  readonly ordinalPosition: number;
+  readonly isNullable: 'YES' | 'NO';
+  readonly dataType: string;
+  readonly isPartitioningColumn: 'YES' | 'NO';
+  readonly clusteringOrdinalPosition: number | null;
+  readonly description: string | null;
+}
+
+/** Row for `_bq.table_field_paths` — one per top-level column and one
+ * per nested STRUCT path within it. */
+interface FieldPathRow {
+  readonly columnName: string;
+  readonly fieldPath: string;
+  readonly dataType: string;
+  readonly description: string | null;
+}
+
+/** Flatten a stored table schema into the rows that back the
+ * `_bq.table_columns` and `_bq.table_field_paths` projections. The shape
+ * mirrors what `INFORMATION_SCHEMA.COLUMNS` and `COLUMN_FIELD_PATHS`
+ * expose, with `is_partitioning_column` / `clustering_ordinal_position`
+ * derived from the table's partitioning + clustering JSON. */
+function flattenSchemaForInfo(
+  schema: unknown,
+  partitioning: unknown,
+  clustering: unknown,
+): { columns: ColumnRow[]; fieldPaths: FieldPathRow[] } {
+  const fields = (schema as { fields?: readonly BqField[] } | undefined)?.fields ?? [];
+  const partitionField = readPartitionField(partitioning);
+  const clusterFields = readClusterFields(clustering);
+  const columns: ColumnRow[] = [];
+  const fieldPaths: FieldPathRow[] = [];
+  fields.forEach((field, idx) => {
+    const dataType = renderBqType(field);
+    columns.push({
+      columnName: field.name,
+      ordinalPosition: idx + 1,
+      isNullable: field.mode === 'REQUIRED' ? 'NO' : 'YES',
+      dataType,
+      isPartitioningColumn: partitionField === field.name ? 'YES' : 'NO',
+      clusteringOrdinalPosition: clusterFieldOrdinal(clusterFields, field.name),
+      description: field.description ?? null,
+    });
+    collectFieldPaths(field, field.name, columns[columns.length - 1] as ColumnRow, fieldPaths);
+  });
+  return { columns, fieldPaths };
+}
+
+function readPartitionField(partitioning: unknown): string | null {
+  const p = partitioning as { field?: string } | undefined;
+  return p?.field ?? null;
+}
+
+function readClusterFields(clustering: unknown): readonly string[] {
+  const c = clustering as { fields?: readonly string[] } | undefined;
+  return c?.fields ?? [];
+}
+
+function clusterFieldOrdinal(clusterFields: readonly string[], name: string): number | null {
+  const idx = clusterFields.indexOf(name);
+  return idx === -1 ? null : idx + 1;
+}
+
+function collectFieldPaths(
+  field: BqField,
+  currentPath: string,
+  column: ColumnRow,
+  out: FieldPathRow[],
+): void {
+  out.push({
+    columnName: column.columnName,
+    fieldPath: currentPath,
+    dataType: renderBqType(field),
+    description: field.description ?? null,
+  });
+  if (field.type !== 'STRUCT' || field.fields === undefined) return;
+  for (const child of field.fields) {
+    collectFieldPaths(child, `${currentPath}.${child.name}`, column, out);
+  }
+}
+
+async function refreshTableInfoProjections(db: Db, input: TableMetaInput): Promise<void> {
+  await db.exec(
+    `DELETE FROM _bq.table_columns WHERE project = $1 AND dataset_id = $2 AND table_id = $3`,
+    [input.project, input.datasetId, input.tableId],
+  );
+  await db.exec(
+    `DELETE FROM _bq.table_field_paths WHERE project = $1 AND dataset_id = $2 AND table_id = $3`,
+    [input.project, input.datasetId, input.tableId],
+  );
+  const { columns, fieldPaths } = flattenSchemaForInfo(
+    input.schema,
+    input.partitioning,
+    input.clustering,
+  );
+  for (const col of columns) {
+    await db.exec(
+      `INSERT INTO _bq.table_columns (
+        project, dataset_id, table_id, column_name, ordinal_position,
+        is_nullable, data_type, is_partitioning_column,
+        clustering_ordinal_position, description
+      ) VALUES ($1, $2, $3, $4, $5::BIGINT, $6, $7, $8, $9, $10)`,
+      [
+        input.project,
+        input.datasetId,
+        input.tableId,
+        col.columnName,
+        BigInt(col.ordinalPosition),
+        col.isNullable,
+        col.dataType,
+        col.isPartitioningColumn,
+        col.clusteringOrdinalPosition === null ? null : BigInt(col.clusteringOrdinalPosition),
+        col.description,
+      ],
+    );
+  }
+  for (const fp of fieldPaths) {
+    await db.exec(
+      `INSERT INTO _bq.table_field_paths (
+        project, dataset_id, table_id, column_name, field_path, data_type, description
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.project,
+        input.datasetId,
+        input.tableId,
+        fp.columnName,
+        fp.fieldPath,
+        fp.dataType,
+        fp.description,
+      ],
+    );
+  }
+}
+
 export async function upsertTable(
   db: Db,
   input: TableMetaInput,
@@ -427,6 +678,7 @@ export async function upsertTable(
       input.viewQuery ?? null,
     ],
   );
+  await refreshTableInfoProjections(db, input);
   return {
     ...input,
     etag: newEtag,
@@ -447,6 +699,16 @@ export async function deleteTable(
   checkIfMatch(existing.etag, ifMatch);
   await db.exec(
     `DELETE FROM _bq.tables
+     WHERE project = $1 AND dataset_id = $2 AND table_id = $3`,
+    [project, datasetId, tableId],
+  );
+  await db.exec(
+    `DELETE FROM _bq.table_columns
+     WHERE project = $1 AND dataset_id = $2 AND table_id = $3`,
+    [project, datasetId, tableId],
+  );
+  await db.exec(
+    `DELETE FROM _bq.table_field_paths
      WHERE project = $1 AND dataset_id = $2 AND table_id = $3`,
     [project, datasetId, tableId],
   );

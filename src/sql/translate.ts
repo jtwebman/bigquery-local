@@ -1122,6 +1122,18 @@ function translateRange(
     const tok = tokens[i];
     if (tok === undefined) break;
 
+    // INFORMATION_SCHEMA references — intercept before the regular switch so
+    // we can consume the whole `<prefix>.INFORMATION_SCHEMA.<view>` span as a
+    // single virtual table reference.
+    if (tok.kind === 'identifier' || tok.kind === 'backtick-identifier') {
+      const rewritten = tryRewriteInformationSchema(tokens, i, endIdx, project);
+      if (rewritten !== null) {
+        out.push(rewritten.sql);
+        i = rewritten.nextIdx;
+        continue;
+      }
+    }
+
     switch (tok.kind) {
       case 'backtick-identifier':
         out.push(rewriteBacktick(tok, project));
@@ -1149,6 +1161,152 @@ function translateRange(
     }
   }
   return out.join('');
+}
+
+// ---------------------------------------------------------------------------
+// INFORMATION_SCHEMA → virtual views over _bq metadata
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps a BQ `INFORMATION_SCHEMA.<NAME>` to the backing DuckDB view in the
+ * `_bq` schema. Names not in this map throw `unsupportedFeature` so the
+ * caller gets a precise error instead of a DuckDB "table does not exist".
+ */
+const INFORMATION_SCHEMA_VIEWS: ReadonlyMap<string, string> = new Map([
+  ['TABLES', 'info_tables'],
+  ['COLUMNS', 'info_columns'],
+  ['COLUMN_FIELD_PATHS', 'info_column_field_paths'],
+  ['TABLE_OPTIONS', 'info_table_options'],
+]);
+
+/** A segment of an INFORMATION_SCHEMA prefix — one component before the
+ * `INFORMATION_SCHEMA` keyword. Carries the literal token text so we can
+ * decide whether it names a project, dataset, or region. */
+interface PrefixSegment {
+  readonly text: string;
+  /** True if the segment was sourced from a multi-part backtick — i.e. the
+   * caller wrote `\`project.region-us\`` and we split it. Multi-part
+   * backticks force `project.region` interpretation. */
+  readonly fromMultiBacktick: boolean;
+}
+
+/**
+ * If the tokens starting at `i` form a `<prefix>.INFORMATION_SCHEMA.<view>`
+ * reference, return the DuckDB-side rewrite plus the index to resume at.
+ * Otherwise return null and let the regular translator path handle the
+ * tokens.
+ *
+ * Accepts prefix shapes:
+ *   `\`region-us\``                      — region-scoped, current project
+ *   `\`project.region-us\``              — region-scoped, named project
+ *   `\`project.dataset\``                — dataset-scoped, named project
+ *   `dataset`                            — dataset-scoped, current project
+ *   `project.dataset`                    — dataset-scoped, named project
+ *
+ * Region segments (any segment starting with `region-`) just drop out of
+ * the filter — the emulator doesn't track regions, so a region-scoped
+ * query returns all datasets in the project.
+ */
+function tryRewriteInformationSchema(
+  tokens: readonly Token[],
+  i: number,
+  endIdx: number,
+  currentProject: string,
+): { sql: string; nextIdx: number } | null {
+  const segments: PrefixSegment[] = [];
+  let cursor = i;
+  const first = tokens[cursor];
+  if (first === undefined) return null;
+  if (first.kind === 'backtick-identifier') {
+    const inner = first.value.slice(1, -1);
+    const parts = inner.split('.').filter((p) => p !== '');
+    if (parts.length === 0) return null;
+    for (const part of parts) {
+      segments.push({ text: part, fromMultiBacktick: parts.length > 1 });
+    }
+    cursor += 1;
+  } else if (first.kind === 'identifier') {
+    segments.push({ text: first.value, fromMultiBacktick: false });
+    cursor += 1;
+  } else {
+    return null;
+  }
+  // Walk forward through `. ident` pairs until we run out or hit
+  // INFORMATION_SCHEMA.
+  while (cursor < endIdx) {
+    const dotIdx = nextNonSkippable(tokens, cursor);
+    if (dotIdx >= endIdx) return null;
+    const dot = tokens[dotIdx];
+    if (dot?.kind !== 'punctuation' || dot.value !== '.') return null;
+    const idIdx = nextNonSkippable(tokens, dotIdx + 1);
+    if (idIdx >= endIdx) return null;
+    const id = tokens[idIdx];
+    if (id === undefined) return null;
+    if (id.kind === 'identifier' && id.value.toUpperCase() === 'INFORMATION_SCHEMA') {
+      // Found it — next must be `. <view>`.
+      const dot2Idx = nextNonSkippable(tokens, idIdx + 1);
+      const dot2 = tokens[dot2Idx];
+      if (dot2?.kind !== 'punctuation' || dot2.value !== '.') return null;
+      const viewIdx = nextNonSkippable(tokens, dot2Idx + 1);
+      const viewTok = tokens[viewIdx];
+      if (viewTok?.kind !== 'identifier') return null;
+      const sql = buildInformationSchemaQuery(segments, viewTok.value, currentProject);
+      return { sql, nextIdx: viewIdx + 1 };
+    }
+    if (id.kind !== 'identifier') return null;
+    segments.push({ text: id.value, fromMultiBacktick: false });
+    cursor = idIdx + 1;
+  }
+  return null;
+}
+
+function buildInformationSchemaQuery(
+  segments: readonly PrefixSegment[],
+  viewName: string,
+  currentProject: string,
+): string {
+  const view = INFORMATION_SCHEMA_VIEWS.get(viewName.toUpperCase());
+  if (view === undefined) {
+    throw BqError.unsupportedFeature(
+      `BigQuery feature not supported in v0: INFORMATION_SCHEMA.${viewName}`,
+      `INFORMATION_SCHEMA.${viewName}`,
+    );
+  }
+  const { project, dataset } = resolveInformationSchemaScope(segments, currentProject);
+  const conditions: string[] = [`table_catalog = ${sqlString(project)}`];
+  if (dataset !== null) {
+    conditions.push(`table_schema = ${sqlString(dataset)}`);
+  }
+  return `(SELECT * FROM _bq."${view}" WHERE ${conditions.join(' AND ')})`;
+}
+
+function resolveInformationSchemaScope(
+  segments: readonly PrefixSegment[],
+  currentProject: string,
+): { project: string; dataset: string | null } {
+  const isRegion = (s: PrefixSegment): boolean => /^region-/i.test(s.text);
+  const nonRegion = segments.filter((s) => !isRegion(s));
+  const hasRegion = segments.some(isRegion);
+  if (nonRegion.length === 0) {
+    // Pure region prefix like `region-us` — current project, no dataset filter.
+    return { project: currentProject, dataset: null };
+  }
+  if (nonRegion.length === 1) {
+    const only = nonRegion[0] as PrefixSegment;
+    if (hasRegion || only.fromMultiBacktick) {
+      // `project.region` form — the single segment is a project; region scope.
+      return { project: only.text, dataset: null };
+    }
+    // Single bare identifier — treat as a dataset in the current project.
+    return { project: currentProject, dataset: only.text };
+  }
+  // Two non-region segments: `project.dataset`.
+  const [proj, ds] = nonRegion as [PrefixSegment, PrefixSegment];
+  return { project: proj.text, dataset: ds.text };
+}
+
+function sqlString(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
 }
 
 // ---------------------------------------------------------------------------

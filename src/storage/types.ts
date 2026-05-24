@@ -98,6 +98,25 @@ export function normalizeBqType(raw: string): BqType {
   return mapped;
 }
 
+/**
+ * BigQuery `data_type` string for a field, as it appears in
+ * `INFORMATION_SCHEMA.COLUMNS.data_type`. STRUCT fields render with their
+ * full child list (`STRUCT<city STRING, zip STRING>`); REPEATED mode wraps
+ * the base type as `ARRAY<…>`.
+ */
+export function renderBqType(field: BqField): string {
+  const base = renderBaseBqType(field);
+  return field.mode === 'REPEATED' ? `ARRAY<${base}>` : base;
+}
+
+function renderBaseBqType(field: BqField): string {
+  if (field.type !== 'STRUCT') return field.type;
+  const children = field.fields ?? [];
+  if (children.length === 0) return 'STRUCT';
+  const inner = children.map((f) => `${f.name} ${renderBqType(f)}`).join(', ');
+  return `STRUCT<${inner}>`;
+}
+
 // ---------------------------------------------------------------------------
 // DuckDB column type for CREATE TABLE / ALTER TABLE
 // ---------------------------------------------------------------------------
