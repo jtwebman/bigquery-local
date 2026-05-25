@@ -52,3 +52,40 @@ jobs:
 
       - name: Test with coverage
         run: npm run test:coverage
+
+  python-client:
+    name: Python client (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cover the lowest supported and the current latest. The Google
+        # client lib drops EOL versions on its own cadence; bump the
+        # lower bound when 3.10 hits EOL.
+        python: ['3.10', '3.12']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Setup Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: 'pip'
+          cache-dependency-path: test/clients/python/requirements.txt
+
+      - name: Install Python deps
+        run: pip install -r test/clients/python/requirements.txt
+
+      - name: Run Python client tests
+        run: pytest test/clients/python/ -v

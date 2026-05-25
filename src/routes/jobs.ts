@@ -662,8 +662,11 @@ const MAX_PAGE_SIZE = 10_000;
 function parseMaxResults(value: string | undefined): number {
   if (value === undefined) return DEFAULT_PAGE_SIZE;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw BqError.invalid('maxResults must be a positive integer.', 'maxResults');
+  // `maxResults=0` is intentional — the Python client uses it to poll
+  // job completion without fetching rows (matches real BQ behavior).
+  // Reject only negatives / non-integers.
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw BqError.invalid('maxResults must be a non-negative integer.', 'maxResults');
   }
   return Math.min(parsed, MAX_PAGE_SIZE);
 }

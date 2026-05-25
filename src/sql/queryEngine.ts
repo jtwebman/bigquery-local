@@ -129,7 +129,10 @@ export function parseQueryParameter(raw: unknown, path: string): QueryParameterP
     }
     const arrayScalars = arrRaw.map((entry, i) => {
       const entryObj = asObject(entry, `${path}.parameterValue.arrayValues[${i}]`);
-      return expectString(entryObj['value'], `${path}.parameterValue.arrayValues[${i}].value`);
+      return coerceParameterValue(
+        entryObj['value'],
+        `${path}.parameterValue.arrayValues[${i}].value`,
+      );
     });
     return {
       name,
@@ -140,8 +143,22 @@ export function parseQueryParameter(raw: unknown, path: string): QueryParameterP
   }
 
   const scalarType = normalizeBqType(expectString(typeObj['type'], `${path}.parameterType.type`));
-  const scalar = expectString(valueObj['value'], `${path}.parameterValue.value`);
+  const scalar = coerceParameterValue(valueObj['value'], `${path}.parameterValue.value`);
   return { name, type: scalarType, scalar };
+}
+
+/** Accept the BQ wire form (`"42"`) AND the Python-client form (`42` as
+ *  a JSON number, `true` as a boolean). Some clients — notably the
+ *  Python `google-cloud-bigquery` library — serialize numeric / boolean
+ *  parameter values as their native JSON type rather than as a
+ *  decimal/literal string. We coerce to string so the downstream
+ *  binding pipeline (which expects strings) keeps working. */
+function coerceParameterValue(value: unknown, path: string): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  throw BqError.invalid(`${path} must be a string, number, or boolean.`, path);
 }
 
 export function parseQueryParameters(rawParams: unknown, path: string): QueryParameterParsed[] {

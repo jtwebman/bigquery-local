@@ -7,7 +7,15 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!dist", "!coverage", "!node_modules", "!**/*.duckdb"]
+    "includes": [
+      "**",
+      "!dist",
+      "!coverage",
+      "!node_modules",
+      "!**/*.duckdb",
+      "!**/.venv",
+      "!**/__pycache__"
+    ]
   },
   "formatter": {
     "enabled": true,
