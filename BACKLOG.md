@@ -1047,7 +1047,7 @@ Scope: store `location` on datasets; reject cross-location operations with the r
 
 Scope: reservations / assignments REST surface; no real slot semantics. Acceptance: CRUD round-trips.
 
-### BL-157 — `useQueryCache` semantics ⏳ · Est: 4h · Deps: BL-015
+### BL-157 — `useQueryCache` semantics ✅ · Est: 4h · Deps: BL-015
 
 Scope: cache query results keyed by SQL + params; return cached results when `useQueryCache: true`. Acceptance: cache hit increments a counter; bypass works.
 

@@ -59,6 +59,7 @@ interface JobStatisticsWire {
     readonly statementType: string;
     readonly totalSlotMs: string;
     readonly schema?: { readonly fields: readonly FieldWire[] };
+    readonly cacheHit?: boolean;
     readonly dmlStats?: {
       readonly insertedRowCount?: string;
       readonly updatedRowCount?: string;
@@ -179,6 +180,7 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
         ...(schemaFields.length > 0 && {
           schema: { fields: schemaFields.map(fieldToWire) },
         }),
+        ...(meta.cacheHit !== undefined && { cacheHit: meta.cacheHit }),
         ...(dmlStats !== undefined && { dmlStats }),
       },
     },
@@ -216,6 +218,9 @@ interface ParsedQueryJob {
    *  by the client. Cross-location queries (referencing a dataset in
    *  another location) fail with `invalid` (BL-155). */
   readonly location?: string;
+  /** When false, bypass the in-memory query result cache (BL-157).
+   *  Defaults to true. */
+  readonly useQueryCache?: boolean;
 }
 
 function expectLabelsMap(value: unknown, field: string): Readonly<Record<string, string>> {
@@ -318,6 +323,17 @@ function parseJobBody(body: unknown): ParsedJobBody {
     labels = expectLabelsMap(configuration['labels'], 'configuration.labels');
   }
 
+  // BL-157 — useQueryCache. Defaults to true (matches BQ). Accept on
+  // configuration.query (the spec location) — that's where the BQ
+  // client puts it.
+  let useQueryCache: boolean | undefined;
+  if (queryConfigObj['useQueryCache'] !== undefined) {
+    useQueryCache = expectBoolean(
+      queryConfigObj['useQueryCache'],
+      'configuration.query.useQueryCache',
+    );
+  }
+
   return {
     kind: 'query',
     query,
@@ -326,6 +342,7 @@ function parseJobBody(body: unknown): ParsedJobBody {
     dryRun,
     ...(labels !== undefined && { labels }),
     ...(location !== undefined && { location }),
+    ...(useQueryCache !== undefined && { useQueryCache }),
   };
 }
 
@@ -1178,6 +1195,7 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
           ...(parsed.jobIdHint !== undefined && { jobId: parsed.jobIdHint }),
           ...(parsed.labels !== undefined && { labels: parsed.labels }),
           ...(parsed.location !== undefined && { location: parsed.location }),
+          ...(parsed.useQueryCache !== undefined && { useQueryCache: parsed.useQueryCache }),
         });
         const meta = await getJob(db, project, exec.jobId);
         if (meta === null) {

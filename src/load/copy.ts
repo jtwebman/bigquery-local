@@ -18,6 +18,7 @@
  * The route layer wraps the runner in a try/catch to persist the job.
  */
 
+import { invalidateQueryCache } from '../sql/queryEngine.ts';
 import type { Db } from '../storage/db.ts';
 import { getTable, upsertTable } from '../storage/meta.ts';
 import {
@@ -148,5 +149,7 @@ export async function runCopyJob(db: Db, config: CopyJobConfig): Promise<CopyJob
       config.source.tableId,
     )}`,
   );
+  // BL-157 — the destination just got new rows; clear cached SELECTs.
+  invalidateQueryCache();
   return { outputRows: Number(rowCount[0]?.n ?? 0) };
 }

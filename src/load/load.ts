@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import csvBatch from 'csv-batch';
 
+import { invalidateQueryCache } from '../sql/queryEngine.ts';
 import { readGcsObject, readGcsObjectText } from '../storage/gcs.ts';
 import type { Db } from '../storage/db.ts';
 import { getTable, upsertTable } from '../storage/meta.ts';
@@ -102,6 +103,8 @@ export async function runLoadJob(db: Db, config: LoadJobConfig): Promise<LoadJob
     );
   }
   const inserted = await insertRows(db, config, schema, rows);
+  // BL-157 — loaded rows make any cached SELECTs against this dataset stale.
+  invalidateQueryCache();
 
   return {
     outputRows: inserted,
@@ -185,6 +188,9 @@ async function runParquetLoad(db: Db, config: LoadJobConfig): Promise<LoadJobRes
       `SELECT count(*)::BIGINT AS n FROM ${readExpr}`,
     );
     const rowCount = Number(rowCountResult[0]?.n ?? 0);
+
+    // BL-157 — Parquet load also invalidates the query cache.
+    invalidateQueryCache();
 
     return {
       outputRows: rowCount,

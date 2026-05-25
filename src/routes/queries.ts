@@ -22,8 +22,16 @@ import {
   parseQueryParameters,
 } from '../sql/queryEngine.ts';
 import type { Db } from '../storage/db.ts';
+import { getJob } from '../storage/meta.ts';
+import type { JobMeta } from '../storage/meta.ts';
 import type { RouteDefinition, RouteResponse } from '../types.ts';
 import { BqError } from '../util/errors.ts';
+
+/** Refetch the persisted job so we can read cache_hit (and any other
+ *  derived stat queryEngine wrote during execution). */
+async function getJobAfterExec(db: Db, project: string, jobId: string): Promise<JobMeta | null> {
+  return getJob(db, project, jobId);
+}
 
 interface QueryResponseWire {
   readonly kind: 'bigquery#queryResponse';
@@ -37,7 +45,7 @@ interface QueryResponseWire {
   readonly rows?: readonly RowWire[];
   readonly totalBytesProcessed: string;
   readonly jobComplete: true;
-  readonly cacheHit: false;
+  readonly cacheHit: boolean;
   readonly numDmlAffectedRows?: string;
 }
 
@@ -59,6 +67,7 @@ interface ParsedQueryBody {
   readonly query: string;
   readonly parameters: readonly QueryParameterParsed[];
   readonly dryRun: boolean;
+  readonly useQueryCache?: boolean;
 }
 
 function expectBoolean(value: unknown, path: string): boolean {
@@ -73,7 +82,16 @@ function parseQueryBody(body: unknown): ParsedQueryBody {
   const query = expectString(obj['query'], 'query');
   const parameters = parseQueryParameters(obj['queryParameters'], 'queryParameters');
   const dryRun = obj['dryRun'] === undefined ? false : expectBoolean(obj['dryRun'], 'dryRun');
-  return { query, parameters, dryRun };
+  const useQueryCache =
+    obj['useQueryCache'] === undefined
+      ? undefined
+      : expectBoolean(obj['useQueryCache'], 'useQueryCache');
+  return {
+    query,
+    parameters,
+    dryRun,
+    ...(useQueryCache !== undefined && { useQueryCache }),
+  };
 }
 
 export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
@@ -109,7 +127,12 @@ export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
           return { status: 200, body } satisfies RouteResponse;
         }
 
-        const exec = await executeQuery(db, project, parsed.query, parsed.parameters);
+        const exec = await executeQuery(db, project, parsed.query, parsed.parameters, {
+          ...(parsed.useQueryCache !== undefined && { useQueryCache: parsed.useQueryCache }),
+        });
+        // Pull the persisted job to find out whether the result came from
+        // cache (queryEngine wrote `cache_hit` on the row).
+        const meta = await getJobAfterExec(db, project, exec.jobId);
         const body: QueryResponseWire = {
           kind: 'bigquery#queryResponse',
           // Surface schema + rows for SELECT, and for SCRIPT when the last
@@ -127,7 +150,7 @@ export function createQueriesRoutes(db: Db): readonly RouteDefinition[] {
           totalRows: String(exec.totalRows),
           totalBytesProcessed: '0',
           jobComplete: true,
-          cacheHit: false,
+          cacheHit: meta?.cacheHit === true,
           ...(exec.dmlAffectedRows !== undefined && {
             numDmlAffectedRows: String(exec.dmlAffectedRows),
           }),

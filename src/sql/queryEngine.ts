@@ -328,6 +328,102 @@ export interface QueryExecution {
  * `jobId` may be passed in (e.g. when the request supplied
  * `jobReference.jobId`) or omitted to generate a fresh UUID.
  */
+/**
+ * BL-157 — per-server query result cache.
+ *
+ * Keyed by `${project}\x00${normalizedSql}\x00${JSON.stringify(params)}`.
+ * Identical queries within the same server lifetime return cached
+ * rows + schema without hitting DuckDB; the new job still gets its own
+ * jobId and `_bq.job_rows` so pagination + result fetches work the
+ * same way as on a cache miss.
+ *
+ * No TTL, no cross-query invalidation: a SELECT that doesn't touch
+ * the changed table happily returns its previously-cached rows even
+ * after an INSERT lands. Real BQ tracks per-table mod time; for an
+ * emulator this is acceptable — clients that need fresh data can
+ * pass `useQueryCache: false`.
+ */
+interface CachedResult {
+  readonly statementType: StatementType;
+  readonly schema: readonly BqField[];
+  readonly wireRows: readonly RowWire[];
+}
+const queryCache: Map<string, CachedResult> = new Map();
+
+function cacheKey(
+  project: string,
+  query: string,
+  parameters: readonly QueryParameterParsed[],
+): string {
+  // Normalize whitespace + trim so semantically-identical SQL hashes
+  // the same; a real production-grade cache would also strip comments
+  // and lowercase keywords, but trim-and-collapse covers the
+  // copy-paste-twice case the cache exists to optimize.
+  const normalized = query.replace(/\s+/g, ' ').trim();
+  return `${project}\x00${normalized}\x00${JSON.stringify(parameters)}`;
+}
+
+/** Test-only: clear the cache between unit tests. Not exported for
+ *  production callers — use `useQueryCache: false` to bypass. */
+export function _resetQueryCacheForTests(): void {
+  queryCache.clear();
+}
+
+/**
+ * Invalidate the entire query cache. Called by any code path that
+ * mutates persisted data — DML, DDL, MV refresh, copy, load,
+ * insertAll, table CRUD. v0 doesn't track per-table dependencies; we
+ * just clear the lot. Anyone running enough cached SELECTs to care
+ * about granular invalidation can set `useQueryCache: false`.
+ */
+export function invalidateQueryCache(): void {
+  queryCache.clear();
+}
+
+/** Build a fresh job from a cached SELECT result. The new jobId is
+ *  unique (callers expect to be able to GET /queries/{j} for paging),
+ *  and the rows go into `_bq.job_rows` under the new id — pagination
+ *  works the same as on a non-cached job. `cacheHit=true` lands in
+ *  `_bq.jobs.cache_hit` so the wire response can surface it. */
+async function returnCachedSelect(
+  db: Db,
+  project: string,
+  jobId: string,
+  query: string,
+  parameters: readonly QueryParameterParsed[],
+  cached: CachedResult,
+): Promise<QueryExecution> {
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType: 'SELECT',
+    query,
+    params: parameters,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: cached.schema },
+    resultTotalRows: cached.wireRows.length,
+    cacheHit: true,
+  });
+  for (let i = 0; i < cached.wireRows.length; i += 1) {
+    await db.exec(
+      'INSERT INTO _bq.job_rows (project, job_id, row_index, row) VALUES ($1, $2, $3::BIGINT, $4::JSON)',
+      [project, jobId, BigInt(i), JSON.stringify(cached.wireRows[i])],
+    );
+  }
+  return {
+    jobId,
+    statementType: 'SELECT',
+    schema: cached.schema,
+    wireRows: cached.wireRows,
+    startedMs: now,
+    endedMs: now,
+    totalRows: cached.wireRows.length,
+  };
+}
+
 export async function executeQuery(
   db: Db,
   project: string,
@@ -340,6 +436,9 @@ export async function executeQuery(
      *  references a dataset stored with a different `location`, the
      *  job fails with `invalid`. */
     readonly location?: string;
+    /** When `false`, skip the cache lookup; the query runs and the
+     *  result is NOT stored. Default `true` matches BQ behavior. */
+    readonly useQueryCache?: boolean;
   } = {},
 ): Promise<QueryExecution> {
   const statementType = detectStatementType(query);
@@ -361,6 +460,19 @@ export async function executeQuery(
       ...(options.labels !== undefined && { labels: options.labels }),
       ...(options.location !== undefined && { location: options.location }),
     });
+  }
+
+  // BL-157 — cache lookup / invalidation. Only SELECT is cacheable;
+  // every other statement type mutates state, so we clear the cache up
+  // front. `useQueryCache` defaults to true (matches BQ).
+  const useCache = options.useQueryCache !== false;
+  if (statementType !== 'SELECT') {
+    invalidateQueryCache();
+  } else if (useCache) {
+    const cached = queryCache.get(cacheKey(project, query, parameters));
+    if (cached !== undefined) {
+      return await returnCachedSelect(db, project, jobId, query, parameters, cached);
+    }
   }
 
   const expanded = await expandWildcardTables(query, db, project);
@@ -453,12 +565,21 @@ export async function executeQuery(
     endedMs,
     resultSchema: { fields: schema },
     resultTotalRows: result.rows.length,
+    cacheHit: false,
   });
   for (let i = 0; i < wireRows.length; i += 1) {
     await db.exec(
       'INSERT INTO _bq.job_rows (project, job_id, row_index, row) VALUES ($1, $2, $3::BIGINT, $4::JSON)',
       [project, jobId, BigInt(i), JSON.stringify(wireRows[i])],
     );
+  }
+  // BL-157 — store the result for future cache hits when caching is on.
+  if (useCache) {
+    queryCache.set(cacheKey(project, query, parameters), {
+      statementType: 'SELECT',
+      schema,
+      wireRows,
+    });
   }
 
   return {

@@ -80,6 +80,7 @@ const DDL_STATEMENTS: readonly string[] = [
     dml_affected_rows BIGINT,
     labels JSON,
     location VARCHAR,
+    cache_hit BOOLEAN,
     PRIMARY KEY (project, job_id)
   )`,
   `CREATE TABLE IF NOT EXISTS _bq.job_rows (
@@ -1019,6 +1020,8 @@ export interface JobMetaInput {
   readonly labels?: Readonly<Record<string, string>>;
   /** Region the job ran in. Defaults to 'US' when unset. */
   readonly location?: string;
+  /** True when the job returned cached results (BL-157). */
+  readonly cacheHit?: boolean;
 }
 
 export interface JobMeta extends JobMetaInput {
@@ -1027,7 +1030,7 @@ export interface JobMeta extends JobMetaInput {
 
 const SELECT_JOB = `SELECT
   project, job_id, state, statement_type, error, query, params, types,
-  result_schema, result_total_rows, dml_affected_rows, labels, location,
+  result_schema, result_total_rows, dml_affected_rows, labels, location, cache_hit,
   epoch_ms(created_at) AS created_ms,
   epoch_ms(started_at) AS started_ms,
   epoch_ms(ended_at) AS ended_ms
@@ -1055,6 +1058,9 @@ export async function getJob(db: Db, project: string, jobId: string): Promise<Jo
     ...optionalNumber('dmlAffectedRows', row['dml_affected_rows']),
     ...optionalJson<'labels', Readonly<Record<string, string>>>('labels', row['labels']),
     ...optional('location', row['location'] as string | null),
+    ...(row['cache_hit'] === null || row['cache_hit'] === undefined
+      ? {}
+      : { cacheHit: Boolean(row['cache_hit']) }),
   };
 }
 
@@ -1068,13 +1074,13 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
     `INSERT INTO _bq.jobs (
       project, job_id, state, statement_type, error, query, params, types,
       created_at, started_at, ended_at, result_schema, result_total_rows,
-      dml_affected_rows, labels, location
+      dml_affected_rows, labels, location, cache_hit
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8,
       epoch_ms($9::BIGINT),
       CASE WHEN $10 IS NULL THEN NULL ELSE epoch_ms($10::BIGINT) END,
       CASE WHEN $11 IS NULL THEN NULL ELSE epoch_ms($11::BIGINT) END,
-      $12, $13, $14, $15, $16
+      $12, $13, $14, $15, $16, $17
     )
     ON CONFLICT (project, job_id) DO UPDATE SET
       state = EXCLUDED.state,
@@ -1089,7 +1095,8 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
       result_total_rows = EXCLUDED.result_total_rows,
       dml_affected_rows = EXCLUDED.dml_affected_rows,
       labels = COALESCE(EXCLUDED.labels, _bq.jobs.labels),
-      location = COALESCE(EXCLUDED.location, _bq.jobs.location)`,
+      location = COALESCE(EXCLUDED.location, _bq.jobs.location),
+      cache_hit = COALESCE(EXCLUDED.cache_hit, _bq.jobs.cache_hit)`,
     [
       input.project,
       input.jobId,
@@ -1107,6 +1114,7 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
       bigintOrNull(input.dmlAffectedRows),
       jsonOrNull(input.labels),
       input.location ?? null,
+      input.cacheHit === undefined ? null : input.cacheHit,
     ],
   );
   return {
@@ -1164,7 +1172,7 @@ export async function listJobs(
 
   const sql = `SELECT
        project, job_id, state, statement_type, error, query, params, types,
-       result_schema, result_total_rows, dml_affected_rows, labels, location,
+       result_schema, result_total_rows, dml_affected_rows, labels, location, cache_hit,
        epoch_ms(created_at) AS created_ms,
        epoch_ms(started_at) AS started_ms,
        epoch_ms(ended_at) AS ended_ms
@@ -1193,6 +1201,9 @@ export async function listJobs(
     ...optionalNumber('dmlAffectedRows', row['dml_affected_rows']),
     ...optionalJson<'labels', Readonly<Record<string, string>>>('labels', row['labels']),
     ...optional('location', row['location'] as string | null),
+    ...(row['cache_hit'] === null || row['cache_hit'] === undefined
+      ? {}
+      : { cacheHit: Boolean(row['cache_hit']) }),
   }));
   return { jobs, nextOffset: hasMore ? options.offset + options.limit : null };
 }

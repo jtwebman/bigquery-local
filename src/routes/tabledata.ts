@@ -35,6 +35,7 @@
  * date-suffixed tables like `events20260517`.
  */
 
+import { invalidateQueryCache } from '../sql/queryEngine.ts';
 import type { Db } from '../storage/db.ts';
 import { getTable, upsertTable } from '../storage/meta.ts';
 import type { TableMeta } from '../storage/meta.ts';
@@ -533,6 +534,11 @@ export function createTabledataRoutes(
         const insertErrors = outcomes
           .map(toInsertErrorWire)
           .filter((e): e is InsertErrorWire => e !== null);
+
+        // BL-157 — any successful row write invalidates the result cache.
+        if (insertErrors.length < outcomes.length) {
+          invalidateQueryCache();
+        }
 
         const body: InsertAllResponseWire =
           insertErrors.length === 0
