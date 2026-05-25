@@ -59,10 +59,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Cover the lowest supported and the current latest. The Google
-        # client lib drops EOL versions on its own cadence; bump the
-        # lower bound when 3.10 hits EOL.
-        python: ['3.10', '3.12']
+        # 3.11 = oldest version still in bugfix support (EOL Oct 2027).
+        # 3.14 = current stable (released 2026-05-10).
+        # Bump these as Python's support window slides.
+        python: ['3.11', '3.14']
 
     steps:
       - name: Checkout
