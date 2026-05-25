@@ -595,10 +595,31 @@ function parseCopyConfig(
 ): ParsedCopyJob {
   const copyObj = asObject(configuration['copy'], 'configuration.copy');
 
-  // BQ accepts either a single `sourceTable` or an array `sourceTables`;
-  // v0 only supports the single form (multi-source copy is a niche
-  // append-style use case).
-  const sourceObj = asObject(copyObj['sourceTable'], 'configuration.copy.sourceTable');
+  // BQ accepts either the singular `sourceTable` or the plural
+  // `sourceTables` array. The Python google-cloud-bigquery client
+  // sends `sourceTables: [{ projectId, datasetId, tableId }]` per the
+  // spec; the Node client and some others send `sourceTable`. We
+  // support both; multi-source copy is rejected as unsupportedFeature
+  // (BQ semantic: each source row appends to the destination).
+  let sourceObj: Readonly<Record<string, unknown>>;
+  if (copyObj['sourceTables'] !== undefined) {
+    const arr = copyObj['sourceTables'];
+    if (!Array.isArray(arr) || arr.length === 0) {
+      throw BqError.invalid(
+        'configuration.copy.sourceTables must be a non-empty array.',
+        'configuration.copy.sourceTables',
+      );
+    }
+    if (arr.length > 1) {
+      throw BqError.unsupportedFeature(
+        'configuration.copy.sourceTables with multiple sources is not supported in v0.',
+        'configuration.copy.sourceTables',
+      );
+    }
+    sourceObj = asObject(arr[0], 'configuration.copy.sourceTables[0]');
+  } else {
+    sourceObj = asObject(copyObj['sourceTable'], 'configuration.copy.sourceTable');
+  }
   const srcProject = expectString(
     sourceObj['projectId'],
     'configuration.copy.sourceTable.projectId',
