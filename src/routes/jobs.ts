@@ -58,6 +58,10 @@ interface JobStatisticsWire {
   readonly query?: {
     readonly statementType: string;
     readonly totalSlotMs: string;
+    /** Query-level mirror of statistics.totalBytesProcessed — the
+     *  Python client reads it from here (statistics[<jobType>]) per
+     *  BQ's JobStatistics2 schema. Real BQ populates both levels. */
+    readonly totalBytesProcessed?: string;
     readonly schema?: { readonly fields: readonly FieldWire[] };
     readonly cacheHit?: boolean;
     readonly dmlStats?: {
@@ -164,6 +168,9 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
       // per-row-bytes formula the dry-run uses (BL-099) so a dry-run
       // followed by an actual run produces comparable numbers. Returns
       // 0 for DML / scripts / DDL with no result schema.
+      // Mirrored at `statistics.query.totalBytesProcessed` below for
+      // clients (e.g. Python google-cloud-bigquery) that read from
+      // the query-level location per BQ's JobStatistics2 schema.
       totalBytesProcessed: String((meta.resultTotalRows ?? 0) * estimateBytesPerRow(schemaFields)),
       ...(dmlAffected !== undefined && {
         numDmlAffectedRows: String(dmlAffected),
@@ -176,6 +183,9 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
           meta.startedMs !== undefined && meta.endedMs !== undefined
             ? Math.max(0, meta.endedMs - meta.startedMs)
             : 0,
+        ),
+        totalBytesProcessed: String(
+          (meta.resultTotalRows ?? 0) * estimateBytesPerRow(schemaFields),
         ),
         ...(schemaFields.length > 0 && {
           schema: { fields: schemaFields.map(fieldToWire) },
@@ -1185,6 +1195,8 @@ export function createJobsRoutes(db: Db): readonly RouteDefinition[] {
               query: {
                 statementType: dry.statementType,
                 totalSlotMs: '0',
+                // Query-level mirror — Python client reads from here.
+                totalBytesProcessed: String(dry.totalBytesProcessed),
                 ...(dry.schema.length > 0 && {
                   schema: { fields: dry.schema.map(fieldToWire) },
                 }),
