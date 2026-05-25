@@ -406,3 +406,154 @@ test('Successful load job is persisted and visible via GET /jobs/{j}', async () 
   const lookupBody = (await lookup.json()) as JobResponse;
   assert.equal(lookupBody.status.state, 'DONE');
 });
+
+// ---------------------------------------------------------------------------
+// Branch-coverage edges
+// ---------------------------------------------------------------------------
+
+test('CSV load with skipLeadingRows=2 skips the first data row after the header', async () => {
+  OBJECTS.set('bq-load::skip.csv', {
+    bytes: Buffer.from('id,note\n1,first\n2,second\n3,third\n', 'utf-8'),
+    contentType: 'text/csv',
+  });
+  const { status, body } = await postLoad({
+    configuration: {
+      load: {
+        sourceUris: ['gs://bq-load/skip.csv'],
+        sourceFormat: 'CSV',
+        autodetect: true,
+        skipLeadingRows: 2,
+        destinationTable: { projectId: PROJECT, datasetId: DATASET, tableId: 'skipped' },
+      },
+    },
+  });
+  assert.equal(status, 200);
+  // skipLeadingRows=2 means "skip header + 1 data row"; 3 - 1 = 2 rows loaded.
+  assert.equal(body.statistics?.load?.outputRows, '2');
+});
+
+test('NDJSON with a non-object line returns 400 invalid', async () => {
+  OBJECTS.set('bq-load::bad-shape.ndjson', {
+    bytes: Buffer.from('{"id":1}\n[1,2,3]\n', 'utf-8'),
+    contentType: 'application/x-ndjson',
+  });
+  const res = await fetch(`${server.url}/projects/${PROJECT}/jobs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      configuration: {
+        load: {
+          sourceUris: ['gs://bq-load/bad-shape.ndjson'],
+          sourceFormat: 'NEWLINE_DELIMITED_JSON',
+          autodetect: true,
+          destinationTable: { projectId: PROJECT, datasetId: DATASET, tableId: 'bad_shape' },
+        },
+      },
+    }),
+  });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error?: { errors?: Array<{ message: string }> } };
+  assert.match(body.error?.errors?.[0]?.message ?? '', /not a JSON object/);
+});
+
+test('NDJSON with malformed JSON returns 400 invalid', async () => {
+  OBJECTS.set('bq-load::malformed.ndjson', {
+    bytes: Buffer.from('{"id":1}\n{not json\n', 'utf-8'),
+    contentType: 'application/x-ndjson',
+  });
+  const res = await fetch(`${server.url}/projects/${PROJECT}/jobs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      configuration: {
+        load: {
+          sourceUris: ['gs://bq-load/malformed.ndjson'],
+          sourceFormat: 'NEWLINE_DELIMITED_JSON',
+          autodetect: true,
+          destinationTable: { projectId: PROJECT, datasetId: DATASET, tableId: 'malformed' },
+        },
+      },
+    }),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('NDJSON autodetect on an empty source returns 400 invalid', async () => {
+  OBJECTS.set('bq-load::empty.ndjson', {
+    bytes: Buffer.from('\n', 'utf-8'),
+    contentType: 'application/x-ndjson',
+  });
+  const res = await fetch(`${server.url}/projects/${PROJECT}/jobs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      configuration: {
+        load: {
+          sourceUris: ['gs://bq-load/empty.ndjson'],
+          sourceFormat: 'NEWLINE_DELIMITED_JSON',
+          autodetect: true,
+          destinationTable: { projectId: PROJECT, datasetId: DATASET, tableId: 'empty_src' },
+        },
+      },
+    }),
+  });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error?: { errors?: Array<{ message: string }> } };
+  assert.match(body.error?.errors?.[0]?.message ?? '', /empty source/i);
+});
+
+test('Multi-source CSV load concatenates rows from each URI', async () => {
+  OBJECTS.set('bq-load::part-a.csv', {
+    bytes: Buffer.from('id,note\n1,a\n2,b\n', 'utf-8'),
+    contentType: 'text/csv',
+  });
+  OBJECTS.set('bq-load::part-b.csv', {
+    bytes: Buffer.from('id,note\n3,c\n4,d\n', 'utf-8'),
+    contentType: 'text/csv',
+  });
+  const { status, body } = await postLoad({
+    configuration: {
+      load: {
+        sourceUris: ['gs://bq-load/part-a.csv', 'gs://bq-load/part-b.csv'],
+        sourceFormat: 'CSV',
+        autodetect: true,
+        destinationTable: { projectId: PROJECT, datasetId: DATASET, tableId: 'multi_src' },
+      },
+    },
+  });
+  assert.equal(status, 200);
+  assert.equal(body.statistics?.load?.outputRows, '4');
+});
+
+test('Load with explicit schema into existing destination reuses storage', async () => {
+  // Pre-create the destination with a schema.
+  await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tableReference: { tableId: 'preexisting' },
+      schema: {
+        fields: [
+          { name: 'id', type: 'INT64' },
+          { name: 'note', type: 'STRING' },
+        ],
+      },
+    }),
+  });
+  // Load with no schema + no autodetect — should infer from existing destination's schema.
+  OBJECTS.set('bq-load::reuse.csv', {
+    bytes: Buffer.from('id,note\n10,x\n', 'utf-8'),
+    contentType: 'text/csv',
+  });
+  const { status, body } = await postLoad({
+    configuration: {
+      load: {
+        sourceUris: ['gs://bq-load/reuse.csv'],
+        sourceFormat: 'CSV',
+        destinationTable: { projectId: PROJECT, datasetId: DATASET, tableId: 'preexisting' },
+      },
+    },
+  });
+  assert.equal(status, 200);
+  assert.equal(body.statistics?.load?.outputRows, '1');
+});
