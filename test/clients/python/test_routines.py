@@ -27,40 +27,55 @@ def test_sql_udf_round_trip(bq: bigquery.Client, project_id: str) -> None:
     assert row["n"] == 42
 
 
-def test_procedure_can_be_created_and_called(
+def test_procedure_with_in_param_in_insert_body(
     bq: bigquery.Client, project_id: str
 ) -> None:
     _seed_dataset(bq, project_id)
-    # Parameterless procedure that mutates state — CALL drives the
-    # body to completion (BL-065). Side-effecting CALLs are how
-    # dbt-style ELT codebases use procedures.
-    #
-    # Parameter-substituted-into-body case (CREATE PROCEDURE p(IN x ...)
-    # ... INSERT ... VALUES (x)) is a known limitation: the script
-    # interpreter doesn't yet expand IN parameters as inline literals
-    # when the body uses them outside prepared-statement contexts.
+    # Procedure body uses the IN-param `name` inside an INSERT VALUES
+    # clause. The script interpreter substitutes the param value as a
+    # bound placeholder, but does NOT substitute the same identifier
+    # when it appears in the INSERT column-list position — verified
+    # below by using `name` as both column name and value reference.
     table_ref = TableReference.from_string(f"{project_id}.ds.audit")
     bq.create_table(
         Table(
             table_ref,
-            schema=[SchemaField("who", "STRING"), SchemaField("ts", "TIMESTAMP")],
+            schema=[SchemaField("name", "STRING"), SchemaField("ts", "TIMESTAMP")],
         )
     )
     bq.query(
         f"""
-        CREATE PROCEDURE `{project_id}.ds.record_alice`()
+        CREATE PROCEDURE `{project_id}.ds.record_visit`(IN name STRING)
         BEGIN
-          INSERT INTO `{project_id}.ds.audit` (who, ts) VALUES ('alice', CURRENT_TIMESTAMP());
+          INSERT INTO `{project_id}.ds.audit` (name, ts) VALUES (name, CURRENT_TIMESTAMP());
         END;
         """
     ).result()
-    bq.query(f"CALL `{project_id}.ds.record_alice`()").result()
-    rows = list(
-        bq.query(
-            f"SELECT count(*)::INT64 AS n FROM `{project_id}.ds.audit` WHERE who = 'alice'"
+    bq.query(f"CALL `{project_id}.ds.record_visit`('alice')").result()
+    bq.query(f"CALL `{project_id}.ds.record_visit`('bob')").result()
+    rows = sorted(
+        r["name"]
+        for r in bq.query(
+            f"SELECT name FROM `{project_id}.ds.audit` ORDER BY name"
         ).result()
     )
-    assert rows[0]["n"] == 1
+    assert rows == ["alice", "bob"]
+
+
+def test_procedure_returning_select_surfaces_rows(
+    bq: bigquery.Client, project_id: str
+) -> None:
+    _seed_dataset(bq, project_id)
+    bq.query(
+        f"""
+        CREATE PROCEDURE `{project_id}.ds.greet`(IN who STRING)
+        BEGIN
+          SELECT CONCAT('hi ', who) AS message;
+        END;
+        """
+    ).result()
+    rows = list(bq.query(f"CALL `{project_id}.ds.greet`('alice')").result())
+    assert rows[0]["message"] == "hi alice"
 
 
 def test_view_lifecycle(bq: bigquery.Client, project_id: str) -> None:

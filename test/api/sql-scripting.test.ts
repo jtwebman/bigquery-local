@@ -408,6 +408,34 @@ test('BEGIN ... END nesting: inner SET sees outer DECLARE', async () => {
 // Persisted job
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Column-name disambiguation: UPDATE SET / INSERT column lists
+// ---------------------------------------------------------------------------
+
+test('UPDATE SET col = @var: the column LHS is not substituted with a same-named variable', async () => {
+  // A script variable named `category` exists. The UPDATE's `SET category = ...`
+  // must treat the LHS `category` as the column name, while the RHS picks
+  // up the variable's value.
+  const r = await postQuery(`
+    DECLARE category STRING DEFAULT 'patched';
+    UPDATE \`${DATASET}.events\` SET category = category WHERE id = 1;
+    SELECT category FROM \`${DATASET}.events\` WHERE id = 1;
+  `);
+  assert.equal(r.json.rows?.[0]?.f[0]?.v, 'patched');
+});
+
+test('INSERT INTO tbl (col, col) VALUES (var, var): col-list left alone, values substituted', async () => {
+  // A variable named `id` exists. The first `id` in the column list
+  // stays a column name; the `id` in VALUES picks up the variable.
+  const r = await postQuery(`
+    DECLARE id INT64 DEFAULT 42;
+    DECLARE category STRING DEFAULT 'inserted';
+    INSERT INTO \`${DATASET}.events\` (id, category) VALUES (id, category);
+    SELECT category FROM \`${DATASET}.events\` WHERE id = 42;
+  `);
+  assert.equal(r.json.rows?.[0]?.f[0]?.v, 'inserted');
+});
+
 test('persisted script job has statementType=SCRIPT and last-SELECT rows persisted', async () => {
   const r = await postQuery(`
     DECLARE x INT64 DEFAULT 7;

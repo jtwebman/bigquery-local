@@ -296,13 +296,16 @@ function replaceQuestionMarks(
 
 /** Invoke a stored procedure: lookup the routine, validate arg count, create
  *  a fresh scope with the args declared as locals, run the body, catch
- *  RETURN. Procedures don't return rows; their effects are persisted writes. */
+ *  RETURN. The last row-producing statement in the body (typically a
+ *  SELECT) surfaces back to the caller — matching real BQ's behavior,
+ *  where `CALL p()` shows up in the script's result set whenever the
+ *  procedure body's last statement is a SELECT. */
 async function runCall(
   db: Db,
   project: string,
   callerScope: Scope,
   stmt: Extract<Stmt, { kind: 'CALL' }>,
-): Promise<undefined> {
+): Promise<ScriptResult | undefined> {
   // Parser leaves `project` empty when the user only wrote `dataset.proc`;
   // resolve against the request's default project here.
   const proj = stmt.project === '' ? project : stmt.project;
@@ -345,9 +348,11 @@ async function runCall(
   const bodyTokens = tokenize(routine.body);
   const program = parseStatements(routine.body, bodyTokens, 0, bodyTokens.length);
 
+  let lastSelectResult: ScriptResult | undefined;
   const runList = async (stmts: readonly Stmt[]): Promise<void> => {
     for (const s of stmts) {
-      await runStmt(db, project, procScope, s, runList);
+      const r = await runStmt(db, project, procScope, s, runList);
+      if (r !== undefined) lastSelectResult = r;
     }
   };
   try {
@@ -356,7 +361,7 @@ async function runCall(
     if (!(signal instanceof ReturnSignal)) throw signal;
     // RETURN exits the procedure cleanly.
   }
-  return undefined;
+  return lastSelectResult;
 }
 
 async function runLoop(
@@ -543,7 +548,9 @@ async function runStmt(
     case 'RETURN':
       throw new ReturnSignal();
     case 'CALL': {
-      return runCall(db, project, scope, stmt);
+      // runCall returns the body's last row-producing result (typically
+      // a SELECT) so the outer script's runList can surface it.
+      return await runCall(db, project, scope, stmt);
     }
     case 'EXECUTE_IMMEDIATE': {
       return runExecuteImmediate(db, project, scope, stmt);
@@ -620,12 +627,42 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
   // its own context — for BL-066 we only alias at the outermost SELECT.
   let depth = 0;
   let inSelectList = false;
+  // Track positions where an identifier names a *column*, not a variable:
+  //   1. INSERT INTO tbl (col1, col2) — paren depth that opens after
+  //      INSERT [INTO] <table>. Identifiers inside are column names.
+  //   2. UPDATE tbl SET col = ... — `col` here is a column name. Detected
+  //      by "identifier followed by `=`" at depth=0 while seenUpdate set.
+  // Both close at `VALUES` / `SELECT` / `WHERE` (post-SET) respectively.
+  let insertColListDepth: number | null = null; // depth at which the column-list `(` opened
+  // INSERT state machine:
+  //   - `seenInsert` flips on at INSERT, off after VALUES / SELECT (or after
+  //     the column-list `)` closes).
+  //   - `seenValuesAfterInsert` flips on at VALUES; once true, the NEXT `(`
+  //     is the value-list paren, NOT a column list — so we don't enter
+  //     col-list mode for it. Handles the `INSERT INTO t VALUES (...)`
+  //     shape (no explicit column list).
+  let seenInsert = false;
+  let seenValuesAfterInsert = false;
+  let seenUpdateSet = false;
   let i = 0;
   while (i < tokens.length) {
     const tok = tokens[i] as Token;
     if (tok.kind === 'punctuation') {
-      if (tok.value === '(') depth += 1;
-      else if (tok.value === ')') depth -= 1;
+      if (tok.value === '(') {
+        depth += 1;
+        // First `(` after INSERT [INTO] <table>, BEFORE any VALUES,
+        // is the column list. After VALUES it's a value-list paren
+        // and we substitute freely inside it.
+        if (seenInsert && !seenValuesAfterInsert && insertColListDepth === null) {
+          insertColListDepth = depth;
+        }
+      } else if (tok.value === ')') {
+        if (insertColListDepth !== null && depth === insertColListDepth) {
+          insertColListDepth = null;
+          seenInsert = false; // column list done; next paren is VALUES or SELECT.
+        }
+        depth -= 1;
+      }
       parts.push(tok.value);
       i += 1;
       continue;
@@ -634,9 +671,31 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
       const up = tok.value.toUpperCase();
       if (up === 'SELECT') {
         inSelectList = true;
+        seenInsert = false;
+        seenValuesAfterInsert = false;
+        seenUpdateSet = false;
         parts.push(tok.value);
         i += 1;
         continue;
+      }
+      if (up === 'INSERT') {
+        seenInsert = true;
+        seenValuesAfterInsert = false;
+        inSelectList = false;
+        seenUpdateSet = false;
+      } else if (up === 'UPDATE') {
+        seenUpdateSet = false; // resets until we see SET
+      } else if (up === 'SET') {
+        seenUpdateSet = true;
+        inSelectList = false;
+      } else if (up === 'VALUES') {
+        // VALUES marks the end of the column list (if any) and the start
+        // of the value-list paren. Substitute freely from here.
+        seenValuesAfterInsert = true;
+        seenInsert = false; // no further column-list parens.
+        seenUpdateSet = false;
+      } else if (up === 'WHERE' || up === 'FROM') {
+        seenUpdateSet = false;
       }
       if (SELECT_LIST_TERMINATORS.has(up)) {
         inSelectList = false;
@@ -659,6 +718,25 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
       parts.push(tok.value);
       i += 1;
       continue;
+    }
+    // INSERT column list: identifier is a column name, not a variable.
+    if (insertColListDepth !== null && depth === insertColListDepth) {
+      parts.push(tok.value);
+      i += 1;
+      continue;
+    }
+    // UPDATE SET column: identifier immediately followed by `=` at
+    // depth=0 is a column name on the LHS of the assignment.
+    if (seenUpdateSet && depth === 0) {
+      const nxt = nextNonWs(tokens, i + 1);
+      if (nxt !== null) {
+        const t = tokens[nxt];
+        if ((t?.kind === 'operator' || t?.kind === 'punctuation') && t.value === '=') {
+          parts.push(tok.value);
+          i += 1;
+          continue;
+        }
+      }
     }
     const nextIdx = nextNonWs(tokens, i + 1);
     if (
