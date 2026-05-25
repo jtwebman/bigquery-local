@@ -27,6 +27,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         node: ['24', '26']
+        # Drop Windows + Node 24: node:test in Node 24 on Windows has
+        # a known flake where a test-file's before() hook can fail
+        # silently (subtests run individually, file gets marked ✖).
+        # Fixed in Node 26. We keep Node 24 elsewhere for the older-
+        # version compatibility signal.
+        exclude:
+          - os: windows-latest
+            node: '24'
 
     steps:
       - name: Checkout
