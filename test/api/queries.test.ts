@@ -561,6 +561,26 @@ test('queries: DATE parameter casts cleanly for INTERVAL arithmetic', async () =
   assert.equal(res.status, 200);
 });
 
+test('queries: RANGE query parameter returns 400 (not yet supported)', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT @r AS r',
+      queryParameters: [
+        {
+          name: 'r',
+          parameterType: { type: 'RANGE', rangeElementType: { type: 'DATE' } },
+          parameterValue: { value: '[2025-01-01, 2026-01-01)' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 400);
+  const err = (await res.json()) as GoogleErrorBody;
+  assert.match(err.error.errors[0]?.message ?? '', /RANGE query parameters/);
+});
+
 test('queries: INTERVAL scalar parameter binds + comes back in BQ wire format', async () => {
   // Bind "Y-M D H:M:S" form, select it back, prove the wire format
   // survives round-trip through DuckDB and parameter casting.

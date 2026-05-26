@@ -298,3 +298,27 @@ test('translate: identifiers NOT in the safelist still pass through bare', () =>
   const { sql } = translate("SELECT * FROM t WHERE name ILIKE 'foo%'", { project: 'p' });
   assert.match(norm(sql), /WHERE name ILIKE 'foo%'/);
 });
+
+test('translate: full safelist auto-quotes when used as a column', () => {
+  // Walk every safelist entry to make sure each branch is exercised.
+  const cases = [
+    'check',
+    'column',
+    'constraint',
+    'foreign',
+    'references',
+    'deferrable',
+    'initially',
+    'analyse',
+    'analyze',
+    'describe',
+    'summarize',
+    'returning',
+    'do',
+    'only',
+  ];
+  for (const c of cases) {
+    const { sql } = translate(`SELECT ${c} FROM t`, { project: 'p' });
+    assert.match(norm(sql), new RegExp(`SELECT "${c}" FROM t`), `safelist entry ${c}`);
+  }
+});

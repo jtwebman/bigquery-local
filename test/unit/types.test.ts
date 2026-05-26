@@ -236,6 +236,31 @@ test('round-trip: INTERVAL negative', async () => {
   assert.equal(await roundTrip({ name: 'v', type: 'INTERVAL' }, '-1-2 3 0:0:0'), '-1-2 3 0:0:0');
 });
 
+test('round-trip: INTERVAL with leading + sign', async () => {
+  assert.equal(await roundTrip({ name: 'v', type: 'INTERVAL' }, '+0-0 5 0:0:0'), '0-0 5 0:0:0');
+});
+
+test('INTERVAL parse rejects malformed input', async () => {
+  await assert.rejects(
+    roundTrip({ name: 'v', type: 'INTERVAL' }, 'not-an-interval'),
+    /Invalid INTERVAL/,
+  );
+});
+
+test('INTERVAL parse rejects bad Y-M component', async () => {
+  await assert.rejects(
+    roundTrip({ name: 'v', type: 'INTERVAL' }, 'x-y 1 0:0:0'),
+    /Invalid INTERVAL Y-M/,
+  );
+});
+
+test('INTERVAL parse rejects bad H:M:S component', async () => {
+  await assert.rejects(
+    roundTrip({ name: 'v', type: 'INTERVAL' }, '0-0 1 noon'),
+    /Invalid INTERVAL H:M:S/,
+  );
+});
+
 test('round-trip: RANGE<DATE>', async () => {
   const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'DATE' } };
   assert.equal(await roundTrip(field, '[2025-01-01, 2026-01-01)'), '[2025-01-01, 2026-01-01)');
@@ -258,6 +283,29 @@ test('round-trip: RANGE<TIMESTAMP> with UNBOUNDED end', async () => {
   const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'TIMESTAMP' } };
   const got = (await roundTrip(field, '[2025-06-01T00:00:00Z, UNBOUNDED)')) as string;
   assert.match(got, /^\[2025-06-01T00:00:00\+00, UNBOUNDED\)$/);
+});
+
+test('RANGE parse rejects bad literal shape', async () => {
+  const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'DATE' } };
+  await assert.rejects(roundTrip(field, 'not a range'), /Invalid RANGE literal/);
+});
+
+test('RANGE<DATE> parse rejects malformed DATE bound', async () => {
+  const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'DATE' } };
+  await assert.rejects(roundTrip(field, '[not-a-date, 2026-01-01)'), /Invalid DATE literal/);
+});
+
+test('RANGE<TIMESTAMP> parse rejects malformed bound', async () => {
+  const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'TIMESTAMP' } };
+  await assert.rejects(
+    roundTrip(field, '[not-a-time, 2026-01-01T00:00:00Z)'),
+    /Invalid TIMESTAMP\/DATETIME literal/,
+  );
+});
+
+test('RANGE<DATE> accepts NULL token as UNBOUNDED', async () => {
+  const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'DATE' } };
+  assert.equal(await roundTrip(field, '[NULL, 2026-01-01)'), '[UNBOUNDED, 2026-01-01)');
 });
 
 test('round-trip: REPEATED STRING (BQ wire wraps each element as {v: ...})', async () => {
@@ -501,6 +549,17 @@ test('duckValueToBq: BOOL true/false render as literal strings', () => {
   const field: BqField = { name: 'b', type: 'BOOL' };
   assert.equal(duckValueToBq(true, field), 'true');
   assert.equal(duckValueToBq(false, field), 'false');
+});
+
+test('duckValueToBq: INTERVAL accepts string fallback for non-object input', () => {
+  // Defensive path — exercises the upstream-serialized-to-string branch.
+  const field: BqField = { name: 'i', type: 'INTERVAL' };
+  assert.equal(duckValueToBq('0-0 5 0:0:0', field), '0-0 5 0:0:0');
+});
+
+test('duckValueToBq: RANGE rejects non-object value', () => {
+  const field: BqField = { name: 'r', type: 'RANGE', rangeElementType: { type: 'DATE' } };
+  assert.throws(() => duckValueToBq('not-a-struct', field), /Expected object from DuckDB for RANGE/);
 });
 
 test('duckValueToBq: BIGNUMERIC long decimal string passes through verbatim', () => {
