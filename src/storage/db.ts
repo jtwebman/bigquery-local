@@ -59,8 +59,16 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
   await connection.run("SET TimeZone='UTC'");
   // Spatial extension backs the GEOGRAPHY type and every ST_* function.
   // Auto-installs on first run; subsequent runs load from the cached
-  // copy in DUCKDB_HOME (default `~/.duckdb`).
-  await connection.run('INSTALL spatial');
+  // copy in DUCKDB_HOME (default `~/.duckdb`). On Windows, multiple
+  // concurrent INSTALLs race on the rename of the downloaded
+  // extension file ("Access is denied"); swallow INSTALL errors and
+  // let LOAD speak for whether the extension is actually available.
+  try {
+    await connection.run('INSTALL spatial');
+  } catch {
+    // Already installed by another connection in this process, or
+    // the test image baked it in (Docker build pre-loads the cache).
+  }
   await connection.run('LOAD spatial');
   // BigQuery's ST_DISTANCE is geodesic in meters using (lng, lat); DuckDB's
   // ST_Distance is planar Cartesian and ST_Distance_Sphere flips the
