@@ -87,7 +87,7 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['JSON_QUERY', 'json_extract'],
   ['JSON_QUERY_ARRAY', 'json_extract'],
   ['JSON_VALUE_ARRAY', 'json_extract_string'],
-  ['JSON_TYPE', 'json_type'],
+  ['JSON_EXTRACT_SCALAR', 'json_extract_string'],
   ['JSON_KEYS', 'json_keys'],
   ['TO_JSON', 'to_json'],
   ['TO_JSON_STRING', 'to_json'],
@@ -1776,6 +1776,14 @@ function handleIdentifier(
       // BigQuery replaces ALL. Add a 'g' (global) options arg so the
       // semantics line up.
       return rewriteRegexpReplace(tokens, parenIdx, endIdx, out, paramOrder, project);
+
+    case 'JSON_TYPE': {
+      // DuckDB's json_type returns uppercase (OBJECT); BQ lowercase (object).
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      out.push(`lower(json_type(${inner}))`);
+      return close + 1;
+    }
 
     case 'REGEXP_EXTRACT': {
       // BQ: returns first capture group if pattern has one, else whole match.

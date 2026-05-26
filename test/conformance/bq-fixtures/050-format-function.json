@@ -1,31 +1,27 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:59:09.687Z"
+    "capturedAt": "2026-05-26T19:59:13.381Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "lpadded",
+        "name": "int_fmt",
         "type": "STRING"
       },
       {
-        "name": "rpadded",
+        "name": "multi",
         "type": "STRING"
       },
       {
-        "name": "trimmed",
+        "name": "float_fmt",
         "type": "STRING"
       },
       {
-        "name": "ltrimmed",
+        "name": "padded",
         "type": "STRING"
       },
       {
-        "name": "repeated",
-        "type": "STRING"
-      },
-      {
-        "name": "reversed",
+        "name": "hex_fmt",
         "type": "STRING"
       }
     ]
@@ -34,22 +30,19 @@
     {
       "f": [
         {
-          "v": "005"
+          "v": "5 apples"
         },
         {
-          "v": "500"
+          "v": "count = 42"
         },
         {
-          "v": "hello"
+          "v": "3.14"
         },
         {
-          "v": "hello"
+          "v": "00042"
         },
         {
-          "v": "ababab"
-        },
-        {
-          "v": "olleh"
+          "v": "ff"
         }
       ]
     }

@@ -1088,6 +1088,15 @@ Fixed: translator rewrites `STRUCT(<expr> AS <name>, ...)` →
 `STRUCT(<expr>, ...)` falls back to row-expression form. Wire shape
 matches real BQ — `bq-fixtures/009-struct-literal` confirms.
 
+### FORMAT %t / %T specifiers ⏳
+
+BQ's `FORMAT()` supports `%t` (compact type-aware string) and `%T`
+(literal representation) for any value. DuckDB's `printf` (which we
+map FORMAT to) has no equivalent and errors on the specifier. The
+common C-style specifiers (`%d %s %f %x %05d` etc.) all work.
+Supporting `%t`/`%T` would need format-string parsing to convert the
+matching argument to its string form first.
+
 ### Decimal literals type as NUMERIC, not FLOAT64 ⏳
 
 BigQuery types a bare decimal literal like `3.14` as FLOAT64; DuckDB

@@ -1,31 +1,31 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:59:09.687Z"
+    "capturedAt": "2026-05-26T19:59:13.011Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "lpadded",
+        "name": "extract_obj",
         "type": "STRING"
       },
       {
-        "name": "rpadded",
+        "name": "extract_scalar",
         "type": "STRING"
       },
       {
-        "name": "trimmed",
+        "name": "query_arr",
         "type": "STRING"
       },
       {
-        "name": "ltrimmed",
+        "name": "value_n",
         "type": "STRING"
       },
       {
-        "name": "repeated",
+        "name": "to_json",
         "type": "STRING"
       },
       {
-        "name": "reversed",
+        "name": "json_type",
         "type": "STRING"
       }
     ]
@@ -34,22 +34,22 @@
     {
       "f": [
         {
-          "v": "005"
+          "v": "{\"b\":1}"
         },
         {
-          "v": "500"
+          "v": "hi"
         },
         {
-          "v": "hello"
+          "v": "[1,2,3]"
         },
         {
-          "v": "hello"
+          "v": "42"
         },
         {
-          "v": "ababab"
+          "v": "{\"id\":1,\"label\":\"name\"}"
         },
         {
-          "v": "olleh"
+          "v": "object"
         }
       ]
     }
