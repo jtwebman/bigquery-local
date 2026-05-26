@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T18:33:52.421Z",
-    "numericRoundUnit": 100
+    "capturedAt": "2026-05-26T18:47:03.752Z",
+    "numericRoundUnit": 0.001
   },
   "schema": {
     "fields": [
@@ -15,7 +15,7 @@
     {
       "f": [
         {
-          "v": "4130000"
+          "v": "4129968.478"
         }
       ]
     }

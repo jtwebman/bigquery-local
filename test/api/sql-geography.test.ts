@@ -117,21 +117,20 @@ test('ST_DISTANCE returns geodesic distance in meters (BQ semantics)', async () 
   const out = await scalar(
     "SELECT ST_DISTANCE(ST_GEOGFROMTEXT('POINT(0 0)'), ST_GEOGFROMTEXT('POINT(3 4)')) AS d",
   );
-  // Haversine on a sphere with R = 6371008.8 m: ~555,812 m.
-  assert.ok(Math.abs(Number(out) - 555812) < 1, `expected ~555812 m, got ${out}`);
+  // Haversine on a sphere with R = 6371010.0 m (S2 / BQ).
+  assert.ok(Math.abs(Number(out) - 555812.6) < 1, `expected ~555812.6 m, got ${out}`);
 });
 
-test('ST_DISTANCE matches BQ for a real-world city pair (SF → NYC ~4131 km)', async () => {
+test('ST_DISTANCE matches BQ bit-exact for SF → NYC', async () => {
   const out = await scalar(`
     SELECT ST_DISTANCE(
       ST_GEOGPOINT(-122.4194, 37.7749),
       ST_GEOGPOINT(-73.9857, 40.7484)
     ) AS m
   `);
-  // BQ returns ~4,130,930 m for this pair on WGS-84 ellipsoid; we
-  // compute on a sphere so the result is within ~1 km of BQ's value.
-  const km = Number(out) / 1000;
-  assert.ok(km > 4100 && km < 4150, `expected ~4131 km, got ${km}`);
+  // BQ returns 4129968.4780220212 m for this pair (S2 great-circle
+  // distance with R=6371010.0). We match to FP rounding noise.
+  assert.ok(Math.abs(Number(out) - 4129968.478) < 0.001, `expected ~4129968.478 m, got ${out}`);
 });
 
 test('ST_DWITHIN uses geodesic meters for the radius', async () => {

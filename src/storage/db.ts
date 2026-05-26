@@ -65,11 +65,13 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
   // BigQuery's ST_DISTANCE is geodesic in meters using (lng, lat); DuckDB's
   // ST_Distance is planar Cartesian and ST_Distance_Sphere flips the
   // argument order. Register a Haversine macro on the BQ convention.
+  // R = 6371010.0 matches the S2 library (BQ's geography backend);
+  // gets us bit-for-bit ST_DISTANCE parity for POINT-POINT queries.
   await connection.run(`
     CREATE OR REPLACE MACRO bq_st_distance(g1, g2) AS
       CASE
         WHEN ST_GeometryType(g1) = 'POINT' AND ST_GeometryType(g2) = 'POINT' THEN
-          6371008.8 * 2 * asin(sqrt(
+          6371010.0 * 2 * asin(sqrt(
             pow(sin(radians(ST_Y(g2) - ST_Y(g1)) / 2), 2) +
             cos(radians(ST_Y(g1))) * cos(radians(ST_Y(g2))) *
             pow(sin(radians(ST_X(g2) - ST_X(g1)) / 2), 2)
