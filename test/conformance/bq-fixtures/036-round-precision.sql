@@ -1,0 +1,6 @@
+SELECT
+  ROUND(CAST(3.14159 AS FLOAT64), 2) AS round_2,
+  ROUND(CAST(3.14159 AS FLOAT64), 0) AS round_0,
+  ROUND(CAST(1234.5 AS FLOAT64), -2) AS round_neg,
+  ROUND(CAST(2.5 AS FLOAT64)) AS round_half_even,
+  ROUND(CAST(3.5 AS FLOAT64)) AS round_half_up

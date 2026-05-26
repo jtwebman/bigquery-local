@@ -1795,6 +1795,43 @@ function handleIdentifier(
       return close + 1;
     }
 
+    case 'DIV':
+      // BQ integer division, truncating toward zero. DuckDB's `//`
+      // operator has the same truncation semantics.
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (a, b) => `(${a} // ${b})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'CONCAT': {
+      // BQ CONCAT propagates NULL (any NULL arg → NULL result); DuckDB's
+      // concat() silently skips NULLs. The `||` operator propagates NULL
+      // correctly, but DuckDB constant-folds an all-NULL `||` to an
+      // untyped (INTEGER) NULL — so wrap in CAST(... AS VARCHAR) to keep
+      // the STRING result type BQ reports.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const args = splitCallArgs(tokens, parenIdx, close, paramOrder, project);
+      out.push(`CAST((${args.join(' || ')}) AS VARCHAR)`);
+      return close + 1;
+    }
+
+    case 'GREATEST':
+    case 'LEAST': {
+      // BQ returns NULL if ANY argument is NULL; DuckDB ignores NULLs.
+      // Guard with an explicit null check over all args.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const args = splitCallArgs(tokens, parenIdx, close, paramOrder, project);
+      const nullCheck = args.map((a) => `(${a}) IS NULL`).join(' OR ');
+      out.push(`CASE WHEN ${nullCheck} THEN NULL ELSE ${upper}(${args.join(', ')}) END`);
+      return close + 1;
+    }
+
     case 'SAFE_DIVIDE':
       // BQ: returns NULL if denominator is 0. `x / NULLIF(y, 0)` gives the
       // same shape using only standard SQL.
@@ -2155,6 +2192,27 @@ function rewriteGenerateArray(
 
 /** Generic 2-arg function rewrite. Splits at the top-level comma,
  * recursively translates each arg, then composes via `template(a, b)`. */
+/** Split a call's arguments on top-level commas, returning each
+ * translated argument expression. */
+function splitCallArgs(
+  tokens: readonly Token[],
+  openParenIdx: number,
+  closeIdx: number,
+  paramOrder: string[],
+  project: string,
+): string[] {
+  const args: string[] = [];
+  let start = openParenIdx + 1;
+  while (start < closeIdx) {
+    const commaIdx = findTopLevelComma(tokens, start, closeIdx);
+    const end = commaIdx === null ? closeIdx : commaIdx;
+    args.push(translateRange(tokens, start, end, paramOrder, project).trim());
+    if (commaIdx === null) break;
+    start = commaIdx + 1;
+  }
+  return args;
+}
+
 function rewriteTwoArg(
   tokens: readonly Token[],
   openParenIdx: number,

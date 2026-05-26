@@ -1,31 +1,27 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:27:11.814Z"
+    "capturedAt": "2026-05-26T19:27:19.210Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "rows_total",
+        "name": "mod_pos",
         "type": "INTEGER"
       },
       {
-        "name": "rows_non_null",
+        "name": "mod_neg_dividend",
         "type": "INTEGER"
       },
       {
-        "name": "sum_x",
+        "name": "mod_neg_divisor",
         "type": "INTEGER"
       },
       {
-        "name": "avg_x",
-        "type": "FLOAT"
-      },
-      {
-        "name": "min_x",
+        "name": "div_pos",
         "type": "INTEGER"
       },
       {
-        "name": "max_x",
+        "name": "div_neg",
         "type": "INTEGER"
       }
     ]
@@ -34,22 +30,19 @@
     {
       "f": [
         {
-          "v": "5"
+          "v": "1"
         },
         {
-          "v": "3"
-        },
-        {
-          "v": "6"
-        },
-        {
-          "v": "2.0"
+          "v": "-1"
         },
         {
           "v": "1"
         },
         {
           "v": "3"
+        },
+        {
+          "v": "-3"
         }
       ]
     }

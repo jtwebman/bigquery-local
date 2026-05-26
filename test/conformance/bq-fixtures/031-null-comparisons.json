@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:27:18.182Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "null_eq_null",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "null_is_null",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "null_is_not_null",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "one_eq_null",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "null_and_true",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "null_or_true",
+        "type": "BOOLEAN"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": null
+        },
+        {
+          "v": "true"
+        },
+        {
+          "v": "false"
+        },
+        {
+          "v": null
+        },
+        {
+          "v": null
+        },
+        {
+          "v": "true"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

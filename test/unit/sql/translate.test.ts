@@ -374,3 +374,27 @@ test('translate: full safelist auto-quotes when used as a column', () => {
     assert.match(norm(sql), new RegExp(`SELECT "${c}" FROM t`), `safelist entry ${c}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Variadic / arithmetic function rewrites (NULL semantics)
+// ---------------------------------------------------------------------------
+
+test('translate: DIV becomes truncating integer division', () => {
+  const { sql } = translate('SELECT DIV(10, 3) AS q', { project: 'p' });
+  assert.match(norm(sql), /SELECT \(10 \/\/ 3\) AS q/);
+});
+
+test('translate: CONCAT becomes a NULL-propagating || chain cast to VARCHAR', () => {
+  const { sql } = translate("SELECT CONCAT('a', x, 'c') AS s FROM t", { project: 'p' });
+  assert.match(norm(sql), /SELECT CAST\(\('a' \|\| x \|\| 'c'\) AS VARCHAR\) AS s/);
+});
+
+test('translate: GREATEST guards NULL args (BQ propagates NULL)', () => {
+  const { sql } = translate('SELECT GREATEST(a, b) AS g FROM t', { project: 'p' });
+  assert.match(norm(sql), /CASE WHEN \(a\) IS NULL OR \(b\) IS NULL THEN NULL ELSE GREATEST\(a, b\) END/);
+});
+
+test('translate: LEAST guards NULL args', () => {
+  const { sql } = translate('SELECT LEAST(a, b, c) AS l FROM t', { project: 'p' });
+  assert.match(norm(sql), /CASE WHEN .* THEN NULL ELSE LEAST\(a, b, c\) END/);
+});

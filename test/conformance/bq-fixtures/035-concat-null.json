@@ -1,23 +1,23 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:27:14.018Z"
+    "capturedAt": "2026-05-26T19:27:19.433Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "nested_string",
+        "name": "all_present",
         "type": "STRING"
       },
       {
-        "name": "array_idx",
+        "name": "with_null",
         "type": "STRING"
       },
       {
-        "name": "null_val",
+        "name": "single",
         "type": "STRING"
       },
       {
-        "name": "missing_path",
+        "name": "pipe_concat",
         "type": "STRING"
       }
     ]
@@ -26,16 +26,16 @@
     {
       "f": [
         {
-          "v": "hello"
-        },
-        {
-          "v": "20"
+          "v": "abc"
         },
         {
           "v": null
         },
         {
-          "v": null
+          "v": "x"
+        },
+        {
+          "v": "ab"
         }
       ]
     }

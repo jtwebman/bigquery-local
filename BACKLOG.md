@@ -1088,6 +1088,17 @@ Fixed: translator rewrites `STRUCT(<expr> AS <name>, ...)` →
 `STRUCT(<expr>, ...)` falls back to row-expression form. Wire shape
 matches real BQ — `bq-fixtures/009-struct-literal` confirms.
 
+### Decimal literals type as NUMERIC, not FLOAT64 ⏳
+
+BigQuery types a bare decimal literal like `3.14` as FLOAT64; DuckDB
+types it as DECIMAL, which we map to NUMERIC. The wire *value* often
+matches (both "3.14"), but the schema *type* differs (BQ FLOAT vs our
+NUMERIC), and downstream functions inherit the wrong type. Fixing it
+means casting decimal literals to DOUBLE in the translator — a broad
+change that risks the existing NUMERIC-path tests, so deferred.
+Workaround in fixtures: wrap literals in `CAST(... AS FLOAT64)` when
+the schema type matters.
+
 ### Mixed named/positional STRUCT in array literals ⏳
 
 `[STRUCT(1 AS id, 'a' AS name), STRUCT(2, 'b')]` — BQ propagates the

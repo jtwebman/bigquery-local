@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:27:19.801Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "round_2",
+        "type": "FLOAT"
+      },
+      {
+        "name": "round_0",
+        "type": "FLOAT"
+      },
+      {
+        "name": "round_neg",
+        "type": "FLOAT"
+      },
+      {
+        "name": "round_half_even",
+        "type": "FLOAT"
+      },
+      {
+        "name": "round_half_up",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "3.14"
+        },
+        {
+          "v": "3.0"
+        },
+        {
+          "v": "1200.0"
+        },
+        {
+          "v": "3.0"
+        },
+        {
+          "v": "4.0"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

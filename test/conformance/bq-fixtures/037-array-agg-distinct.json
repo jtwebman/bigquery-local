@@ -1,0 +1,69 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:27:20.306Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "all_vals",
+        "type": "INTEGER",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "distinct_vals",
+        "type": "INTEGER",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "cnt",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": [
+            {
+              "v": "1"
+            },
+            {
+              "v": "1"
+            },
+            {
+              "v": "2"
+            },
+            {
+              "v": "2"
+            },
+            {
+              "v": "3"
+            },
+            {
+              "v": "3"
+            }
+          ]
+        },
+        {
+          "v": [
+            {
+              "v": "1"
+            },
+            {
+              "v": "2"
+            },
+            {
+              "v": "3"
+            }
+          ]
+        },
+        {
+          "v": "6"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

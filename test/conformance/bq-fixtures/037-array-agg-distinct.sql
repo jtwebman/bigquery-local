@@ -1,0 +1,5 @@
+SELECT
+  ARRAY_AGG(x ORDER BY x) AS all_vals,
+  ARRAY_AGG(DISTINCT x ORDER BY x) AS distinct_vals,
+  ARRAY_LENGTH(ARRAY_AGG(x)) AS cnt
+FROM UNNEST([3, 1, 2, 1, 3, 2]) AS x

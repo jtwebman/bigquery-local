@@ -1,19 +1,15 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:27:17.155Z"
+    "capturedAt": "2026-05-26T19:27:21.258Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "id",
-        "type": "INTEGER"
-      },
-      {
-        "name": "name",
+        "name": "region",
         "type": "STRING"
       },
       {
-        "name": "score",
+        "name": "total",
         "type": "INTEGER"
       }
     ]
@@ -22,30 +18,34 @@
     {
       "f": [
         {
-          "v": "1"
+          "v": "east"
         },
         {
-          "v": "Alice"
-        },
-        {
-          "v": "90"
+          "v": "30"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "2"
+          "v": "north"
         },
         {
-          "v": "Bob"
+          "v": "100"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "west"
         },
         {
-          "v": "85"
+          "v": "35"
         }
       ]
     }
   ],
-  "totalRows": "2",
+  "totalRows": "3",
   "jobComplete": true
 }
