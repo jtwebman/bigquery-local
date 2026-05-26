@@ -15,6 +15,7 @@ interface FieldWire {
   mode?: 'NULLABLE' | 'REQUIRED' | 'REPEATED';
   description?: string;
   fields?: FieldWire[];
+  rangeElementType?: { type: string };
 }
 
 interface TableResource {
@@ -205,6 +206,50 @@ test('POST returns 400 on a malformed schema field (unknown type)', async () => 
   assert.equal(res.status, 400);
   const err = (await res.json()) as GoogleErrorBody;
   assert.equal(err.error.errors[0]?.reason, 'invalid');
+});
+
+test('POST accepts RANGE<DATE> columns and round-trips rangeElementType', async () => {
+  const body = await createTable(freshTableId(), {
+    schema: {
+      fields: [
+        { name: 'id', type: 'INT64' },
+        { name: 'validity', type: 'RANGE', rangeElementType: { type: 'DATE' } },
+      ],
+    },
+  });
+  assert.equal(body.schema.fields[1]?.type, 'RANGE');
+  assert.deepEqual(body.schema.fields[1]?.rangeElementType, { type: 'DATE' });
+});
+
+test('POST returns 400 on RANGE without rangeElementType', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tableReference: { tableId: 'bad-range' },
+      schema: { fields: [{ name: 'r', type: 'RANGE' }] },
+    }),
+  });
+  assert.equal(res.status, 400);
+  const err = (await res.json()) as GoogleErrorBody;
+  assert.equal(err.error.errors[0]?.reason, 'invalid');
+  assert.match(err.error.errors[0]?.message ?? '', /rangeElementType/);
+});
+
+test('POST returns 400 on RANGE with invalid element type', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tableReference: { tableId: 'bad-range-elem' },
+      schema: {
+        fields: [{ name: 'r', type: 'RANGE', rangeElementType: { type: 'STRING' } }],
+      },
+    }),
+  });
+  assert.equal(res.status, 400);
+  const err = (await res.json()) as GoogleErrorBody;
+  assert.match(err.error.errors[0]?.message ?? '', /DATE, DATETIME, or TIMESTAMP/);
 });
 
 test('POST returns 400 on STRUCT with no fields', async () => {

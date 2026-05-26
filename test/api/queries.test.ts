@@ -622,3 +622,46 @@ test('queries: TIME parameter casts cleanly', async () => {
   });
   assert.equal(res.status, 200);
 });
+
+test('queries: RANGE<DATE> column inserts + reads back via tabledata.list', async () => {
+  await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tableReference: { tableId: 'subs' },
+      schema: {
+        fields: [
+          { name: 'id', type: 'INT64' },
+          { name: 'validity', type: 'RANGE', rangeElementType: { type: 'DATE' } },
+        ],
+      },
+    }),
+  });
+  const ins = await fetch(
+    `${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables/subs/insertAll`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        rows: [
+          { json: { id: '1', validity: '[2025-01-01, 2026-01-01)' } },
+          { json: { id: '2', validity: '[2025-06-01, UNBOUNDED)' } },
+        ],
+      }),
+    },
+  );
+  assert.equal(ins.status, 200);
+
+  const res = await fetch(
+    `${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables/subs/data`,
+  );
+  assert.equal(res.status, 200);
+  type Row = { f: Array<{ v: string }> };
+  const body = (await res.json()) as { rows: Row[] };
+  const byId = new Map<string, string>();
+  for (const row of body.rows) {
+    byId.set(row.f[0]?.v ?? '', row.f[1]?.v ?? '');
+  }
+  assert.equal(byId.get('1'), '[2025-01-01, 2026-01-01)');
+  assert.equal(byId.get('2'), '[2025-06-01, UNBOUNDED)');
+});

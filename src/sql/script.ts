@@ -1802,6 +1802,8 @@ function bqTypeShortDuck(t: BqType): string {
       return 'VARCHAR';
     case 'INTERVAL':
       return 'INTERVAL';
+    case 'RANGE':
+      return 'STRUCT("start" BIGINT, "end" BIGINT)';
     case 'STRUCT':
       return 'STRUCT';
   }

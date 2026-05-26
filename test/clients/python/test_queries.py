@@ -213,6 +213,37 @@ def test_json_value(bq: bigquery.Client) -> None:
     assert row["v"] == "hello"
 
 
+def test_range_column_round_trip(bq: bigquery.Client, project_id: str) -> None:
+    from google.cloud.bigquery.schema import FieldElementType
+
+    bq.create_dataset(DatasetReference(project_id, "ds"))
+    table_ref = TableReference.from_string(f"{project_id}.ds.subs")
+    bq.create_table(
+        Table(
+            table_ref,
+            schema=[
+                SchemaField("id", "INT64"),
+                SchemaField(
+                    "validity", "RANGE", range_element_type=FieldElementType("DATE")
+                ),
+            ],
+        )
+    )
+    bq.insert_rows_json(
+        table_ref,
+        [
+            {"id": 1, "validity": "[2025-01-01, 2026-01-01)"},
+            {"id": 2, "validity": "[2025-06-01, UNBOUNDED)"},
+        ],
+    )
+    rows = list(bq.list_rows(table_ref))
+    by_id = {r["id"]: r["validity"] for r in rows}
+    assert by_id[1]["start"].isoformat() == "2025-01-01"
+    assert by_id[1]["end"].isoformat() == "2026-01-01"
+    assert by_id[2]["start"].isoformat() == "2025-06-01"
+    assert by_id[2]["end"] is None
+
+
 def test_interval_round_trip(bq: bigquery.Client) -> None:
     # BQ INTERVAL "Y-M D H:M:S" survives through the wire and DuckDB
     # interval storage. Bound as a query parameter (the typical Python

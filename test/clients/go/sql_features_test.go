@@ -7,6 +7,7 @@ package bqlocal_test
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"testing"
 
@@ -232,6 +233,53 @@ func TestJSONValue(t *testing.T) {
 	}
 	if rows[0][0].(string) != "hello" {
 		t.Errorf("v = %v, want hello", rows[0][0])
+	}
+}
+
+func TestRangeColumnRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	client, _ := newClient(t)
+	if err := client.Dataset("ds").Create(ctx, &bigquery.DatasetMetadata{}); err != nil {
+		t.Fatalf("dataset: %v", err)
+	}
+	table := client.Dataset("ds").Table("subs")
+	if err := table.Create(ctx, &bigquery.TableMetadata{
+		Schema: bigquery.Schema{
+			{Name: "id", Type: bigquery.IntegerFieldType},
+			{
+				Name:             "validity",
+				Type:             bigquery.RangeFieldType,
+				RangeElementType: &bigquery.RangeElementType{Type: bigquery.DateFieldType},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	type row struct {
+		ID       int64  `bigquery:"id"`
+		Validity string `bigquery:"validity"`
+	}
+	if err := table.Inserter().Put(ctx, []*row{
+		{ID: 1, Validity: "[2025-01-01, 2026-01-01)"},
+		{ID: 2, Validity: "[2025-06-01, UNBOUNDED)"},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	it := table.Read(ctx)
+	var got []row
+	for {
+		var r []bigquery.Value
+		err := it.Next(&r)
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		got = append(got, row{ID: r[0].(int64), Validity: fmt.Sprintf("%v", r[1])})
+	}
+	if len(got) != 2 {
+		t.Fatalf("rows = %d, want 2", len(got))
 	}
 }
 

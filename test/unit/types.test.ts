@@ -214,6 +214,30 @@ test('round-trip: INTERVAL negative', async () => {
   assert.equal(await roundTrip({ name: 'v', type: 'INTERVAL' }, '-1-2 3 0:0:0'), '-1-2 3 0:0:0');
 });
 
+test('round-trip: RANGE<DATE>', async () => {
+  const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'DATE' } };
+  assert.equal(await roundTrip(field, '[2025-01-01, 2026-01-01)'), '[2025-01-01, 2026-01-01)');
+});
+
+test('round-trip: RANGE<DATE> with UNBOUNDED start', async () => {
+  const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'DATE' } };
+  assert.equal(await roundTrip(field, '[UNBOUNDED, 2025-12-31)'), '[UNBOUNDED, 2025-12-31)');
+});
+
+test('round-trip: RANGE<DATETIME>', async () => {
+  const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'DATETIME' } };
+  assert.equal(
+    await roundTrip(field, '[2025-01-01T10:00:00, 2025-01-01T11:00:00)'),
+    '[2025-01-01T10:00:00, 2025-01-01T11:00:00)',
+  );
+});
+
+test('round-trip: RANGE<TIMESTAMP> with UNBOUNDED end', async () => {
+  const field: BqField = { name: 'v', type: 'RANGE', rangeElementType: { type: 'TIMESTAMP' } };
+  const got = (await roundTrip(field, '[2025-06-01T00:00:00Z, UNBOUNDED)')) as string;
+  assert.match(got, /^\[2025-06-01T00:00:00\+00, UNBOUNDED\)$/);
+});
+
 test('round-trip: REPEATED STRING (BQ wire wraps each element as {v: ...})', async () => {
   const out = await roundTrip({ name: 'v', type: 'STRING', mode: 'REPEATED' }, [
     'alpha',

@@ -36,6 +36,13 @@
  *   - INTERVAL        ISO-8601-ish string `"Y-M D H:M:S[.f]"` (e.g.
  *                     `"1-2 3 4:5:6.5"` = 1y 2mo 3d 4h 5m 6.5s; negative
  *                     intervals carry a leading `-` on the whole value)
+ *   - RANGE<T>        half-open interval string `"[<start>, <end>)"` where
+ *                     each bound is either a literal of element type T
+ *                     (DATE / DATETIME / TIMESTAMP) or `UNBOUNDED`.
+ *                     Internally stored as `STRUCT(start BIGINT, end
+ *                     BIGINT)` with sentinels MIN_I64 / MAX_I64 for
+ *                     unbounded ends — every overlap/contains check is
+ *                     then a branch-free integer compare.
  *   - REPEATED mode   array of T-typed values
  *   - STRUCT          object with field names as keys
  */
@@ -61,7 +68,11 @@ export type BqType =
   | 'JSON'
   | 'GEOGRAPHY'
   | 'INTERVAL'
+  | 'RANGE'
   | 'STRUCT';
+
+/** Allowed element types for `RANGE<T>` per BigQuery's spec. */
+export type RangeElementType = 'DATE' | 'DATETIME' | 'TIMESTAMP';
 
 export interface BqField {
   readonly name: string;
@@ -69,6 +80,8 @@ export interface BqField {
   readonly mode?: BqMode;
   readonly description?: string;
   readonly fields?: readonly BqField[];
+  /** Element type for `RANGE<T>` fields. Required when `type === 'RANGE'`. */
+  readonly rangeElementType?: { readonly type: RangeElementType };
 }
 
 const TYPE_ALIASES: Readonly<Record<string, BqType>> = {
@@ -89,6 +102,7 @@ const TYPE_ALIASES: Readonly<Record<string, BqType>> = {
   JSON: 'JSON',
   GEOGRAPHY: 'GEOGRAPHY',
   INTERVAL: 'INTERVAL',
+  RANGE: 'RANGE',
   STRUCT: 'STRUCT',
   RECORD: 'STRUCT',
 };
@@ -139,6 +153,10 @@ export function renderBqType(field: BqField): string {
 }
 
 function renderBaseBqType(field: BqField): string {
+  if (field.type === 'RANGE') {
+    const elem = field.rangeElementType?.type ?? 'DATE';
+    return `RANGE<${elem}>`;
+  }
   if (field.type !== 'STRUCT') return field.type;
   const children = field.fields ?? [];
   if (children.length === 0) return 'STRUCT';
@@ -187,6 +205,10 @@ function baseDuckType(field: BqField): string {
       return 'VARCHAR';
     case 'INTERVAL':
       return 'INTERVAL';
+    case 'RANGE':
+      // STRUCT of two BIGINT bounds; sentinels MIN_I64 / MAX_I64 cover
+      // the UNBOUNDED cases without NULL-handling in comparisons.
+      return 'STRUCT("start" BIGINT, "end" BIGINT)';
     case 'STRUCT': {
       if (field.fields === undefined || field.fields.length === 0) {
         throw new Error(`STRUCT field "${field.name}" requires a non-empty fields list.`);
@@ -242,6 +264,10 @@ function baseInsertExpr(ordinal: number, field: BqField): string {
       // DuckDB-parseable form (see bqValueToDuckLeaf below). DuckDB
       // accepts `INTERVAL '14 months 3 days 14706500 microseconds'`.
       return `${p}::INTERVAL`;
+    case 'RANGE':
+      // Bound as a JSON-encoded `{start, end}` object; DuckDB casts the
+      // JSON into the STRUCT(start BIGINT, end BIGINT) storage shape.
+      return `${p}::JSON::STRUCT("start" BIGINT, "end" BIGINT)`;
     case 'STRUCT':
       // Bound as a JSON-encoded string; DuckDB casts it to the STRUCT type.
       return `${p}::JSON::${baseDuckType(field)}`;
@@ -332,6 +358,10 @@ function bqValueToDuckLeaf(value: unknown, field: BqField): unknown {
     case 'INTERVAL':
       // Bind a DuckDB-parseable interval string; SQL wraps with ::INTERVAL.
       return bqIntervalToDuckBindString(String(value));
+    case 'RANGE': {
+      const { start, end } = bqRangeToBounds(String(value), rangeElementType(field));
+      return JSON.stringify({ start: start.toString(), end: end.toString() });
+    }
     case 'STRUCT': {
       // Encode each field, JSON-stringify the whole object. SQL casts to STRUCT.
       if (typeof value !== 'object' || Array.isArray(value)) {
@@ -388,6 +418,10 @@ function structuredEncodeForJson(value: unknown, field: BqField): unknown {
       // Inside a JSON envelope, keep the BQ wire form (DuckDB will parse
       // the outer ARRAY[…]::INTERVAL[] cast on the way in).
       return String(value);
+    case 'RANGE': {
+      const { start, end } = bqRangeToBounds(String(value), rangeElementType(field));
+      return { start: start.toString(), end: end.toString() };
+    }
     case 'STRUCT': {
       if (typeof value !== 'object' || Array.isArray(value)) {
         throw new Error(`Expected object for STRUCT field "${field.name}".`);
@@ -478,6 +512,15 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
       return typeof value === 'string' ? value : JSON.stringify(value);
     case 'INTERVAL':
       return intervalToWire(value);
+    case 'RANGE': {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new Error(`Expected object from DuckDB for RANGE field "${field.name}".`);
+      }
+      const obj = value as { start?: unknown; end?: unknown };
+      const toBig = (v: unknown): bigint =>
+        typeof v === 'bigint' ? v : BigInt(String(v ?? '0'));
+      return boundsToBqRange(toBig(obj.start), toBig(obj.end), rangeElementType(field));
+    }
     case 'STRUCT': {
       if (typeof value !== 'object' || Array.isArray(value)) {
         throw new Error(`Expected object from DuckDB for STRUCT field "${field.name}".`);
@@ -640,6 +683,120 @@ export function bqIntervalToDuckBindString(raw: string): string {
   // microseconds` form to keep precision (microseconds covers H/M/S/f
   // exactly).
   return `${months.toString()} months ${days.toString()} days ${micros.toString()} microseconds`;
+}
+
+// ---------------------------------------------------------------------------
+// RANGE<T>: BQ wire ↔ {start, end} BIGINT epoch sentinels
+// ---------------------------------------------------------------------------
+
+const RANGE_UNBOUNDED_LO = -9223372036854775808n;
+const RANGE_UNBOUNDED_HI = 9223372036854775807n;
+
+function rangeElementType(field: BqField): RangeElementType {
+  return field.rangeElementType?.type ?? 'DATE';
+}
+
+function dateToEpochDays(literal: string): bigint {
+  const m = /^(-?\d{1,6})-(\d{2})-(\d{2})$/.exec(literal);
+  if (m === null) {
+    throw new Error(`Invalid DATE literal "${literal}" for RANGE bound.`);
+  }
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return BigInt(Math.floor(ms / 86400000));
+}
+
+function epochDaysToDate(days: bigint): string {
+  const ms = Number(days) * 86400000;
+  const d = new Date(ms);
+  const yyyy = String(d.getUTCFullYear()).padStart(4, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function timestampToEpochMicros(literal: string): bigint {
+  const trimmed = literal.trim();
+  const iso = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
+  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(iso);
+  const dateStr = hasZone ? iso : `${iso}Z`;
+  const ms = Date.parse(dateStr);
+  if (Number.isNaN(ms)) {
+    throw new Error(`Invalid TIMESTAMP/DATETIME literal "${literal}" for RANGE bound.`);
+  }
+  const fracMatch = /\.(\d{1,6})/.exec(iso);
+  const fracStr = fracMatch !== null ? (fracMatch[1] as string).padEnd(6, '0') : '';
+  const fracUs = fracStr === '' ? 0n : BigInt(fracStr.slice(3));
+  const baseMs = BigInt(Math.trunc(ms));
+  return baseMs * 1000n + fracUs;
+}
+
+function epochMicrosToDatetime(us: bigint): string {
+  const ms = Number(us / 1000n);
+  const remainderUs = us - BigInt(ms) * 1000n;
+  const d = new Date(ms);
+  const yyyy = String(d.getUTCFullYear()).padStart(4, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  const ss = String(d.getUTCSeconds()).padStart(2, '0');
+  const baseMs = d.getUTCMilliseconds();
+  const totalUs = baseMs * 1000 + Number(remainderUs);
+  const fracStr = totalUs === 0 ? '' : `.${String(totalUs).padStart(6, '0').replace(/0+$/, '')}`;
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}${fracStr}`;
+}
+
+function epochMicrosToTimestampWire(us: bigint): string {
+  return `${epochMicrosToDatetime(us)}+00`;
+}
+
+function rangeBoundToEpoch(raw: string, elem: RangeElementType): bigint {
+  switch (elem) {
+    case 'DATE':
+      return dateToEpochDays(raw.trim());
+    case 'DATETIME':
+    case 'TIMESTAMP':
+      return timestampToEpochMicros(raw.trim());
+  }
+}
+
+function epochToRangeBound(epoch: bigint, elem: RangeElementType): string {
+  switch (elem) {
+    case 'DATE':
+      return epochDaysToDate(epoch);
+    case 'DATETIME':
+      return epochMicrosToDatetime(epoch);
+    case 'TIMESTAMP':
+      return epochMicrosToTimestampWire(epoch);
+  }
+}
+
+export function bqRangeToBounds(
+  raw: string,
+  elem: RangeElementType,
+): { start: bigint; end: bigint } {
+  const trimmed = raw.trim();
+  const m = /^\[\s*(.*?)\s*,\s*(.*?)\s*\)$/.exec(trimmed);
+  if (m === null) {
+    throw new Error(`Invalid RANGE literal "${raw}" — expected "[<start>, <end>)".`);
+  }
+  const startStr = (m[1] as string).trim();
+  const endStr = (m[2] as string).trim();
+  const start =
+    startStr === '' || startStr.toUpperCase() === 'UNBOUNDED' || startStr.toUpperCase() === 'NULL'
+      ? RANGE_UNBOUNDED_LO
+      : rangeBoundToEpoch(startStr, elem);
+  const end =
+    endStr === '' || endStr.toUpperCase() === 'UNBOUNDED' || endStr.toUpperCase() === 'NULL'
+      ? RANGE_UNBOUNDED_HI
+      : rangeBoundToEpoch(endStr, elem);
+  return { start, end };
+}
+
+export function boundsToBqRange(start: bigint, end: bigint, elem: RangeElementType): string {
+  const startStr = start === RANGE_UNBOUNDED_LO ? 'UNBOUNDED' : epochToRangeBound(start, elem);
+  const endStr = end === RANGE_UNBOUNDED_HI ? 'UNBOUNDED' : epochToRangeBound(end, elem);
+  return `[${startStr}, ${endStr})`;
 }
 
 function intervalToWire(value: unknown): string {

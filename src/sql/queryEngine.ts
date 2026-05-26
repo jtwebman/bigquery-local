@@ -76,6 +76,7 @@ export interface FieldWire {
   readonly type: string;
   readonly mode?: BqMode;
   readonly fields?: readonly FieldWire[];
+  readonly rangeElementType?: { readonly type: string };
 }
 
 export function fieldToWire(field: BqField): FieldWire {
@@ -85,6 +86,9 @@ export function fieldToWire(field: BqField): FieldWire {
     ...(field.mode !== undefined && { mode: field.mode }),
     ...(field.fields !== undefined && {
       fields: field.fields.map(fieldToWire),
+    }),
+    ...(field.rangeElementType !== undefined && {
+      rangeElementType: { type: field.rangeElementType.type },
     }),
   };
 }
@@ -199,6 +203,11 @@ function encodeScalarForBind(value: string, type: BqType): unknown {
       // interval literal at bind time so the `::INTERVAL` cast in
       // scalarPlaceholderCast can accept it.
       return bqIntervalToDuckBindString(value);
+    case 'RANGE':
+      throw BqError.invalid(
+        'RANGE query parameters are not yet supported. Reference RANGE values via SELECT against a table column.',
+        'parameterType',
+      );
     case 'STRUCT':
       throw BqError.invalid('STRUCT parameters are not supported in v0.', 'parameterType');
   }

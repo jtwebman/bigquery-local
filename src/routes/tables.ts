@@ -72,6 +72,7 @@ interface FieldWire {
   readonly mode?: BqMode;
   readonly description?: string;
   readonly fields?: readonly FieldWire[];
+  readonly rangeElementType?: { readonly type: string };
 }
 
 interface TableResourceWire {
@@ -99,6 +100,9 @@ function fieldToWire(field: BqField): FieldWire {
     ...(field.mode !== undefined && { mode: field.mode }),
     ...(field.description !== undefined && { description: field.description }),
     ...(field.fields !== undefined && { fields: field.fields.map(fieldToWire) }),
+    ...(field.rangeElementType !== undefined && {
+      rangeElementType: { type: field.rangeElementType.type },
+    }),
   };
 }
 
@@ -196,6 +200,7 @@ function parseBqField(value: unknown, path: string): BqField {
     mode?: BqMode;
     description?: string;
     fields?: readonly BqField[];
+    rangeElementType?: { type: 'DATE' | 'DATETIME' | 'TIMESTAMP' };
   } = { name, type };
   if (obj['mode'] !== undefined) {
     result.mode = expectMode(obj['mode'], `${path}.mode`);
@@ -208,6 +213,24 @@ function parseBqField(value: unknown, path: string): BqField {
   }
   if (type === 'STRUCT' && (result.fields === undefined || result.fields.length === 0)) {
     throw BqError.invalid(`${path}: STRUCT field requires a non-empty fields list.`, path);
+  }
+  if (type === 'RANGE') {
+    const ret = obj['rangeElementType'];
+    if (ret === undefined || ret === null) {
+      throw BqError.invalid(
+        `${path}: RANGE field requires rangeElementType.`,
+        `${path}.rangeElementType`,
+      );
+    }
+    const retObj = asObject(ret, `${path}.rangeElementType`);
+    const elem = expectString(retObj['type'], `${path}.rangeElementType.type`).toUpperCase();
+    if (elem !== 'DATE' && elem !== 'DATETIME' && elem !== 'TIMESTAMP') {
+      throw BqError.invalid(
+        `${path}.rangeElementType.type must be DATE, DATETIME, or TIMESTAMP.`,
+        `${path}.rangeElementType.type`,
+      );
+    }
+    result.rangeElementType = { type: elem };
   }
   return result;
 }
