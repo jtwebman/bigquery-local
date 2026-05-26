@@ -391,7 +391,10 @@ test('translate: CONCAT becomes a NULL-propagating || chain cast to VARCHAR', ()
 
 test('translate: GREATEST guards NULL args (BQ propagates NULL)', () => {
   const { sql } = translate('SELECT GREATEST(a, b) AS g FROM t', { project: 'p' });
-  assert.match(norm(sql), /CASE WHEN \(a\) IS NULL OR \(b\) IS NULL THEN NULL ELSE GREATEST\(a, b\) END/);
+  assert.match(
+    norm(sql),
+    /CASE WHEN \(a\) IS NULL OR \(b\) IS NULL THEN NULL ELSE GREATEST\(a, b\) END/,
+  );
 });
 
 test('translate: LEAST guards NULL args', () => {
