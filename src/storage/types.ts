@@ -33,6 +33,9 @@
  *   - TIME            `"HH:MM:SS[.SSSSSS]"`
  *   - JSON            any JSON value (object / array / scalar)
  *   - GEOGRAPHY       WKT string (no `ST_*` in v0)
+ *   - INTERVAL        ISO-8601-ish string `"Y-M D H:M:S[.f]"` (e.g.
+ *                     `"1-2 3 4:5:6.5"` = 1y 2mo 3d 4h 5m 6.5s; negative
+ *                     intervals carry a leading `-` on the whole value)
  *   - REPEATED mode   array of T-typed values
  *   - STRUCT          object with field names as keys
  */
@@ -57,6 +60,7 @@ export type BqType =
   | 'TIME'
   | 'JSON'
   | 'GEOGRAPHY'
+  | 'INTERVAL'
   | 'STRUCT';
 
 export interface BqField {
@@ -84,6 +88,7 @@ const TYPE_ALIASES: Readonly<Record<string, BqType>> = {
   TIME: 'TIME',
   JSON: 'JSON',
   GEOGRAPHY: 'GEOGRAPHY',
+  INTERVAL: 'INTERVAL',
   STRUCT: 'STRUCT',
   RECORD: 'STRUCT',
 };
@@ -180,6 +185,8 @@ function baseDuckType(field: BqField): string {
     case 'GEOGRAPHY':
       // WKT in VARCHAR until BL-128+ wires the spatial extension.
       return 'VARCHAR';
+    case 'INTERVAL':
+      return 'INTERVAL';
     case 'STRUCT': {
       if (field.fields === undefined || field.fields.length === 0) {
         throw new Error(`STRUCT field "${field.name}" requires a non-empty fields list.`);
@@ -230,6 +237,11 @@ function baseInsertExpr(ordinal: number, field: BqField): string {
       return `${p}::TIME`;
     case 'JSON':
       return `${p}::JSON`;
+    case 'INTERVAL':
+      // Bind the BQ "Y-M D H:M:S" string already pre-translated to a
+      // DuckDB-parseable form (see bqValueToDuckLeaf below). DuckDB
+      // accepts `INTERVAL '14 months 3 days 14706500 microseconds'`.
+      return `${p}::INTERVAL`;
     case 'STRUCT':
       // Bound as a JSON-encoded string; DuckDB casts it to the STRUCT type.
       return `${p}::JSON::${baseDuckType(field)}`;
@@ -317,6 +329,9 @@ function bqValueToDuckLeaf(value: unknown, field: BqField): unknown {
       return Boolean(value);
     case 'JSON':
       return typeof value === 'string' ? value : JSON.stringify(value);
+    case 'INTERVAL':
+      // Bind a DuckDB-parseable interval string; SQL wraps with ::INTERVAL.
+      return bqIntervalToDuckBindString(String(value));
     case 'STRUCT': {
       // Encode each field, JSON-stringify the whole object. SQL casts to STRUCT.
       if (typeof value !== 'object' || Array.isArray(value)) {
@@ -369,6 +384,10 @@ function structuredEncodeForJson(value: unknown, field: BqField): unknown {
       return Boolean(value);
     case 'JSON':
       return typeof value === 'string' ? JSON.parse(value) : value;
+    case 'INTERVAL':
+      // Inside a JSON envelope, keep the BQ wire form (DuckDB will parse
+      // the outer ARRAY[…]::INTERVAL[] cast on the way in).
+      return String(value);
     case 'STRUCT': {
       if (typeof value !== 'object' || Array.isArray(value)) {
         throw new Error(`Expected object for STRUCT field "${field.name}".`);
@@ -457,6 +476,8 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
       // DuckDB JSON columns come back as parsed values OR JSON strings;
       // normalize to a string so callers get consistent BQ wire format.
       return typeof value === 'string' ? value : JSON.stringify(value);
+    case 'INTERVAL':
+      return intervalToWire(value);
     case 'STRUCT': {
       if (typeof value !== 'object' || Array.isArray(value)) {
         throw new Error(`Expected object from DuckDB for STRUCT field "${field.name}".`);
@@ -533,6 +554,108 @@ function timeToWire(value: unknown): string {
   return String(value);
 }
 
+// ---------------------------------------------------------------------------
+// INTERVAL: BQ wire ↔ DuckDB
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a BigQuery INTERVAL wire string ("Y-M D H:M:S[.f]", possibly
+ * sign-prefixed) into the {months, days, micros} triple DuckDB stores.
+ * The sign on the whole string negates all components.
+ */
+function parseBqInterval(raw: string): { months: bigint; days: bigint; micros: bigint } {
+  let s = raw.trim();
+  let sign = 1n;
+  if (s.startsWith('-')) {
+    sign = -1n;
+    s = s.slice(1).trim();
+  } else if (s.startsWith('+')) {
+    s = s.slice(1).trim();
+  }
+  // Tokens: "Y-M", "D", "H:M:S[.f]"
+  const parts = s.split(/\s+/);
+  if (parts.length !== 3) {
+    throw new Error(`Invalid INTERVAL literal "${raw}" — expected "Y-M D H:M:S".`);
+  }
+  const [ym, d, hms] = parts as [string, string, string];
+  const ymMatch = /^(-?\d+)-(-?\d+)$/.exec(ym);
+  if (ymMatch === null) {
+    throw new Error(`Invalid INTERVAL Y-M component "${ym}" in "${raw}".`);
+  }
+  const years = BigInt(ymMatch[1] as string);
+  const months = BigInt(ymMatch[2] as string);
+  const days = BigInt(d);
+  const hmsMatch = /^(-?\d+):(-?\d+):(-?\d+)(?:\.(\d{1,6}))?$/.exec(hms);
+  if (hmsMatch === null) {
+    throw new Error(`Invalid INTERVAL H:M:S component "${hms}" in "${raw}".`);
+  }
+  const hours = BigInt(hmsMatch[1] as string);
+  const minutes = BigInt(hmsMatch[2] as string);
+  const seconds = BigInt(hmsMatch[3] as string);
+  const fracStr = (hmsMatch[4] ?? '').padEnd(6, '0');
+  const fracUs = fracStr === '' ? 0n : BigInt(fracStr);
+  const micros = ((hours * 3600n + minutes * 60n + seconds) * 1_000_000n + fracUs) * sign;
+  return {
+    months: (years * 12n + months) * sign,
+    days: days * sign,
+    micros,
+  };
+}
+
+/** Format DuckDB's {months, days, micros} interval back to BQ wire format. */
+function formatBqInterval(months: bigint, days: bigint, micros: bigint): string {
+  // BQ canonical form pulls the overall sign out front when every
+  // non-zero component shares the same sign. If signs are mixed (e.g.
+  // 1 month + -1 day) we keep per-component signs — that's still a
+  // valid BQ INTERVAL literal.
+  const allNonPositive =
+    months <= 0n && days <= 0n && micros <= 0n && (months < 0n || days < 0n || micros < 0n);
+  const sign = allNonPositive ? -1n : 1n;
+  const M = months * sign;
+  const D = days * sign;
+  const U = micros * sign;
+  const years = M / 12n;
+  const monthsRem = M - years * 12n;
+  const usPerHour = 3_600_000_000n;
+  const usPerMinute = 60_000_000n;
+  const usPerSecond = 1_000_000n;
+  const hours = U / usPerHour;
+  let rest = U - hours * usPerHour;
+  const minutes = rest / usPerMinute;
+  rest -= minutes * usPerMinute;
+  const seconds = rest / usPerSecond;
+  const frac = rest - seconds * usPerSecond;
+  let fracStr = '';
+  if (frac !== 0n) {
+    fracStr = `.${frac.toString().padStart(6, '0').replace(/0+$/, '')}`;
+  }
+  const body = `${years}-${monthsRem} ${D} ${hours}:${minutes}:${seconds}${fracStr}`;
+  return sign === -1n ? `-${body}` : body;
+}
+
+/** Build the DuckDB INTERVAL literal we bind via `$n::INTERVAL`. */
+export function bqIntervalToDuckBindString(raw: string): string {
+  const { months, days, micros } = parseBqInterval(raw);
+  // DuckDB accepts mixed-unit interval strings; quote a `months days
+  // microseconds` form to keep precision (microseconds covers H/M/S/f
+  // exactly).
+  return `${months.toString()} months ${days.toString()} days ${micros.toString()} microseconds`;
+}
+
+function intervalToWire(value: unknown): string {
+  // DuckDB getRowObjectsJS returns INTERVAL as {months, days, micros}.
+  if (typeof value === 'object' && value !== null) {
+    const v = value as { months?: unknown; days?: unknown; micros?: unknown };
+    const months = typeof v.months === 'bigint' ? v.months : BigInt(Number(v.months ?? 0));
+    const days = typeof v.days === 'bigint' ? v.days : BigInt(Number(v.days ?? 0));
+    const micros = typeof v.micros === 'bigint' ? v.micros : BigInt(Number(v.micros ?? 0));
+    return formatBqInterval(months, days, micros);
+  }
+  // Fallback: if upstream already serialized to a string (DuckDB has no
+  // such path today, but defensive).
+  return String(value);
+}
+
 function trimDecimal(s: string): string {
   // Avoid `"1"` for integer-valued NUMERIC; keep at least one decimal place
   // so the output round-trips as a decimal string.
@@ -590,6 +713,7 @@ const DUCK_TO_BQ: Readonly<Record<string, BqType>> = {
   'TIMESTAMP WITH TIME ZONE': 'TIMESTAMP',
   TIMESTAMPTZ: 'TIMESTAMP',
   JSON: 'JSON',
+  INTERVAL: 'INTERVAL',
 };
 
 /** Synthesize a BqField from a DuckDB column type string + a column name.

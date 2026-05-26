@@ -46,6 +46,7 @@ test('bqTypeToDuck maps each scalar BQ type to DuckDB', () => {
     ['TIME', 'TIME'],
     ['JSON', 'JSON'],
     ['GEOGRAPHY', 'VARCHAR'],
+    ['INTERVAL', 'INTERVAL'],
   ];
   for (const [bq, duck] of cases) {
     assert.equal(bqTypeToDuck({ name: 'v', type: bq }), duck);
@@ -197,6 +198,20 @@ test('round-trip: GEOGRAPHY (WKT pass-through)', async () => {
     await roundTrip({ name: 'v', type: 'GEOGRAPHY' }, 'POINT(-122.4194 37.7749)'),
     'POINT(-122.4194 37.7749)',
   );
+});
+
+test('round-trip: INTERVAL (Y-M D H:M:S wire format)', async () => {
+  // 1 year, 2 months, 3 days, 4h 5m 6.5s.
+  assert.equal(await roundTrip({ name: 'v', type: 'INTERVAL' }, '1-2 3 4:5:6.5'), '1-2 3 4:5:6.5');
+});
+
+test('round-trip: INTERVAL with only days', async () => {
+  assert.equal(await roundTrip({ name: 'v', type: 'INTERVAL' }, '0-0 5 0:0:0'), '0-0 5 0:0:0');
+});
+
+test('round-trip: INTERVAL negative', async () => {
+  // Whole-interval negation: every non-zero component shares the sign.
+  assert.equal(await roundTrip({ name: 'v', type: 'INTERVAL' }, '-1-2 3 0:0:0'), '-1-2 3 0:0:0');
 });
 
 test('round-trip: REPEATED STRING (BQ wire wraps each element as {v: ...})', async () => {

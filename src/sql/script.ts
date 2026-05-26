@@ -1800,6 +1800,8 @@ function bqTypeShortDuck(t: BqType): string {
       return 'JSON';
     case 'GEOGRAPHY':
       return 'VARCHAR';
+    case 'INTERVAL':
+      return 'INTERVAL';
     case 'STRUCT':
       return 'STRUCT';
   }

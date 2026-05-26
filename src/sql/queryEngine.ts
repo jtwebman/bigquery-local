@@ -29,6 +29,7 @@ import {
   type BqField,
   type BqMode,
   type BqType,
+  bqIntervalToDuckBindString,
   bqTypeToDuck,
   bqTypeToWire,
   duckTypeToBq,
@@ -193,6 +194,11 @@ function encodeScalarForBind(value: string, type: BqType): unknown {
     case 'JSON':
     case 'GEOGRAPHY':
       return value;
+    case 'INTERVAL':
+      // Pre-translate BQ wire form ("Y-M D H:M:S") into a DuckDB-parseable
+      // interval literal at bind time so the `::INTERVAL` cast in
+      // scalarPlaceholderCast can accept it.
+      return bqIntervalToDuckBindString(value);
     case 'STRUCT':
       throw BqError.invalid('STRUCT parameters are not supported in v0.', 'parameterType');
   }
@@ -244,6 +250,8 @@ function scalarPlaceholderCast(type: BqType): string | null {
       return '::DATE';
     case 'TIME':
       return '::TIME';
+    case 'INTERVAL':
+      return '::INTERVAL';
     default:
       return null;
   }

@@ -561,6 +561,50 @@ test('queries: DATE parameter casts cleanly for INTERVAL arithmetic', async () =
   assert.equal(res.status, 200);
 });
 
+test('queries: INTERVAL scalar parameter binds + comes back in BQ wire format', async () => {
+  // Bind "Y-M D H:M:S" form, select it back, prove the wire format
+  // survives round-trip through DuckDB and parameter casting.
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: 'SELECT @i AS got',
+      queryParameters: [
+        {
+          name: 'i',
+          parameterType: { type: 'INTERVAL' },
+          parameterValue: { value: '1-2 3 4:5:6' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as QueryResponse;
+  assert.equal(body.schema.fields[0]?.type, 'INTERVAL');
+  assert.equal(body.rows[0]?.f[0]?.v, '1-2 3 4:5:6');
+});
+
+test('queries: INTERVAL parameter participates in DATETIME arithmetic', async () => {
+  // The classic BQ pattern: datetime + INTERVAL parameter.
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: "SELECT DATETIME '2026-05-25T10:00:00' + @offset AS shifted",
+      queryParameters: [
+        {
+          name: 'offset',
+          parameterType: { type: 'INTERVAL' },
+          parameterValue: { value: '0-0 1 2:0:0' },
+        },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as QueryResponse;
+  assert.match(String(body.rows[0]?.f[0]?.v ?? ''), /^2026-05-26T12:00:00/);
+});
+
 test('queries: TIME parameter casts cleanly', async () => {
   const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
     method: 'POST',

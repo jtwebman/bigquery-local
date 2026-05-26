@@ -235,6 +235,28 @@ func TestJSONValue(t *testing.T) {
 	}
 }
 
+func TestIntervalRoundTrip(t *testing.T) {
+	client, _ := newClient(t)
+	q := client.Query("SELECT @i AS got")
+	iv, err := bigquery.ParseInterval("1-2 3 4:5:6")
+	if err != nil {
+		t.Fatalf("ParseInterval: %v", err)
+	}
+	q.Parameters = []bigquery.QueryParameter{{Name: "i", Value: iv}}
+	rows, err := readAll(t, q)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	got, ok := rows[0][0].(*bigquery.IntervalValue)
+	if !ok {
+		t.Fatalf("got type %T, want *bigquery.IntervalValue", rows[0][0])
+	}
+	if got.Years != 1 || got.Months != 2 || got.Days != 3 ||
+		got.Hours != 4 || got.Minutes != 5 || got.Seconds != 6 {
+		t.Errorf("interval = %+v, want 1y 2mo 3d 4h 5m 6s", got)
+	}
+}
+
 func TestTimestampArithmetic(t *testing.T) {
 	client, _ := newClient(t)
 	rows, err := readAll(t, client.Query(

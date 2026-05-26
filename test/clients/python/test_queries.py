@@ -213,6 +213,24 @@ def test_json_value(bq: bigquery.Client) -> None:
     assert row["v"] == "hello"
 
 
+def test_interval_round_trip(bq: bigquery.Client) -> None:
+    # BQ INTERVAL "Y-M D H:M:S" survives through the wire and DuckDB
+    # interval storage. Bound as a query parameter (the typical Python
+    # pattern); google-cloud-bigquery returns INTERVAL as a
+    # dateutil.relativedelta whose components mirror the wire string.
+    config = QueryJobConfig(
+        query_parameters=[ScalarQueryParameter("i", "INTERVAL", "1-2 3 4:5:6")]
+    )
+    rows = list(bq.query("SELECT @i AS got", job_config=config).result())
+    rd = rows[0]["got"]
+    assert rd.years == 1
+    assert rd.months == 2
+    assert rd.days == 3
+    assert rd.hours == 4
+    assert rd.minutes == 5
+    assert rd.seconds == 6
+
+
 def test_timestamp_arithmetic(bq: bigquery.Client) -> None:
     row = list(
         bq.query(
