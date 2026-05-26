@@ -1,15 +1,19 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T18:47:02.963Z"
+    "capturedAt": "2026-05-26T18:47:05.007Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "id",
+        "name": "n",
         "type": "INTEGER"
       },
       {
-        "name": "msg",
+        "name": "total",
+        "type": "INTEGER"
+      },
+      {
+        "name": "list",
         "type": "STRING"
       }
     ]
@@ -18,10 +22,13 @@
     {
       "f": [
         {
-          "v": "1"
+          "v": "5"
         },
         {
-          "v": "hello"
+          "v": "15"
+        },
+        {
+          "v": "1,2,3,4,5"
         }
       ]
     }

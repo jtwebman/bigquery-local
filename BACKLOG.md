@@ -938,15 +938,14 @@ equivalents. Every other `ST_*` predicate / construction function
 passes through case-insensitively (`ST_INTERSECTS`, `ST_CONTAINS`,
 `ST_WITHIN`, `ST_COVERS`, etc.).
 
-`ST_DISTANCE` + `ST_DWITHIN` translate to Haversine macros (`bq_st_distance`
-/ `bq_st_dwithin`) registered at db init so they return geodesic
-distance in meters on the (lng, lat) convention BQ uses. SF → NYC
-matches real BQ within ~1 km (sphere vs WGS-84 ellipsoid); for the
-ellipsoid-exact answer we'd need a libgeographic-style port, which
-isn't worth the complexity for an emulator. POINT-pair geometries
-use the geodesic path; LINESTRING / POLYGON pairs fall back to
-DuckDB's planar `ST_Distance` since geodesic min-distance over
-arbitrary geometries is non-trivial — documented for the long tail.
+`ST_DISTANCE` + `ST_DWITHIN` translate to Haversine macros
+(`bq_st_distance` / `bq_st_dwithin`) registered at db init. Uses
+R = 6371010.0 m (S2 library's Earth radius — BQ's GEOGRAPHY backend)
+on the (lng, lat) convention, so POINT-pair distances are bit-exact
+with real BQ down to FP rounding noise. LINESTRING / POLYGON pairs
+fall back to DuckDB's planar `ST_Distance` since geodesic
+min-distance over arbitrary geometries is non-trivial — documented
+for the long tail.
 
 ### BL-130 — Predicate `ST_*` functions ⏳ · Est: 6h · Deps: BL-129
 
@@ -1070,31 +1069,24 @@ Scope: cache query results keyed by SQL + params; return cached results when `us
 
 ## Real-BQ parity gaps (surfaced by bq-replay)
 
-These were caught by the conformance suite (`npm run bq-replay:capture`
-+ replay tests) but don't have BL- numbers yet. Each is a real wire
-divergence between bigquery-local and real BigQuery.
+Caught by the conformance suite (`npm run bq-replay:capture` + replay
+tests). Each is a real wire divergence between bigquery-local and
+real BigQuery.
 
-### UNNEST of array literals wraps in STRUCT ⏳
+### UNNEST of array literals wraps in STRUCT ✅
 
-`SELECT x FROM UNNEST([1,2,3]) AS x` returns rows like
-`{f: [{v: {f: [{v: "1"}]}}]}` in our emulator but `{f: [{v: "1"}]}` in
-real BQ. The schema also reports `RECORD<unnest INTEGER>` instead of
-`INTEGER`. The DuckDB-side `unnest(LIST)` returns a single-field
-struct when applied to a literal; we need to project out the inner
-column when the source is a literal array.
+Fixed: translator rewrites `UNNEST(expr) AS x` →
+`UNNEST(expr) AS _unnest_alias(x)` (DuckDB's table-alias + column-alias
+form) so the unnested column adopts the user's chosen name. The
+DuckDB-native `AS t(c)` form is left alone for code that already uses
+it. Fixed STRING_AGG-over-UNNEST as a side effect.
 
-### STRUCT(x AS name, ...) literal not recognized ⏳
+### STRUCT(x AS name, ...) literal not recognized ✅
 
-`SELECT STRUCT(1 AS id, 'name' AS label) AS s` errors with a
-"syntax error at or near AS". DuckDB's STRUCT constructor takes
-`{id: 1, label: 'name'}` or `(1, 'name')`. Translator should rewrite
-BQ's `STRUCT(<expr> AS <name>, ...)` syntax to either form.
-
-### STRING_AGG with ORDER BY ⏳
-
-`STRING_AGG(x, ',' ORDER BY x)` over `UNNEST([1,2,3])` errors. Some
-of this is downstream of the UNNEST-wrapping bug; the inner expression
-sees a struct rather than the scalar. Re-test after UNNEST is fixed.
+Fixed: translator rewrites `STRUCT(<expr> AS <name>, ...)` →
+`{<name>: <expr>, ...}` (DuckDB's named struct literal). Positional
+`STRUCT(<expr>, ...)` falls back to row-expression form. Wire shape
+matches real BQ — `bq-fixtures/009-struct-literal` confirms.
 
 ## Phase 25 — Connections, transfer, kitchen sink
 

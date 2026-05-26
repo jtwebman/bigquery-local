@@ -1634,6 +1634,63 @@ function handleIdentifier(
   }
 
   switch (upper) {
+    case 'STRUCT': {
+      // BQ's `STRUCT(<expr> AS <name>, ...)` literal — DuckDB doesn't
+      // accept the `AS name` syntax. Rewrite to `{name: expr, ...}`
+      // (DuckDB's named struct literal) when every argument has a
+      // trailing `AS <name>`. If any arg is positional, fall through
+      // to the default (DuckDB will produce an anonymous struct).
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const namedFields = tryParseStructNamedArgs(tokens, parenIdx + 1, close, paramOrder, project);
+      if (namedFields !== null) {
+        const body = namedFields.map(({ name, expr }) => `"${name}": ${expr}`).join(', ');
+        out.push(`{${body}}`);
+        return close + 1;
+      }
+      // Positional STRUCT(...) — drop the keyword so DuckDB sees a row
+      // expression. DuckDB returns it as a struct with unnamed fields.
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      out.push(`(${inner})`);
+      return close + 1;
+    }
+
+    case 'UNNEST': {
+      // BQ's `UNNEST(expr) AS x` names the unnested column `x`.
+      // DuckDB names it `unnest` and parses `AS x` as a table alias.
+      // Rewrite to `UNNEST(expr) AS _unnest_alias(x)` so the unnested
+      // column adopts the user's chosen name.
+      //
+      // Skip the rewrite if the alias is already in DuckDB's native
+      // `AS table_alias(col_alias)` form — that's what existing
+      // emulator-side tests use and it already gives the right shape.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const afterParen = skipWhitespace(tokens, close + 1, endIdx);
+      if (afterParen !== null) {
+        const asTok = tokens[afterParen];
+        if (asTok?.kind === 'identifier' && asTok.value.toUpperCase() === 'AS') {
+          const nameIdx = skipWhitespace(tokens, afterParen + 1, endIdx);
+          const nameTok = nameIdx !== null ? tokens[nameIdx] : undefined;
+          if (
+            (nameTok?.kind === 'identifier' || nameTok?.kind === 'backtick-identifier') &&
+            nameIdx !== null
+          ) {
+            const followIdx = skipWhitespace(tokens, nameIdx + 1, endIdx);
+            const follow = followIdx !== null ? tokens[followIdx] : undefined;
+            const alreadyHasColAlias = follow?.kind === 'punctuation' && follow.value === '(';
+            if (!alreadyHasColAlias) {
+              const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+              const colName =
+                nameTok.kind === 'backtick-identifier' ? nameTok.value.slice(1, -1) : nameTok.value;
+              out.push(`UNNEST(${inner}) AS _unnest_alias("${colName.replace(/"/g, '""')}")`);
+              return nameIdx + 1;
+            }
+          }
+        }
+      }
+      out.push(tok.value);
+      return i + 1;
+    }
+
     case 'CURRENT_TIMESTAMP': {
       const close = findMatchingClose(tokens, parenIdx, endIdx);
       if (areArgsEmpty(tokens, parenIdx, close)) {
@@ -2211,6 +2268,63 @@ function findTopLevelComma(
     }
   }
   return null;
+}
+
+/**
+ * Parse a `STRUCT(<expr> AS <name>, ...)` argument list. Returns the
+ * `[{name, expr}, ...]` array when every comma-separated argument
+ * ends with `AS <identifier>`. Returns null if any arg is positional
+ * (no AS), missing the alias identifier, or otherwise can't be parsed
+ * as the named form — caller falls back to a positional translation.
+ */
+function tryParseStructNamedArgs(
+  tokens: readonly Token[],
+  start: number,
+  closeIdx: number,
+  paramOrder: string[],
+  project: string,
+): ReadonlyArray<{ readonly name: string; readonly expr: string }> | null {
+  if (areArgsEmpty(tokens, start - 1, closeIdx)) return null;
+  const out: Array<{ name: string; expr: string }> = [];
+  let argStart = start;
+  while (argStart < closeIdx) {
+    const commaIdx = findTopLevelComma(tokens, argStart, closeIdx);
+    const argEnd = commaIdx === null ? closeIdx : commaIdx;
+    // Scan from argEnd-1 backward for the AS keyword at top level.
+    let lastTokIdx: number | null = null;
+    let prevTokIdx: number | null = null;
+    for (let j = argEnd - 1; j >= argStart; j -= 1) {
+      const t = tokens[j];
+      if (t === undefined) continue;
+      if (t.kind === 'whitespace' || t.kind === 'line-comment' || t.kind === 'block-comment') {
+        continue;
+      }
+      if (lastTokIdx === null) {
+        lastTokIdx = j;
+        continue;
+      }
+      prevTokIdx = j;
+      break;
+    }
+    if (lastTokIdx === null || prevTokIdx === null) return null;
+    const aliasTok = tokens[lastTokIdx];
+    const asTok = tokens[prevTokIdx];
+    if (
+      !(aliasTok?.kind === 'identifier' || aliasTok?.kind === 'backtick-identifier') ||
+      asTok?.kind !== 'identifier' ||
+      asTok.value.toUpperCase() !== 'AS'
+    ) {
+      return null;
+    }
+    const name =
+      aliasTok.kind === 'backtick-identifier' ? aliasTok.value.slice(1, -1) : aliasTok.value;
+    const expr = translateRange(tokens, argStart, prevTokIdx, paramOrder, project).trim();
+    if (expr === '') return null;
+    out.push({ name: name.replace(/"/g, '""'), expr });
+    if (commaIdx === null) break;
+    argStart = commaIdx + 1;
+  }
+  return out.length > 0 ? out : null;
 }
 
 function areArgsEmpty(tokens: readonly Token[], openIdx: number, closeIdx: number): boolean {
