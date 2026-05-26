@@ -65,8 +65,9 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['FORMAT', 'printf'],
   ['NORMALIZE', 'nfc_normalize'],
   // DuckDB's `length()` is char count; `strlen()` is byte count, matching
-  // BigQuery's OCTET_LENGTH for STRING.
+  // BigQuery's OCTET_LENGTH / BYTE_LENGTH for STRING.
   ['OCTET_LENGTH', 'strlen'],
+  ['BYTE_LENGTH', 'strlen'],
   // BL-038 — numeric/math:
   ['IS_INF', 'isinf'],
   ['IS_NAN', 'isnan'],
@@ -1237,6 +1238,13 @@ function translateRange(
         // (unlike PostgreSQL's E'...'), so dropping the prefix preserves
         // BQ's no-escape semantics.
         out.push(tok.value.replace(/^[rR]/, ''));
+        i += 1;
+        break;
+      case 'string':
+        // BQ `"x"` is a string (DuckDB reads it as an identifier) and BQ
+        // interprets `\n`-style escapes (DuckDB's `'...'` doesn't) — decode
+        // and re-emit single-quoted.
+        out.push(encodeDuckString(decodeBqString(tok.value)));
         i += 1;
         break;
       case 'bytes':
@@ -2460,9 +2468,124 @@ function tryParseStructNamedArgs(
   return out.length > 0 ? out : null;
 }
 
+/** Decode a BQ (non-raw) string literal — strip the `'`/`"`/`'''`/`"""`
+ * delimiter and interpret BQ backslash escapes. */
+function decodeBqString(raw: string): string {
+  let body: string;
+  if (
+    (raw.startsWith('"""') && raw.endsWith('"""')) ||
+    (raw.startsWith("'''") && raw.endsWith("'''"))
+  ) {
+    body = raw.slice(3, -3);
+  } else {
+    body = raw.slice(1, -1);
+  }
+  let result = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch !== '\\') {
+      result += ch;
+      continue;
+    }
+    const next = body[i + 1];
+    switch (next) {
+      case 'n':
+        result += '\n';
+        i += 1;
+        break;
+      case 't':
+        result += '\t';
+        i += 1;
+        break;
+      case 'r':
+        result += '\r';
+        i += 1;
+        break;
+      case 'b':
+        result += '\b';
+        i += 1;
+        break;
+      case 'f':
+        result += '\f';
+        i += 1;
+        break;
+      case 'v':
+        result += '\v';
+        i += 1;
+        break;
+      case 'a':
+        result += '\x07';
+        i += 1;
+        break;
+      case '0':
+      case '1':
+      case '2':
+      case '3':
+      case '4':
+      case '5':
+      case '6':
+      case '7': {
+        const m = /^[0-7]{1,3}/.exec(body.slice(i + 1));
+        const oct = m ? m[0] : '';
+        result += String.fromCharCode(Number.parseInt(oct, 8));
+        i += oct.length;
+        break;
+      }
+      case 'x':
+      case 'X': {
+        const m = /^[0-9a-fA-F]{2}/.exec(body.slice(i + 2));
+        if (m) {
+          result += String.fromCharCode(Number.parseInt(m[0], 16));
+          i += 1 + m[0].length;
+        } else {
+          result += next;
+          i += 1;
+        }
+        break;
+      }
+      case 'u': {
+        const m = /^[0-9a-fA-F]{4}/.exec(body.slice(i + 2));
+        if (m) {
+          result += String.fromCharCode(Number.parseInt(m[0], 16));
+          i += 1 + m[0].length;
+        } else {
+          result += next;
+          i += 1;
+        }
+        break;
+      }
+      case 'U': {
+        const m = /^[0-9a-fA-F]{8}/.exec(body.slice(i + 2));
+        if (m) {
+          result += String.fromCodePoint(Number.parseInt(m[0], 16));
+          i += 1 + m[0].length;
+        } else {
+          result += next;
+          i += 1;
+        }
+        break;
+      }
+      case undefined:
+        result += '\\';
+        break;
+      default:
+        // \\ \' \" \` \? and anything else → the literal next char.
+        result += next;
+        i += 1;
+        break;
+    }
+  }
+  return result;
+}
+
+/** Encode a value as a DuckDB single-quoted literal (doubling `'`). */
+function encodeDuckString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 function extractStringLiteral(tok: Token | undefined): string | null {
   if (tok === undefined) return null;
-  if (tok.kind === 'string') return tok.value.slice(1, -1);
+  if (tok.kind === 'string') return decodeBqString(tok.value);
   if (tok.kind === 'raw-string') return tok.value.replace(/^[rR]/, '').slice(1, -1);
   return null;
 }

@@ -1,23 +1,27 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:54:26.944Z"
+    "capturedAt": "2026-05-26T19:54:34.612Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "nested_string",
+        "name": "dq",
         "type": "STRING"
       },
       {
-        "name": "array_idx",
+        "name": "sq",
         "type": "STRING"
       },
       {
-        "name": "null_val",
+        "name": "apostrophe_in_double",
         "type": "STRING"
       },
       {
-        "name": "missing_path",
+        "name": "quote_in_single",
+        "type": "STRING"
+      },
+      {
+        "name": "concat_double",
         "type": "STRING"
       }
     ]
@@ -26,16 +30,19 @@
     {
       "f": [
         {
-          "v": "hello"
+          "v": "double"
         },
         {
-          "v": "20"
+          "v": "single"
         },
         {
-          "v": null
+          "v": "it's a test"
         },
         {
-          "v": null
+          "v": "say \"hi\""
+        },
+        {
+          "v": "abc"
         }
       ]
     }

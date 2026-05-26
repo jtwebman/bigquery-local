@@ -1,31 +1,31 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:54:33.609Z"
+    "capturedAt": "2026-05-26T19:54:34.909Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "lpadded",
+        "name": "tab_escape",
         "type": "STRING"
       },
       {
-        "name": "rpadded",
+        "name": "newline_escape",
         "type": "STRING"
       },
       {
-        "name": "trimmed",
+        "name": "escaped_quote",
         "type": "STRING"
       },
       {
-        "name": "ltrimmed",
+        "name": "unicode_escape",
         "type": "STRING"
       },
       {
-        "name": "repeated",
+        "name": "hex_escape",
         "type": "STRING"
       },
       {
-        "name": "reversed",
+        "name": "raw_no_escape",
         "type": "STRING"
       }
     ]
@@ -34,22 +34,22 @@
     {
       "f": [
         {
-          "v": "005"
+          "v": "tab\there"
         },
         {
-          "v": "500"
+          "v": "line1\nline2"
         },
         {
-          "v": "hello"
+          "v": "quote's"
         },
         {
-          "v": "hello"
+          "v": "ABC"
         },
         {
-          "v": "ababab"
+          "v": "AB"
         },
         {
-          "v": "olleh"
+          "v": "raw\\nstring"
         }
       ]
     }

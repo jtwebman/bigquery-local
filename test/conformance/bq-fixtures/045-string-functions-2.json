@@ -1,0 +1,73 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:54:35.715Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "starts",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "ends",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "pos",
+        "type": "INTEGER"
+      },
+      {
+        "name": "replaced",
+        "type": "STRING"
+      },
+      {
+        "name": "lowered",
+        "type": "STRING"
+      },
+      {
+        "name": "uppered",
+        "type": "STRING"
+      },
+      {
+        "name": "len",
+        "type": "INTEGER"
+      },
+      {
+        "name": "char_len",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "true"
+        },
+        {
+          "v": "true"
+        },
+        {
+          "v": "7"
+        },
+        {
+          "v": "bbb"
+        },
+        {
+          "v": "hello"
+        },
+        {
+          "v": "HELLO"
+        },
+        {
+          "v": "5"
+        },
+        {
+          "v": "5"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

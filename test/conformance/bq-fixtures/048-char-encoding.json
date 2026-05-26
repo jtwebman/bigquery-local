@@ -1,0 +1,73 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:54:36.542Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "accented",
+        "type": "STRING"
+      },
+      {
+        "name": "emoji",
+        "type": "STRING"
+      },
+      {
+        "name": "japanese",
+        "type": "STRING"
+      },
+      {
+        "name": "char_len",
+        "type": "INTEGER"
+      },
+      {
+        "name": "byte_len",
+        "type": "INTEGER"
+      },
+      {
+        "name": "jp_char_len",
+        "type": "INTEGER"
+      },
+      {
+        "name": "jp_byte_len",
+        "type": "INTEGER"
+      },
+      {
+        "name": "uppered",
+        "type": "STRING"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "héllo"
+        },
+        {
+          "v": "café ☕"
+        },
+        {
+          "v": "日本語"
+        },
+        {
+          "v": "5"
+        },
+        {
+          "v": "6"
+        },
+        {
+          "v": "3"
+        },
+        {
+          "v": "9"
+        },
+        {
+          "v": "CAFÉ"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

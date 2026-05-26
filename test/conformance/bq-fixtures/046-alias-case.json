@@ -1,27 +1,27 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:54:24.542Z"
+    "capturedAt": "2026-05-26T19:54:35.944Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "plain_null",
+        "name": "MyColumn",
         "type": "INTEGER"
       },
       {
-        "name": "typed_null",
+        "name": "UPPER_CASE",
         "type": "INTEGER"
       },
       {
-        "name": "ifnull_str",
-        "type": "STRING"
-      },
-      {
-        "name": "coalesce_int",
+        "name": "camelCase",
         "type": "INTEGER"
       },
       {
-        "name": "nullif_eq",
+        "name": "snake_case",
+        "type": "INTEGER"
+      },
+      {
+        "name": "PascalCase",
         "type": "INTEGER"
       }
     ]
@@ -30,19 +30,19 @@
     {
       "f": [
         {
-          "v": null
+          "v": "1"
         },
         {
-          "v": null
+          "v": "2"
         },
         {
-          "v": "fallback"
+          "v": "3"
         },
         {
-          "v": "42"
+          "v": "4"
         },
         {
-          "v": null
+          "v": "5"
         }
       ]
     }

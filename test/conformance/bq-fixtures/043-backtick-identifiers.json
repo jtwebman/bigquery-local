@@ -1,19 +1,15 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:54:23.596Z"
+    "capturedAt": "2026-05-26T19:54:35.200Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "up",
-        "type": "STRING"
-      },
-      {
-        "name": "len",
+        "name": "my col",
         "type": "INTEGER"
       },
       {
-        "name": "joined",
+        "name": "select",
         "type": "STRING"
       }
     ]
@@ -22,13 +18,10 @@
     {
       "f": [
         {
-          "v": "HELLO"
+          "v": "1"
         },
         {
-          "v": "5"
-        },
-        {
-          "v": "abc"
+          "v": "x"
         }
       ]
     }

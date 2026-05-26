@@ -10,6 +10,57 @@ function norm(sql: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// String literals: BQ `"..."` is a string (DuckDB identifier quote);
+// escapes are interpreted (DuckDB `'...'` does not).
+// ---------------------------------------------------------------------------
+
+test('translate: double-quoted string becomes a single-quoted literal', () => {
+  assert.equal(norm(translate('SELECT "hello"', { project: 'p' }).sql), "SELECT 'hello'");
+});
+
+test('translate: apostrophe inside a double-quoted string is doubled', () => {
+  assert.equal(norm(translate(`SELECT "it's"`, { project: 'p' }).sql), "SELECT 'it''s'");
+});
+
+test('translate: double-quote inside a single-quoted string survives', () => {
+  assert.equal(norm(translate(`SELECT 'say "hi"'`, { project: 'p' }).sql), 'SELECT \'say "hi"\'');
+});
+
+test('translate: backslash escapes decode (\\n \\t \\r \\b \\f \\v \\a)', () => {
+  const { sql } = translate("SELECT '\\n\\t\\r\\b\\f\\v\\a'", { project: 'p' });
+  // Each escape decodes to its control char, then re-emits inside '...'.
+  assert.equal(sql, "SELECT '\n\t\r\b\f\v\x07'");
+});
+
+test('translate: hex / unicode escapes decode', () => {
+  assert.equal(norm(translate("SELECT '\\x41\\x42'", { project: 'p' }).sql), "SELECT 'AB'");
+  assert.equal(
+    norm(translate("SELECT '\\u0041\\u0042\\u0043'", { project: 'p' }).sql),
+    "SELECT 'ABC'",
+  );
+  assert.equal(norm(translate("SELECT '\\U00000041'", { project: 'p' }).sql), "SELECT 'A'");
+});
+
+test('translate: octal escape decodes', () => {
+  assert.equal(norm(translate("SELECT '\\101'", { project: 'p' }).sql), "SELECT 'A'");
+});
+
+test('translate: escaped quote and backslash decode', () => {
+  assert.equal(norm(translate("SELECT '\\'x\\\\y'", { project: 'p' }).sql), "SELECT '''x\\y'");
+});
+
+test('translate: raw string keeps backslashes literal', () => {
+  assert.equal(
+    norm(translate("SELECT r'raw\\nstring'", { project: 'p' }).sql),
+    "SELECT 'raw\\nstring'",
+  );
+});
+
+test('translate: triple-quoted string decodes like a normal string', () => {
+  assert.equal(norm(translate(`SELECT """hi"""`, { project: 'p' }).sql), "SELECT 'hi'");
+});
+
+// ---------------------------------------------------------------------------
 // Backticks
 // ---------------------------------------------------------------------------
 

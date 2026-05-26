@@ -1,16 +1,16 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:54:29.856Z"
+    "capturedAt": "2026-05-26T19:54:36.243Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "x",
+        "name": "v",
         "type": "INTEGER"
       },
       {
-        "name": "in_set",
-        "type": "BOOLEAN"
+        "name": "label",
+        "type": "STRING"
       }
     ]
   },
@@ -18,44 +18,54 @@
     {
       "f": [
         {
-          "v": "10"
+          "v": null
         },
         {
-          "v": "true"
+          "v": "b"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "15"
+          "v": null
         },
         {
-          "v": "false"
+          "v": "d"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "20"
+          "v": "1"
         },
         {
-          "v": "true"
+          "v": "c"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "25"
+          "v": "2"
         },
         {
-          "v": "false"
+          "v": "a"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "3"
+        },
+        {
+          "v": "e"
         }
       ]
     }
   ],
-  "totalRows": "4",
+  "totalRows": "5",
   "jobComplete": true
 }

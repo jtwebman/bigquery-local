@@ -57,6 +57,9 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
   // Anchor DuckDB's session timezone to UTC so unzone'd TIMESTAMP literals
   // (which BQ treats as UTC) don't drift through the host's local zone.
   await connection.run("SET TimeZone='UTC'");
+  // BQ treats NULL as the smallest value: NULLs first in ASC, last in
+  // DESC. DuckDB defaults to NULLs-last for both.
+  await connection.run("SET default_null_order = 'nulls_first_on_asc_last_on_desc'");
   // Spatial extension backs the GEOGRAPHY type and every ST_* function.
   // Auto-installs on first run; subsequent runs load from the cached
   // copy in DUCKDB_HOME (default `~/.duckdb`). On Windows, multiple
