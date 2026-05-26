@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:55:34.973Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "int_div_returns_float",
+        "type": "FLOAT"
+      },
+      {
+        "name": "exact_div",
+        "type": "FLOAT"
+      },
+      {
+        "name": "explicit_float",
+        "type": "FLOAT"
+      },
+      {
+        "name": "float_div",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "2.5"
+        },
+        {
+          "v": "3.0"
+        },
+        {
+          "v": "2.5"
+        },
+        {
+          "v": "3.5"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

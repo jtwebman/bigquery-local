@@ -1513,6 +1513,25 @@ function handleIdentifier(
   if (tok === undefined) return i + 1;
   const upper = tok.value.toUpperCase();
 
+  // `SELECT * EXCEPT (cols)` → DuckDB `* EXCLUDE (cols)`. Only when EXCEPT
+  // directly follows `*` and precedes `(` — otherwise it's the set operator.
+  if (upper === 'EXCEPT') {
+    let prevIdx = i - 1;
+    while (prevIdx >= 0 && isSkippable(tokens[prevIdx] as Token)) prevIdx -= 1;
+    const prev = prevIdx >= 0 ? tokens[prevIdx] : undefined;
+    const nextIdx = skipWhitespace(tokens, i + 1, endIdx);
+    const next = nextIdx !== null ? tokens[nextIdx] : undefined;
+    if (
+      prev?.kind === 'operator' &&
+      prev.value === '*' &&
+      next?.kind === 'punctuation' &&
+      next.value === '('
+    ) {
+      out.push('EXCLUDE');
+      return i + 1;
+    }
+  }
+
   // `SAFE.<FN>(args)` — BQ's SAFE prefix wraps any scalar function so errors
   // return NULL. DuckDB has `try(expr)` with the same semantics; emit
   // `try(<FN>(args))` after recursing through the args.
@@ -1706,11 +1725,25 @@ function handleIdentifier(
             const followIdx = skipWhitespace(tokens, nameIdx + 1, endIdx);
             const follow = followIdx !== null ? tokens[followIdx] : undefined;
             const alreadyHasColAlias = follow?.kind === 'punctuation' && follow.value === '(';
+            const colName =
+              nameTok.kind === 'backtick-identifier' ? nameTok.value.slice(1, -1) : nameTok.value;
+            const q = (s: string): string => `"${s.replace(/"/g, '""')}"`;
+
+            // `UNNEST(arr) AS elem WITH OFFSET [AS idx]` — DuckDB has no
+            // WITH OFFSET; emit a parallel unnest over range(len(arr)).
+            const offset = followIdx !== null ? parseWithOffset(tokens, followIdx, endIdx) : null;
+            if (offset !== null && !alreadyHasColAlias) {
+              const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+              out.push(
+                `(SELECT UNNEST(${inner}) AS ${q(colName)}, ` +
+                  `UNNEST(range(0, len(${inner}))) AS ${q(offset.name)}) AS _unnest_offset`,
+              );
+              return offset.nextIdx;
+            }
+
             if (!alreadyHasColAlias) {
               const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
-              const colName =
-                nameTok.kind === 'backtick-identifier' ? nameTok.value.slice(1, -1) : nameTok.value;
-              out.push(`UNNEST(${inner}) AS _unnest_alias("${colName.replace(/"/g, '""')}")`);
+              out.push(`UNNEST(${inner}) AS _unnest_alias(${q(colName)})`);
               return nameIdx + 1;
             }
           }
@@ -1856,6 +1889,49 @@ function handleIdentifier(
       const args = splitCallArgs(tokens, parenIdx, close, paramOrder, project);
       const nullCheck = args.map((a) => `(${a}) IS NULL`).join(' OR ');
       out.push(`CASE WHEN ${nullCheck} THEN NULL ELSE ${upper}(${args.join(', ')}) END`);
+      return close + 1;
+    }
+
+    case 'SAFE_ADD':
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (a, b) => `TRY(${a} + ${b})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'SAFE_SUBTRACT':
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (a, b) => `TRY(${a} - ${b})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'SAFE_MULTIPLY':
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (a, b) => `TRY(${a} * ${b})`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
+
+    case 'SAFE_NEGATE': {
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project).trim();
+      out.push(`TRY(-(${inner}))`);
       return close + 1;
     }
 
@@ -2606,6 +2682,36 @@ function decodeBqString(raw: string): string {
 /** Encode a value as a DuckDB single-quoted literal (doubling `'`). */
 function encodeDuckString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** Parse `WITH OFFSET [AS <name>]` starting at `withIdx`. Returns the
+ * offset column name and the index just past the clause, or null if the
+ * tokens aren't a WITH OFFSET clause. */
+function parseWithOffset(
+  tokens: readonly Token[],
+  withIdx: number,
+  endIdx: number,
+): { name: string; nextIdx: number } | null {
+  const withTok = tokens[withIdx];
+  if (withTok?.kind !== 'identifier' || withTok.value.toUpperCase() !== 'WITH') return null;
+  const offIdx = skipWhitespace(tokens, withIdx + 1, endIdx);
+  const offTok = offIdx !== null ? tokens[offIdx] : undefined;
+  if (offTok?.kind !== 'identifier' || offTok.value.toUpperCase() !== 'OFFSET' || offIdx === null) {
+    return null;
+  }
+  let name = 'offset';
+  let nextIdx = offIdx + 1;
+  const asIdx = skipWhitespace(tokens, offIdx + 1, endIdx);
+  const asTok = asIdx !== null ? tokens[asIdx] : undefined;
+  if (asTok?.kind === 'identifier' && asTok.value.toUpperCase() === 'AS' && asIdx !== null) {
+    const nameIdx = skipWhitespace(tokens, asIdx + 1, endIdx);
+    const nameTok = nameIdx !== null ? tokens[nameIdx] : undefined;
+    if ((nameTok?.kind === 'identifier' || nameTok?.kind === 'backtick-identifier') && nameIdx !== null) {
+      name = nameTok.kind === 'backtick-identifier' ? nameTok.value.slice(1, -1) : nameTok.value;
+      nextIdx = nameIdx + 1;
+    }
+  }
+  return { name, nextIdx };
 }
 
 function extractStringLiteral(tok: Token | undefined): string | null {

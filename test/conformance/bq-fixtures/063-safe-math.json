@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:55:34.692Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "overflow_add",
+        "type": "INTEGER"
+      },
+      {
+        "name": "overflow_mul",
+        "type": "INTEGER"
+      },
+      {
+        "name": "negate_ok",
+        "type": "INTEGER"
+      },
+      {
+        "name": "normal_add",
+        "type": "INTEGER"
+      },
+      {
+        "name": "div_zero",
+        "type": "FLOAT"
+      },
+      {
+        "name": "div_ok",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": null
+        },
+        {
+          "v": null
+        },
+        {
+          "v": "-42"
+        },
+        {
+          "v": "30"
+        },
+        {
+          "v": null
+        },
+        {
+          "v": "2.5"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

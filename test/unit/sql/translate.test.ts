@@ -452,3 +452,60 @@ test('translate: LEAST guards NULL args', () => {
   const { sql } = translate('SELECT LEAST(a, b, c) AS l FROM t', { project: 'p' });
   assert.match(norm(sql), /CASE WHEN .* THEN NULL ELSE LEAST\(a, b, c\) END/);
 });
+
+// ---------------------------------------------------------------------------
+// SAFE_* math, EXCEPT/EXCLUDE, UNNEST WITH OFFSET, date parts
+// ---------------------------------------------------------------------------
+
+test('translate: SAFE_ADD/SUBTRACT/MULTIPLY become TRY(...)', () => {
+  assert.match(norm(translate('SELECT SAFE_ADD(a, b)', { project: 'p' }).sql), /TRY\(a \+ b\)/);
+  assert.match(norm(translate('SELECT SAFE_SUBTRACT(a, b)', { project: 'p' }).sql), /TRY\(a - b\)/);
+  assert.match(
+    norm(translate('SELECT SAFE_MULTIPLY(a, b)', { project: 'p' }).sql),
+    /TRY\(a \* b\)/,
+  );
+});
+
+test('translate: SAFE_NEGATE becomes TRY(-(...))', () => {
+  assert.match(norm(translate('SELECT SAFE_NEGATE(x)', { project: 'p' }).sql), /TRY\(-\(x\)\)/);
+});
+
+test('translate: SELECT * EXCEPT (col) becomes * EXCLUDE (col)', () => {
+  assert.match(
+    norm(translate('SELECT * EXCEPT (b) FROM t', { project: 'p' }).sql),
+    /\* EXCLUDE \(b\)/,
+  );
+});
+
+test('translate: set-operator EXCEPT is left alone', () => {
+  const { sql } = translate('SELECT a FROM t EXCEPT SELECT a FROM u', { project: 'p' });
+  assert.match(norm(sql), /FROM t EXCEPT SELECT/);
+});
+
+test('translate: UNNEST WITH OFFSET becomes a parallel range unnest', () => {
+  const { sql } = translate('SELECT e, i FROM UNNEST([1, 2]) AS e WITH OFFSET AS i', {
+    project: 'p',
+  });
+  assert.match(
+    norm(sql),
+    /UNNEST\(\[1, 2\]\) AS "e", UNNEST\(range\(0, len\(\[1, 2\]\)\)\) AS "i"/,
+  );
+});
+
+test('translate: DATE_SUB becomes (date - interval) cast to DATE', () => {
+  const { sql } = translate("SELECT DATE_SUB(DATE '2025-01-01', INTERVAL 1 DAY)", { project: 'p' });
+  assert.match(norm(sql), /CAST\(\(DATE '2025-01-01' - INTERVAL 1 DAY\) AS DATE\)/);
+});
+
+test('translate: DATE_TRUNC WEEK shifts to Sunday-based', () => {
+  const { sql } = translate("SELECT DATE_TRUNC(DATE '2025-08-15', WEEK)", { project: 'p' });
+  assert.match(
+    norm(sql),
+    /date_trunc\('week', DATE '2025-08-15' \+ INTERVAL 1 DAY\) - INTERVAL 1 DAY/,
+  );
+});
+
+test('translate: EXTRACT(ISOWEEK) maps to week', () => {
+  const { sql } = translate("SELECT EXTRACT(ISOWEEK FROM DATE '2025-01-05')", { project: 'p' });
+  assert.match(norm(sql), /EXTRACT\(week FROM DATE '2025-01-05'\)/);
+});

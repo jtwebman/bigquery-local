@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:55:37.027Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "whitespace_int",
+        "type": "INTEGER"
+      },
+      {
+        "name": "negative_int",
+        "type": "INTEGER"
+      },
+      {
+        "name": "bool_to_int",
+        "type": "INTEGER"
+      },
+      {
+        "name": "zero_to_bool",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "one_to_bool",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "string_to_float",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "42"
+        },
+        {
+          "v": "-17"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "false"
+        },
+        {
+          "v": "true"
+        },
+        {
+          "v": "3.99"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

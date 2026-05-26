@@ -1,0 +1,10 @@
+WITH t AS (
+  SELECT 'a' AS k, 1 AS v UNION ALL
+  SELECT 'b', 2 UNION ALL
+  SELECT 'a', 3 UNION ALL
+  SELECT 'b', 4
+)
+SELECT k, SUM(v) AS total
+FROM t
+GROUP BY 1
+ORDER BY 2 DESC

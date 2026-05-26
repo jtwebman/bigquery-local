@@ -1088,6 +1088,15 @@ Fixed: translator rewrites `STRUCT(<expr> AS <name>, ...)` →
 `STRUCT(<expr>, ...)` falls back to row-expression form. Wire shape
 matches real BQ — `bq-fixtures/009-struct-literal` confirms.
 
+### SAFE_NEGATE(INT64_MIN) doesn't overflow ⏳
+
+`SAFE_NEGATE(-9223372036854775808)` returns NULL in BQ (negating INT64
+min overflows INT64) but DuckDB promotes the operand to a wider int so
+`TRY(-(...))` yields 9223372036854775808 instead of NULL. Matching
+would require casting the operand to BIGINT *only when it's an integer*
+— the translator doesn't carry operand types. Extreme edge; SAFE_NEGATE
+works for all other inputs.
+
 ### FORMAT %t / %T specifiers ⏳
 
 BQ's `FORMAT()` supports `%t` (compact type-aware string) and `%T`

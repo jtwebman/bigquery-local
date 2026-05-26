@@ -1,0 +1,7 @@
+SELECT
+  SAFE_ADD(9223372036854775807, 1) AS overflow_add,
+  SAFE_MULTIPLY(9223372036854775807, 2) AS overflow_mul,
+  SAFE_NEGATE(42) AS negate_ok,
+  SAFE_ADD(10, 20) AS normal_add,
+  SAFE_DIVIDE(10, 0) AS div_zero,
+  SAFE_DIVIDE(10, 4) AS div_ok

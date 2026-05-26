@@ -1,0 +1,41 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:55:36.600Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "k",
+        "type": "STRING"
+      },
+      {
+        "name": "total",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "b"
+        },
+        {
+          "v": "6"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "a"
+        },
+        {
+          "v": "4"
+        }
+      ]
+    }
+  ],
+  "totalRows": "2",
+  "jobComplete": true
+}

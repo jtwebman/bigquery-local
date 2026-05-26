@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:55:35.230Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "in_present",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "in_match",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "not_in_absent",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "in_with_null",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "not_in_with_null",
+        "type": "BOOLEAN"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "false"
+        },
+        {
+          "v": "true"
+        },
+        {
+          "v": "true"
+        },
+        {
+          "v": null
+        },
+        {
+          "v": null
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}
