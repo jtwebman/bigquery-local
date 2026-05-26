@@ -96,6 +96,21 @@ test('PATCH /tables preserves labels when not in the body', async () => {
   assert.deepEqual(body.labels, { team: 'data', env: 'prod' });
 });
 
+test('PATCH /tables accepts null label values (Go client delete pattern)', async () => {
+  // Google's Go client sends `NullFields = ["Labels.<key>"]` for label
+  // deletion, which the api-go-client serializes as an explicit JSON
+  // null. The server treats those entries as "not part of the new
+  // labels map," matching real BQ behavior.
+  const patch = await fetch(`${server.url}/projects/${PROJECT}/datasets/d1/tables/t1`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ labels: { team: 'data', env: null } }),
+  });
+  assert.equal(patch.status, 200);
+  const body = (await patch.json()) as { labels?: Record<string, string> };
+  assert.deepEqual(body.labels, { team: 'data' });
+});
+
 test('Non-string label value returns 400', async () => {
   const res = await fetch(`${server.url}/projects/${PROJECT}/datasets/d1/tables`, {
     method: 'POST',

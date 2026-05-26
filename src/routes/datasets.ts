@@ -28,6 +28,7 @@ import {
 } from '../storage/meta.ts';
 import type { RouteDefinition, RouteRequest, RouteResponse } from '../types.ts';
 import { BqError } from '../util/errors.ts';
+import { expectLabels } from '../util/labels.ts';
 
 // ---------------------------------------------------------------------------
 // Wire-format types
@@ -110,20 +111,6 @@ function expectNonNegativeInteger(value: unknown, field: string): number {
     `${field} must be a non-negative integer (number or numeric string).`,
     field,
   );
-}
-
-function expectLabels(value: unknown, field: string): Record<string, string> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw BqError.invalid(`${field} must be an object of string keys and string values.`, field);
-  }
-  const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof v !== 'string') {
-      throw BqError.invalid(`${field}.${k} must be a string.`, `${field}.${k}`);
-    }
-    result[k] = v;
-  }
-  return result;
 }
 
 interface ParsedDatasetBody {

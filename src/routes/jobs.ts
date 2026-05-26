@@ -33,6 +33,7 @@ import type { BqField, BqMode } from '../storage/types.ts';
 import { normalizeBqType } from '../storage/types.ts';
 import type { RouteDefinition, RouteResponse } from '../types.ts';
 import { BqError } from '../util/errors.ts';
+import { expectLabels } from '../util/labels.ts';
 
 // ---------------------------------------------------------------------------
 // Wire format — Job resource (bigquery#job)
@@ -233,20 +234,6 @@ interface ParsedQueryJob {
   readonly useQueryCache?: boolean;
 }
 
-function expectLabelsMap(value: unknown, field: string): Readonly<Record<string, string>> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw BqError.invalid(`${field} must be an object of string keys and string values.`, field);
-  }
-  const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof v !== 'string') {
-      throw BqError.invalid(`${field}.${k} must be a string.`, `${field}.${k}`);
-    }
-    result[k] = v;
-  }
-  return result;
-}
-
 interface ParsedLoadJob {
   readonly kind: 'load';
   readonly jobIdHint?: string;
@@ -330,7 +317,7 @@ function parseJobBody(body: unknown): ParsedJobBody {
 
   let labels: Readonly<Record<string, string>> | undefined;
   if (configuration['labels'] !== undefined) {
-    labels = expectLabelsMap(configuration['labels'], 'configuration.labels');
+    labels = expectLabels(configuration['labels'], 'configuration.labels');
   }
 
   // BL-157 — useQueryCache. Defaults to true (matches BQ). Accept on

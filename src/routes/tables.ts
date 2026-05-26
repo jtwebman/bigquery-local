@@ -54,6 +54,7 @@ import {
 } from '../storage/types.ts';
 import type { RouteDefinition, RouteRequest, RouteResponse } from '../types.ts';
 import { BqError } from '../util/errors.ts';
+import { expectLabels } from '../util/labels.ts';
 
 // ---------------------------------------------------------------------------
 // Wire-format types
@@ -241,20 +242,6 @@ interface ParsedTableBody {
   readonly timePartitioning?: TimePartitioningInput;
   readonly clustering?: ClusteringInput;
   readonly labels?: Record<string, string>;
-}
-
-function expectLabels(value: unknown, field: string): Record<string, string> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw BqError.invalid(`${field} must be an object of string keys and string values.`, field);
-  }
-  const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof v !== 'string') {
-      throw BqError.invalid(`${field}.${k} must be a string.`, `${field}.${k}`);
-    }
-    result[k] = v;
-  }
-  return result;
 }
 
 function parseTableBody(body: unknown): ParsedTableBody {

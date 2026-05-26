@@ -18,7 +18,7 @@ import (
 // Labels (BL-154)
 // ---------------------------------------------------------------------------
 
-func TestTableLabelsCreateRoundTrip(t *testing.T) {
+func TestTableLabelsRoundTripViaCreateAndPatch(t *testing.T) {
 	ctx := context.Background()
 	client, _ := newClient(t)
 	if err := client.Dataset("ds").Create(ctx, &bigquery.DatasetMetadata{}); err != nil {
@@ -37,6 +37,20 @@ func TestTableLabelsCreateRoundTrip(t *testing.T) {
 	}
 	if md.Labels["team"] != "platform" || md.Labels["env"] != "test" {
 		t.Errorf("labels = %v, want {team:platform, env:test}", md.Labels)
+	}
+	// PATCH replaces by deleting env and updating team.
+	update := bigquery.TableMetadataToUpdate{}
+	update.SetLabel("team", "data")
+	update.DeleteLabel("env")
+	if _, err := tbl.Update(ctx, update, md.ETag); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	md2, _ := tbl.Metadata(ctx)
+	if md2.Labels["team"] != "data" {
+		t.Errorf("after update team label = %q, want data", md2.Labels["team"])
+	}
+	if _, exists := md2.Labels["env"]; exists {
+		t.Errorf("env label still present after delete: %v", md2.Labels)
 	}
 }
 
