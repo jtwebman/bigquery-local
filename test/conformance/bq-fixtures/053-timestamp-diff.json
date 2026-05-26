@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:47:21.428Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "days",
+        "type": "INTEGER"
+      },
+      {
+        "name": "months",
+        "type": "INTEGER"
+      },
+      {
+        "name": "weeks",
+        "type": "INTEGER"
+      },
+      {
+        "name": "years",
+        "type": "INTEGER"
+      },
+      {
+        "name": "minutes",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "226"
+        },
+        {
+          "v": "7"
+        },
+        {
+          "v": "32"
+        },
+        {
+          "v": "0"
+        },
+        {
+          "v": "150"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

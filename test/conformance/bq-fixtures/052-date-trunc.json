@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:47:21.144Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "week_start",
+        "type": "DATE"
+      },
+      {
+        "name": "month_start",
+        "type": "DATE"
+      },
+      {
+        "name": "quarter_start",
+        "type": "DATE"
+      },
+      {
+        "name": "year_start",
+        "type": "DATE"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "2025-08-10"
+        },
+        {
+          "v": "2025-08-01"
+        },
+        {
+          "v": "2025-07-01"
+        },
+        {
+          "v": "2025-01-01"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

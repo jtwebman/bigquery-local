@@ -1,0 +1,5 @@
+SELECT
+  DATE_TRUNC(DATE '2025-08-15', WEEK) AS week_start,
+  DATE_TRUNC(DATE '2025-08-15', MONTH) AS month_start,
+  DATE_TRUNC(DATE '2025-08-15', QUARTER) AS quarter_start,
+  DATE_TRUNC(DATE '2025-08-15', YEAR) AS year_start

@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:47:21.636Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "jan_plus_month",
+        "type": "DATE"
+      },
+      {
+        "name": "leap_plus_year",
+        "type": "DATE"
+      },
+      {
+        "name": "feb_end",
+        "type": "DATE"
+      },
+      {
+        "name": "plus_quarter",
+        "type": "DATE"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "2025-02-28"
+        },
+        {
+          "v": "2025-02-28"
+        },
+        {
+          "v": "2025-02-28"
+        },
+        {
+          "v": "2026-03-15"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

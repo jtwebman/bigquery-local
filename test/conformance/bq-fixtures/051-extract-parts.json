@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:47:20.888Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "quarter",
+        "type": "INTEGER"
+      },
+      {
+        "name": "week",
+        "type": "INTEGER"
+      },
+      {
+        "name": "isoweek",
+        "type": "INTEGER"
+      },
+      {
+        "name": "doy",
+        "type": "INTEGER"
+      },
+      {
+        "name": "dow",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "3"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "60"
+        },
+        {
+          "v": "6"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

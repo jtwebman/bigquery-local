@@ -1,0 +1,109 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:47:22.367Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "x",
+        "type": "INTEGER"
+      },
+      {
+        "name": "prev_default",
+        "type": "INTEGER"
+      },
+      {
+        "name": "prev_2_with_default",
+        "type": "INTEGER"
+      },
+      {
+        "name": "next_default",
+        "type": "INTEGER"
+      },
+      {
+        "name": "next_with_default",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "1"
+        },
+        {
+          "v": null
+        },
+        {
+          "v": "-1"
+        },
+        {
+          "v": "2"
+        },
+        {
+          "v": "2"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "2"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "-1"
+        },
+        {
+          "v": "3"
+        },
+        {
+          "v": "3"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "3"
+        },
+        {
+          "v": "2"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "4"
+        },
+        {
+          "v": "4"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "4"
+        },
+        {
+          "v": "3"
+        },
+        {
+          "v": "2"
+        },
+        {
+          "v": null
+        },
+        {
+          "v": "99"
+        }
+      ]
+    }
+  ],
+  "totalRows": "4",
+  "jobComplete": true
+}

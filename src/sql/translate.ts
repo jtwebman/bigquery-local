@@ -1739,25 +1739,36 @@ function handleIdentifier(
 
     case 'DATE_ADD':
     case 'DATE_SUB': {
-      // BQ DATE_ADD / DATE_SUB return DATE. DuckDB returns TIMESTAMP
-      // for DATE + INTERVAL. Wrap in CAST(... AS DATE) so the result
-      // type matches BQ.
-      const close = findMatchingClose(tokens, parenIdx, endIdx);
-      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
-      out.push(`CAST(${upper}(${inner}) AS DATE)`);
-      return close + 1;
+      // DuckDB has no date_sub, and date +/- INTERVAL yields TIMESTAMP.
+      // Emit `(date ± interval)` cast back to DATE to match BQ's type.
+      const op = upper === 'DATE_ADD' ? '+' : '-';
+      return rewriteTwoArg(
+        tokens,
+        parenIdx,
+        endIdx,
+        (d, interval) => `CAST((${d} ${op} ${interval}) AS DATE)`,
+        out,
+        paramOrder,
+        project,
+        tok.value,
+      );
     }
 
     case 'EXTRACT': {
-      // BQ's EXTRACT(DAYOFWEEK FROM x) is Sun=1..Sat=7; DuckDB returns
-      // Sun=0..Sat=6. Add 1 to bridge. Other parts pass through unchanged.
+      // EXTRACT(<part> FROM <expr>). Two BQ↔DuckDB part mismatches:
+      //  - DAYOFWEEK: BQ Sun=1..Sat=7, DuckDB Sun=0..Sat=6 → add 1.
+      //  - ISOWEEK: not a DuckDB specifier; its `week` is already ISO.
       const close = findMatchingClose(tokens, parenIdx, endIdx);
       const firstArgIdx = skipWhitespace(tokens, parenIdx + 1, close);
       const firstArg = firstArgIdx !== null ? tokens[firstArgIdx] : undefined;
-      const isDayOfWeek =
-        firstArg?.kind === 'identifier' && firstArg.value.toUpperCase() === 'DAYOFWEEK';
+      const partName = firstArg?.kind === 'identifier' ? firstArg.value.toUpperCase() : '';
+      if (partName === 'ISOWEEK' && firstArgIdx !== null) {
+        const rest = translateRange(tokens, firstArgIdx + 1, close, paramOrder, project);
+        out.push(`EXTRACT(week${rest})`);
+        return close + 1;
+      }
       const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
-      if (isDayOfWeek) {
+      if (partName === 'DAYOFWEEK') {
         out.push(`(EXTRACT(${inner})::BIGINT + 1)`);
       } else {
         out.push(`EXTRACT(${inner})`);
@@ -1877,20 +1888,26 @@ function handleIdentifier(
         tok.value,
       );
 
-    case 'DATE_TRUNC':
-      // DuckDB's date_trunc always returns TIMESTAMP; BQ's DATE_TRUNC
-      // returns DATE. Cast back so the wire format is YYYY-MM-DD.
-      return rewritePartArg2(
-        tokens,
-        parenIdx,
-        endIdx,
-        'date_trunc',
-        '::DATE',
-        out,
-        paramOrder,
-        project,
-        tok.value,
-      );
+    case 'DATE_TRUNC': {
+      // DuckDB's date_trunc returns TIMESTAMP; BQ's DATE_TRUNC returns DATE.
+      // BQ weeks start Sunday; DuckDB's 'week' starts Monday — shift by a
+      // day on each side so the truncation lands on Sunday.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const commaIdx = findTopLevelComma(tokens, parenIdx + 1, close);
+      if (commaIdx === null) {
+        throw BqError.invalid('DATE_TRUNC requires (date, PART).', tok.value);
+      }
+      const dateArg = translateRange(tokens, parenIdx + 1, commaIdx, paramOrder, project).trim();
+      const part = sliceTokens(tokens, commaIdx + 1, close).trim().toLowerCase();
+      if (part === 'week') {
+        out.push(
+          `CAST((date_trunc('week', ${dateArg} + INTERVAL 1 DAY) - INTERVAL 1 DAY) AS DATE)`,
+        );
+      } else {
+        out.push(`date_trunc('${part}', ${dateArg})::DATE`);
+      }
+      return close + 1;
+    }
 
     case 'FORMAT_TIMESTAMP':
     case 'FORMAT_DATE':

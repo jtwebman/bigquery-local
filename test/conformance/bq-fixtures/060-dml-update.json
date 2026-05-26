@@ -1,0 +1,51 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:47:32.189Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "id",
+        "type": "INTEGER"
+      },
+      {
+        "name": "qty",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "1"
+        },
+        {
+          "v": "20"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "2"
+        },
+        {
+          "v": "40"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "3"
+        },
+        {
+          "v": "30"
+        }
+      ]
+    }
+  ],
+  "totalRows": "3",
+  "jobComplete": true
+}

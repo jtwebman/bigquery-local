@@ -1,0 +1,31 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T21:47:37.903Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "id",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "1"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "3"
+        }
+      ]
+    }
+  ],
+  "totalRows": "2",
+  "jobComplete": true
+}
