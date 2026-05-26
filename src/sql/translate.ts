@@ -112,8 +112,6 @@ const UNSUPPORTED_FUNCTIONS = new Set([
   // FARM_FINGERPRINT uses FarmHash specifically; DuckDB's hash() is a
   // different algorithm and would not return matching values.
   'FARM_FINGERPRINT',
-  // DuckDB has no SHA512.
-  'SHA512',
   // APPROX_COUNT_DISTINCT is supported (BL-045) — pass-through to DuckDB.
   'APPROX_QUANTILES',
   'GENERATE_UUID',
@@ -1844,10 +1842,19 @@ function handleIdentifier(
     case 'SHA256': {
       // BQ hash functions return BYTES (raw digest); DuckDB's return a hex
       // string. Wrap in unhex() so the result is BYTES and TO_HEX behaves
-      // as in BQ. (SHA512 has no DuckDB equivalent — stays unsupported.)
+      // as in BQ.
       const close = findMatchingClose(tokens, parenIdx, endIdx);
       const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
       out.push(`unhex(${upper.toLowerCase()}(${inner}))`);
+      return close + 1;
+    }
+
+    case 'SHA512': {
+      // DuckDB has no sha512; backed by the bq_sha512 UDF (Node crypto),
+      // which returns BYTES directly — see src/storage/db.ts.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      out.push(`bq_sha512(${inner})`);
       return close + 1;
     }
 

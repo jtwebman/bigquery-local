@@ -76,13 +76,15 @@ test('MD5 returns BYTES (base64 on the wire), matching BQ', async () => {
   assert.equal(await scalar("SELECT MD5('abc') AS x"), 'kAFQmDzST7DWlj99KOF/cg==');
 });
 
-test('SHA512 is rejected (DuckDB does not provide it)', async () => {
-  const { status, json } = await postQuery("SELECT SHA512('abc')");
-  assert.equal(status, 400);
+test("SHA512('abc') matches the known vector (Node-backed UDF)", async () => {
   assert.equal(
-    (json as { error: { errors: Array<{ reason: string }> } }).error.errors[0]?.reason,
-    'unsupportedFeature',
+    await scalar("SELECT TO_HEX(SHA512('abc')) AS x"),
+    'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f',
   );
+});
+
+test('SHA512(NULL) is NULL', async () => {
+  assert.equal(await scalar('SELECT SHA512(CAST(NULL AS STRING)) AS x'), null);
 });
 
 test('FARM_FINGERPRINT is rejected (FarmHash-specific; DuckDB hash() differs)', async () => {

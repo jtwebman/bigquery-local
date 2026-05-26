@@ -11,8 +11,20 @@
  * lookups) reuse a single underlying `DuckDBPreparedStatement`.
  */
 
-import { DuckDBInstance } from '@duckdb/node-api';
-import type { DuckDBPreparedStatement, DuckDBValue } from '@duckdb/node-api';
+import { createHash } from 'node:crypto';
+import {
+  BLOB,
+  DuckDBBlobValue,
+  DuckDBInstance,
+  DuckDBScalarFunction,
+  VARCHAR,
+} from '@duckdb/node-api';
+import type {
+  DuckDBDataChunk,
+  DuckDBPreparedStatement,
+  DuckDBValue,
+  DuckDBVector,
+} from '@duckdb/node-api';
 
 export interface DbConfig {
   /** File path, or `:memory:` (the default) for a transient in-memory database. */
@@ -94,6 +106,27 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
     CREATE OR REPLACE MACRO bq_st_dwithin(g1, g2, m) AS
       bq_st_distance(g1, g2) <= m
   `);
+  // SHA-512 has no DuckDB built-in. Back it with Node's crypto via a
+  // scalar UDF returning BYTES (the raw digest), matching BQ's SHA512.
+  connection.registerScalarFunction(
+    DuckDBScalarFunction.create({
+      name: 'bq_sha512',
+      parameterTypes: [VARCHAR],
+      returnType: BLOB,
+      mainFunction: (_info, input: DuckDBDataChunk, output: DuckDBVector) => {
+        const inVec = input.getColumnVector(0);
+        for (let i = 0; i < input.rowCount; i += 1) {
+          const v = inVec.getItem(i);
+          if (v === null) {
+            output.setItem(i, null);
+            continue;
+          }
+          output.setItem(i, new DuckDBBlobValue(createHash('sha512').update(String(v)).digest()));
+        }
+        output.flush();
+      },
+    }),
+  );
   const preparedCache = new Map<string, Promise<DuckDBPreparedStatement>>();
   let closed = false;
 
