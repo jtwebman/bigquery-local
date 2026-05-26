@@ -2011,7 +2011,9 @@ function handleIdentifier(
         throw BqError.invalid('DATE_TRUNC requires (date, PART).', tok.value);
       }
       const dateArg = translateRange(tokens, parenIdx + 1, commaIdx, paramOrder, project).trim();
-      const part = sliceTokens(tokens, commaIdx + 1, close).trim().toLowerCase();
+      const part = sliceTokens(tokens, commaIdx + 1, close)
+        .trim()
+        .toLowerCase();
       if (part === 'week') {
         out.push(
           `CAST((date_trunc('week', ${dateArg} + INTERVAL 1 DAY) - INTERVAL 1 DAY) AS DATE)`,
@@ -2328,13 +2330,14 @@ function rewriteGenerateArray(
   defaultStep = '',
 ): number {
   const close = findMatchingClose(tokens, openParenIdx, endIdx);
-  const hasStep = findTopLevelComma(tokens, openParenIdx + 1, close) !== null
-    ? findTopLevelComma(
-        tokens,
-        (findTopLevelComma(tokens, openParenIdx + 1, close) as number) + 1,
-        close,
-      ) !== null
-    : false;
+  const hasStep =
+    findTopLevelComma(tokens, openParenIdx + 1, close) !== null
+      ? findTopLevelComma(
+          tokens,
+          (findTopLevelComma(tokens, openParenIdx + 1, close) as number) + 1,
+          close,
+        ) !== null
+      : false;
   let inner = translateRange(tokens, openParenIdx + 1, close, paramOrder, project).trim();
   if (inner === '') {
     throw BqError.invalid(`${funcName} requires at least (start, end).`, funcName);
@@ -2757,7 +2760,10 @@ function parseWithOffset(
   if (asTok?.kind === 'identifier' && asTok.value.toUpperCase() === 'AS' && asIdx !== null) {
     const nameIdx = skipWhitespace(tokens, asIdx + 1, endIdx);
     const nameTok = nameIdx !== null ? tokens[nameIdx] : undefined;
-    if ((nameTok?.kind === 'identifier' || nameTok?.kind === 'backtick-identifier') && nameIdx !== null) {
+    if (
+      (nameTok?.kind === 'identifier' || nameTok?.kind === 'backtick-identifier') &&
+      nameIdx !== null
+    ) {
       name = nameTok.kind === 'backtick-identifier' ? nameTok.value.slice(1, -1) : nameTok.value;
       nextIdx = nameIdx + 1;
     }
