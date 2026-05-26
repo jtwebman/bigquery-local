@@ -1088,12 +1088,15 @@ Fixed: translator rewrites `STRUCT(<expr> AS <name>, ...)` →
 `STRUCT(<expr>, ...)` falls back to row-expression form. Wire shape
 matches real BQ — `bq-fixtures/009-struct-literal` confirms.
 
-### `^` operator is XOR in BQ, exponentiation in DuckDB ⏳
+### `^` operator is XOR in BQ, exponentiation in DuckDB ✅
 
-BQ's `a ^ b` is bitwise XOR; DuckDB's `^` is exponentiation. Matching
-needs infix-operator rewriting (`a ^ b` → `xor(a, b)`), which the
-token translator doesn't do for binary operators. Use the `xor(a, b)`
-function form instead. (`&`, `|`, `<<`, `>>` all match.)
+Fixed: the translator rewrites `a ^ b` → `xor(a, b)` via a token
+pre-pass (`rewriteXor`) that extracts the primary expression on each
+side (atom + member/call/subscript postfixes, or a parenthesized
+group) and folds chained `^` left-associatively. The rare
+unparenthesized mix with a higher-precedence binary (`a + b ^ c`)
+associates by primary rather than BQ precedence — parenthesize if it
+matters.
 
 ### INITCAP has no DuckDB equivalent ⏳
 

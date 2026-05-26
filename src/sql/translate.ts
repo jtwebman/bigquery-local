@@ -28,7 +28,7 @@
  */
 
 import { BqError } from '../util/errors.ts';
-import { type Token, tokenize } from './tokenize.ts';
+import { type Token, type TokenKind, tokenize } from './tokenize.ts';
 
 export interface TranslateResult {
   /** DuckDB-ready SQL. */
@@ -168,7 +168,7 @@ const DUCKDB_RESERVED_BUT_BQ_ALLOWED = new Set<string>([
 ]);
 
 export function translate(sql: string, options: TranslateOptions): TranslateResult {
-  const tokens = tokenize(sql);
+  const tokens = rewriteXor(tokenize(sql));
   const paramOrder: string[] = [];
   const out = translateRange(tokens, 0, tokens.length, paramOrder, options.project);
   return { sql: out, paramOrder };
@@ -1191,6 +1191,265 @@ function skipCteBlock(tokens: readonly Token[], start: number): number | null {
     i += 1;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// `^` infix → xor() rewrite
+// ---------------------------------------------------------------------------
+
+// BQ's `^` is bitwise XOR; DuckDB's `^` is exponentiation. The translator is
+// token-based, so we rewrite `a ^ b` into `xor(a, b)` by extracting the
+// primary expression on each side of the operator. Chained `a ^ b ^ c` folds
+// left-associatively. Operand extraction grabs a *primary* (atom plus member
+// access / call / subscript postfixes, or a parenthesized group), so it never
+// wanders into a trailing keyword. The rare unparenthesized mix with a
+// higher-precedence binary (`a + b ^ c`) associates by primary, not BQ
+// precedence — parenthesize if that matters.
+
+function syntheticToken(kind: TokenKind, value: string): Token {
+  return { kind, value, start: 0, end: 0 };
+}
+
+// Keywords that can sit directly before a `(...)` group without making it a
+// function call (`WHERE (...)`, `IN (...)`, etc.). Used to stop left-operand
+// extraction from swallowing the keyword as a callee.
+const KEYWORD_BEFORE_GROUP = new Set<string>([
+  'SELECT',
+  'WHERE',
+  'AND',
+  'OR',
+  'NOT',
+  'ON',
+  'WHEN',
+  'THEN',
+  'ELSE',
+  'CASE',
+  'BY',
+  'IN',
+  'FROM',
+  'HAVING',
+  'RETURNING',
+  'VALUES',
+  'SET',
+  'AS',
+  'OVER',
+  'PARTITION',
+  'BETWEEN',
+  'LIKE',
+  'IS',
+  'USING',
+  'EXISTS',
+  'ALL',
+  'ANY',
+  'SOME',
+  'INTO',
+  'LIMIT',
+  'OFFSET',
+  'QUALIFY',
+  'GROUP',
+  'ORDER',
+]);
+
+function isCalleeIdentifier(tok: Token): boolean {
+  if (tok.kind === 'backtick-identifier') return true;
+  return tok.kind === 'identifier' && !KEYWORD_BEFORE_GROUP.has(tok.value.toUpperCase());
+}
+
+function rewriteXor(tokens: readonly Token[]): readonly Token[] {
+  let arr = tokens.slice();
+  let searchFrom = 0;
+  while (true) {
+    let k = -1;
+    for (let idx = searchFrom; idx < arr.length; idx += 1) {
+      const t = arr[idx];
+      if (t?.kind === 'operator' && t.value === '^') {
+        k = idx;
+        break;
+      }
+    }
+    if (k === -1) return arr;
+    const left = leftPrimaryRange(arr, k);
+    const right = rightPrimaryRange(arr, k);
+    if (left === null || right === null) {
+      searchFrom = k + 1;
+      continue;
+    }
+    arr = [
+      ...arr.slice(0, left.start),
+      syntheticToken('identifier', 'xor'),
+      syntheticToken('punctuation', '('),
+      ...arr.slice(left.start, left.endExcl),
+      syntheticToken('punctuation', ', '),
+      ...arr.slice(right.start, right.endExcl),
+      syntheticToken('punctuation', ')'),
+      ...arr.slice(right.endExcl),
+    ];
+    searchFrom = 0;
+  }
+}
+
+function isOpenBracket(tok: Token): boolean {
+  return (
+    tok.kind === 'punctuation' && (tok.value === '(' || tok.value === '[' || tok.value === '{')
+  );
+}
+
+function isCloseBracket(tok: Token): boolean {
+  return (
+    tok.kind === 'punctuation' && (tok.value === ')' || tok.value === ']' || tok.value === '}')
+  );
+}
+
+function isAtomToken(tok: Token): boolean {
+  return (
+    tok.kind === 'identifier' ||
+    tok.kind === 'backtick-identifier' ||
+    tok.kind === 'number' ||
+    tok.kind === 'string' ||
+    tok.kind === 'raw-string' ||
+    tok.kind === 'bytes' ||
+    tok.kind === 'raw-bytes' ||
+    tok.kind === 'parameter'
+  );
+}
+
+function prevNonSkippable(tokens: readonly Token[], start: number): number {
+  let i = start;
+  while (i >= 0 && isSkippable(tokens[i] as Token)) i -= 1;
+  return i;
+}
+
+/** Index of the bracket that closes the one opened at `openIdx`, tracking all
+ *  bracket kinds. Returns -1 if unbalanced. */
+function matchBracketForward(tokens: readonly Token[], openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < tokens.length; i += 1) {
+    const tok = tokens[i] as Token;
+    if (isOpenBracket(tok)) depth += 1;
+    else if (isCloseBracket(tok)) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Index of the bracket that opens the one closed at `closeIdx`. */
+function matchBracketBackward(tokens: readonly Token[], closeIdx: number): number {
+  let depth = 0;
+  for (let i = closeIdx; i >= 0; i -= 1) {
+    const tok = tokens[i] as Token;
+    if (isCloseBracket(tok)) depth += 1;
+    else if (isOpenBracket(tok)) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** The primary expression immediately right of the `^` at index `k`. */
+function rightPrimaryRange(
+  tokens: readonly Token[],
+  k: number,
+): { start: number; endExcl: number } | null {
+  let i = nextNonSkippable(tokens, k + 1);
+  if (i >= tokens.length) return null;
+  const start = i;
+  // Leading unary operators bind tighter than `^`.
+  while (i < tokens.length) {
+    const t = tokens[i] as Token;
+    if (t.kind === 'operator' && (t.value === '-' || t.value === '+' || t.value === '~')) {
+      i = nextNonSkippable(tokens, i + 1);
+    } else break;
+  }
+  const atomEnd = consumeAtomForward(tokens, i);
+  if (atomEnd < 0) return null;
+  return { start, endExcl: atomEnd };
+}
+
+/** Index just past the atom (with postfix `.`/call/subscript) starting at `i`. */
+function consumeAtomForward(tokens: readonly Token[], i: number): number {
+  const tok = tokens[i];
+  if (tok === undefined) return -1;
+  if (isOpenBracket(tok)) {
+    const close = matchBracketForward(tokens, i);
+    return close < 0 ? -1 : close + 1;
+  }
+  if (!isAtomToken(tok)) return -1;
+  let j = i + 1;
+  while (true) {
+    const n = nextNonSkippable(tokens, j);
+    const nt = tokens[n];
+    if (nt === undefined) break;
+    if (nt.kind === 'punctuation' && nt.value === '.') {
+      const m = nextNonSkippable(tokens, n + 1);
+      const mt = tokens[m];
+      if (mt !== undefined && (isAtomToken(mt) || (mt.kind === 'operator' && mt.value === '*'))) {
+        j = m + 1;
+        continue;
+      }
+      break;
+    }
+    if (isOpenBracket(nt)) {
+      const close = matchBracketForward(tokens, n);
+      if (close < 0) break;
+      j = close + 1;
+      continue;
+    }
+    break;
+  }
+  return j;
+}
+
+/** The primary expression immediately left of the `^` at index `k`. */
+function leftPrimaryRange(
+  tokens: readonly Token[],
+  k: number,
+): { start: number; endExcl: number } | null {
+  const end = prevNonSkippable(tokens, k - 1);
+  if (end < 0) return null;
+  const start = consumeAtomBackward(tokens, end);
+  if (start < 0) return null;
+  return { start, endExcl: end + 1 };
+}
+
+/** Start index of the atom (with member chains / call / subscript) ending at `i`. */
+function consumeAtomBackward(tokens: readonly Token[], i: number): number {
+  let cur = i;
+  while (cur >= 0) {
+    const tok = tokens[cur] as Token;
+    if (isCloseBracket(tok)) {
+      const open = matchBracketBackward(tokens, cur);
+      if (open < 0) return -1;
+      const p = prevNonSkippable(tokens, open - 1);
+      const pt = tokens[p];
+      if (p >= 0 && pt !== undefined && (isCalleeIdentifier(pt) || isCloseBracket(pt))) {
+        cur = p;
+        continue;
+      }
+      return open;
+    }
+    if (isAtomToken(tok)) {
+      const p = prevNonSkippable(tokens, cur - 1);
+      const pt = tokens[p];
+      if (p >= 0 && pt?.kind === 'punctuation' && pt.value === '.') {
+        const pp = prevNonSkippable(tokens, p - 1);
+        const ppt = tokens[pp];
+        if (
+          pp >= 0 &&
+          ppt !== undefined &&
+          (ppt.kind === 'identifier' || ppt.kind === 'backtick-identifier' || isCloseBracket(ppt))
+        ) {
+          cur = pp;
+          continue;
+        }
+      }
+      return cur;
+    }
+    return -1;
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------------------

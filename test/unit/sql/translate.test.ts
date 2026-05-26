@@ -509,3 +509,62 @@ test('translate: EXTRACT(ISOWEEK) maps to week', () => {
   const { sql } = translate("SELECT EXTRACT(ISOWEEK FROM DATE '2025-01-05')", { project: 'p' });
   assert.match(norm(sql), /EXTRACT\(week FROM DATE '2025-01-05'\)/);
 });
+
+// ---------------------------------------------------------------------------
+// `^` (XOR) infix → xor() rewrite
+// ---------------------------------------------------------------------------
+
+test('translate: ^ becomes xor() for simple operands', () => {
+  assert.equal(norm(translate('SELECT 5 ^ 3', { project: 'p' }).sql), 'SELECT xor(5, 3)');
+});
+
+test('translate: ^ chains left-associatively', () => {
+  assert.equal(
+    norm(translate('SELECT 1 ^ 2 ^ 3', { project: 'p' }).sql),
+    'SELECT xor(xor(1, 2), 3)',
+  );
+});
+
+test('translate: ^ with parenthesized operands keeps the groups', () => {
+  assert.equal(
+    norm(translate('SELECT (a + 1) ^ (b + 2) FROM t', { project: 'p' }).sql),
+    'SELECT xor((a + 1), (b + 2)) FROM t',
+  );
+});
+
+test('translate: ^ binds member access, calls, and subscripts as primaries', () => {
+  assert.equal(
+    norm(translate('SELECT a.b.c ^ f(x) FROM t', { project: 'p' }).sql),
+    'SELECT xor(a.b.c, f(x)) FROM t',
+  );
+  assert.equal(
+    norm(translate('SELECT arr[0] ^ g(h(y)) FROM t', { project: 'p' }).sql),
+    'SELECT xor(arr[0], g(h(y))) FROM t',
+  );
+});
+
+test('translate: ^ accepts a leading unary on the right operand', () => {
+  assert.equal(
+    norm(translate('SELECT a ^ -b FROM t', { project: 'p' }).sql),
+    'SELECT xor(a, -b) FROM t',
+  );
+});
+
+test('translate: ^ takes string and parameter operands', () => {
+  assert.equal(norm(translate("SELECT 'a' ^ 'b'", { project: 'p' }).sql), "SELECT xor('a', 'b')");
+  const { sql } = translate('SELECT @x ^ 1', { project: 'p' });
+  assert.equal(norm(sql), 'SELECT xor($1, 1)');
+});
+
+test('translate: keyword before a group is not treated as a callee', () => {
+  assert.equal(
+    norm(translate('SELECT x FROM t WHERE (a) ^ (b) = 0', { project: 'p' }).sql),
+    'SELECT x FROM t WHERE xor((a), (b)) = 0',
+  );
+});
+
+test('translate: a dangling ^ with no operand is left alone', () => {
+  // No left operand (^ leads the expression) and no right operand (^ trails).
+  assert.match(norm(translate('SELECT 1 + (^ 2)', { project: 'p' }).sql), /\^/);
+  assert.match(norm(translate('SELECT 2 ^', { project: 'p' }).sql), /\^/);
+});

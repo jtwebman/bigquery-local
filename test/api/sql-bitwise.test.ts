@@ -1,10 +1,9 @@
 /**
  * BL-048 — BQ bitwise operators and BIT_COUNT.
  *
- * `<<`, `>>`, `&`, `|`, `~`, and BIT_COUNT all pass through. The `^`
- * operator is NOT yet supported: in BQ it's XOR, in DuckDB it's
- * exponentiation. Rewriting at the operator level is out of scope here;
- * use `xor(a, b)` directly if you need bitwise XOR.
+ * `<<`, `>>`, `&`, `|`, `~`, and BIT_COUNT all pass through. `^` is XOR
+ * in BQ but exponentiation in DuckDB, so the translator rewrites `a ^ b`
+ * into `xor(a, b)`.
  */
 
 import { strict as assert } from 'node:assert';
@@ -63,4 +62,16 @@ test('Bitwise OR', async () => {
 });
 test('Bitwise NOT (~) inverts the bits', async () => {
   assert.equal(await scalar('SELECT ~5 AS x'), '-6');
+});
+test('Bitwise XOR (^) on literals', async () => {
+  assert.equal(await scalar('SELECT 5 ^ 3 AS x'), '6');
+});
+test('Bitwise XOR (^) chains left-associatively', async () => {
+  assert.equal(await scalar('SELECT 1 ^ 2 ^ 3 AS x'), '0');
+});
+test('Bitwise XOR (^) with parenthesized operands', async () => {
+  assert.equal(await scalar('SELECT (4 + 1) ^ (1 + 2) AS x'), '6');
+});
+test('Bitwise XOR (^) mixed with & (same expression)', async () => {
+  assert.equal(await scalar('SELECT (12 & 10) ^ 3 AS x'), '11');
 });
