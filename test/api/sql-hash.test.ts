@@ -51,19 +51,29 @@ async function scalar(query: string): Promise<unknown> {
   return (json as { rows: Array<{ f: Array<{ v: unknown }> }> }).rows[0]?.f[0]?.v;
 }
 
+// BQ hash functions return BYTES (raw digest), so the hex vector comes
+// out via TO_HEX. `MD5('abc')` alone is the base64 of those bytes.
 test("MD5('abc') matches the known vector", async () => {
-  assert.equal(await scalar("SELECT MD5('abc') AS x"), '900150983cd24fb0d6963f7d28e17f72');
+  assert.equal(await scalar("SELECT TO_HEX(MD5('abc')) AS x"), '900150983cd24fb0d6963f7d28e17f72');
 });
 
 test("SHA1('abc') matches the known vector", async () => {
-  assert.equal(await scalar("SELECT SHA1('abc') AS x"), 'a9993e364706816aba3e25717850c26c9cd0d89d');
+  assert.equal(
+    await scalar("SELECT TO_HEX(SHA1('abc')) AS x"),
+    'a9993e364706816aba3e25717850c26c9cd0d89d',
+  );
 });
 
 test("SHA256('abc') matches the known vector", async () => {
   assert.equal(
-    await scalar("SELECT SHA256('abc') AS x"),
+    await scalar("SELECT TO_HEX(SHA256('abc')) AS x"),
     'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
   );
+});
+
+test('MD5 returns BYTES (base64 on the wire), matching BQ', async () => {
+  // 900150983cd24fb0d6963f7d28e17f72 as 16 raw bytes, base64-encoded.
+  assert.equal(await scalar("SELECT MD5('abc') AS x"), 'kAFQmDzST7DWlj99KOF/cg==');
 });
 
 test('SHA512 is rejected (DuckDB does not provide it)', async () => {

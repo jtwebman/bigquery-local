@@ -50,12 +50,13 @@ async function scalar(query: string): Promise<unknown> {
 
 test('ST_GEOGFROMTEXT + ST_ASTEXT round-trips a POINT', async () => {
   const out = await scalar("SELECT ST_ASTEXT(ST_GEOGFROMTEXT('POINT(-122.4194 37.7749)')) AS pt");
-  assert.match(String(out), /^POINT \(-?122\.4194 37\.7749\)$/);
+  // BQ WKT has no space after the type keyword.
+  assert.match(String(out), /^POINT\(-?122\.4194 37\.7749\)$/);
 });
 
 test('ST_GEOGPOINT(lng, lat) constructs a point', async () => {
   const out = await scalar('SELECT ST_ASTEXT(ST_GEOGPOINT(1.5, 2.5)) AS pt');
-  assert.match(String(out), /^POINT \(1\.5 2\.5\)$/);
+  assert.match(String(out), /^POINT\(1\.5 2\.5\)$/);
 });
 
 test('ST_INTERSECTS returns true for overlapping polygons', async () => {

@@ -1,0 +1,51 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T22:11:04.107Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "region",
+        "type": "STRING"
+      },
+      {
+        "name": "q1",
+        "type": "INTEGER"
+      },
+      {
+        "name": "q2",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "east"
+        },
+        {
+          "v": "10"
+        },
+        {
+          "v": "20"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "west"
+        },
+        {
+          "v": "30"
+        },
+        {
+          "v": "40"
+        }
+      ]
+    }
+  ],
+  "totalRows": "2",
+  "jobComplete": true
+}

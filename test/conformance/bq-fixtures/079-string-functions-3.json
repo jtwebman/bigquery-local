@@ -1,0 +1,77 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T22:11:05.648Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "translated",
+        "type": "STRING"
+      },
+      {
+        "name": "split_with_empty",
+        "type": "STRING",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "all_digits",
+        "type": "STRING",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "ltrimmed",
+        "type": "STRING"
+      },
+      {
+        "name": "rtrimmed",
+        "type": "STRING"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "xbzxbz"
+        },
+        {
+          "v": [
+            {
+              "v": "a"
+            },
+            {
+              "v": "b"
+            },
+            {
+              "v": ""
+            },
+            {
+              "v": "c"
+            }
+          ]
+        },
+        {
+          "v": [
+            {
+              "v": "1"
+            },
+            {
+              "v": "2"
+            },
+            {
+              "v": "3"
+            }
+          ]
+        },
+        {
+          "v": "hi"
+        },
+        {
+          "v": "hi"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

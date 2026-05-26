@@ -75,6 +75,7 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['UNIX_MILLIS', 'epoch_ms'],
   ['UNIX_MICROS', 'epoch_us'],
   ['LAST_DAY', 'last_day'],
+  ['SPLIT', 'string_split'],
   // BL-042 — arrays: BQ GENERATE_ARRAY/FLATTEN don't exist in DuckDB by
   // those names; the semantics map directly.
   ['GENERATE_ARRAY', 'generate_series'],
@@ -1821,6 +1822,35 @@ function handleIdentifier(
       // semantics line up.
       return rewriteRegexpReplace(tokens, parenIdx, endIdx, out, paramOrder, project);
 
+    case 'ST_ASTEXT': {
+      // DuckDB's ST_AsText inserts a space after the geometry type
+      // (`POINT (5 0)`); BQ omits it (`POINT(5 0)`). Strip ` (` → `(`.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      out.push(`replace(ST_AsText(${inner}), ' (', '(')`);
+      return close + 1;
+    }
+
+    case 'TO_HEX': {
+      // BQ TO_HEX is lowercase; DuckDB to_hex is uppercase.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      out.push(`lower(to_hex(${inner}))`);
+      return close + 1;
+    }
+
+    case 'MD5':
+    case 'SHA1':
+    case 'SHA256': {
+      // BQ hash functions return BYTES (raw digest); DuckDB's return a hex
+      // string. Wrap in unhex() so the result is BYTES and TO_HEX behaves
+      // as in BQ. (SHA512 has no DuckDB equivalent — stays unsupported.)
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      out.push(`unhex(${upper.toLowerCase()}(${inner}))`);
+      return close + 1;
+    }
+
     case 'JSON_TYPE': {
       // DuckDB's json_type returns uppercase (OBJECT); BQ lowercase (object).
       const close = findMatchingClose(tokens, parenIdx, endIdx);
@@ -2028,8 +2058,9 @@ function handleIdentifier(
       );
 
     case 'GENERATE_DATE_ARRAY':
-      // BQ: GENERATE_DATE_ARRAY(start, end[, INTERVAL step part])
-      // DuckDB: generate_series returns TIMESTAMP[]; cast each to DATE.
+      // BQ: GENERATE_DATE_ARRAY(start, end[, INTERVAL step part]). DuckDB's
+      // generate_series over DATE needs a step — default to 1 day. Returns
+      // TIMESTAMP[]; cast each to DATE.
       return rewriteGenerateArray(
         tokens,
         parenIdx,
@@ -2039,6 +2070,7 @@ function handleIdentifier(
         paramOrder,
         project,
         tok.value,
+        'INTERVAL 1 DAY',
       );
 
     case 'GENERATE_TIMESTAMP_ARRAY':
@@ -2284,12 +2316,24 @@ function rewriteGenerateArray(
   paramOrder: string[],
   project: string,
   funcName: string,
+  /** Step appended when the call has only (start, end) — DuckDB's
+   * generate_series over DATE/TIMESTAMP requires an explicit step. */
+  defaultStep = '',
 ): number {
   const close = findMatchingClose(tokens, openParenIdx, endIdx);
-  // Translate the inner range as-is — start, end, optional INTERVAL step.
-  const inner = translateRange(tokens, openParenIdx + 1, close, paramOrder, project).trim();
+  const hasStep = findTopLevelComma(tokens, openParenIdx + 1, close) !== null
+    ? findTopLevelComma(
+        tokens,
+        (findTopLevelComma(tokens, openParenIdx + 1, close) as number) + 1,
+        close,
+      ) !== null
+    : false;
+  let inner = translateRange(tokens, openParenIdx + 1, close, paramOrder, project).trim();
   if (inner === '') {
     throw BqError.invalid(`${funcName} requires at least (start, end).`, funcName);
+  }
+  if (!hasStep && defaultStep !== '') {
+    inner += `, ${defaultStep}`;
   }
   if (elementCast === '') {
     out.push(`generate_series(${inner})`);

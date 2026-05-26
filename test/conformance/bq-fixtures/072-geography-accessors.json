@@ -1,0 +1,46 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T22:11:03.433Z",
+    "numericRoundUnit": 0.0001
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "lng",
+        "type": "FLOAT"
+      },
+      {
+        "name": "lat",
+        "type": "FLOAT"
+      },
+      {
+        "name": "centroid",
+        "type": "STRING"
+      },
+      {
+        "name": "num_points",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "-122.4"
+        },
+        {
+          "v": "37.800000000000004"
+        },
+        {
+          "v": "POINT(5 0)"
+        },
+        {
+          "v": "3"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

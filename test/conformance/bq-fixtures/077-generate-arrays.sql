@@ -1,0 +1,5 @@
+SELECT
+  GENERATE_ARRAY(1, 5) AS int_range,
+  GENERATE_ARRAY(0, 10, 2) AS stepped,
+  GENERATE_ARRAY(5, 1, -1) AS descending,
+  GENERATE_DATE_ARRAY(DATE '2025-01-01', DATE '2025-01-05') AS dates

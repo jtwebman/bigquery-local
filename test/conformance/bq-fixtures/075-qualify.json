@@ -1,0 +1,41 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T22:11:04.357Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "grp",
+        "type": "STRING"
+      },
+      {
+        "name": "v",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "a"
+        },
+        {
+          "v": "3"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "b"
+        },
+        {
+          "v": "5"
+        }
+      ]
+    }
+  ],
+  "totalRows": "2",
+  "jobComplete": true
+}

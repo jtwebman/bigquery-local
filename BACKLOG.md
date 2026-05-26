@@ -1088,6 +1088,19 @@ Fixed: translator rewrites `STRUCT(<expr> AS <name>, ...)` →
 `STRUCT(<expr>, ...)` falls back to row-expression form. Wire shape
 matches real BQ — `bq-fixtures/009-struct-literal` confirms.
 
+### `^` operator is XOR in BQ, exponentiation in DuckDB ⏳
+
+BQ's `a ^ b` is bitwise XOR; DuckDB's `^` is exponentiation. Matching
+needs infix-operator rewriting (`a ^ b` → `xor(a, b)`), which the
+token translator doesn't do for binary operators. Use the `xor(a, b)`
+function form instead. (`&`, `|`, `<<`, `>>` all match.)
+
+### INITCAP has no DuckDB equivalent ⏳
+
+BQ's INITCAP (capitalize first letter of each word) isn't a DuckDB
+scalar function. Would need composing via regexp/split. Uncommon;
+deferred.
+
 ### SAFE_NEGATE(INT64_MIN) doesn't overflow ⏳
 
 `SAFE_NEGATE(-9223372036854775808)` returns NULL in BQ (negating INT64

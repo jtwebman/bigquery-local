@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T22:11:05.199Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "hex_encoded",
+        "type": "STRING"
+      },
+      {
+        "name": "hex_decoded",
+        "type": "BYTES"
+      },
+      {
+        "name": "bits_set",
+        "type": "INTEGER"
+      },
+      {
+        "name": "bit_and",
+        "type": "INTEGER"
+      },
+      {
+        "name": "bit_or",
+        "type": "INTEGER"
+      },
+      {
+        "name": "shift_left",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "616263"
+        },
+        {
+          "v": "YWJj"
+        },
+        {
+          "v": "8"
+        },
+        {
+          "v": "8"
+        },
+        {
+          "v": "14"
+        },
+        {
+          "v": "16"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T22:11:03.764Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "stddev_pop",
+        "type": "FLOAT"
+      },
+      {
+        "name": "stddev_samp",
+        "type": "FLOAT"
+      },
+      {
+        "name": "var_pop",
+        "type": "FLOAT"
+      },
+      {
+        "name": "var_samp",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "2.0"
+        },
+        {
+          "v": "2.138089935299395"
+        },
+        {
+          "v": "4.0"
+        },
+        {
+          "v": "4.571428571428571"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

@@ -304,7 +304,7 @@ export function bqSelectExpression(column: string, field: BqField): string {
   if (field.mode === 'REPEATED') return ident;
   if (field.type === 'BYTES') return `to_base64(${ident})`;
   if (field.type === 'TIME') return `${ident}::VARCHAR`;
-  if (field.type === 'GEOGRAPHY') return `ST_AsText(${ident})`;
+  if (field.type === 'GEOGRAPHY') return `replace(ST_AsText(${ident}), ' (', '(')`;
   // DuckDB returns DECIMAL via JS number, which loses precision past
   // ~15 significant digits. Cast to VARCHAR so the full string survives.
   if (field.type === 'NUMERIC') return `${ident}::VARCHAR`;
@@ -870,6 +870,11 @@ const DUCK_TO_BQ: Readonly<Record<string, BqType>> = {
   INT: 'INT64',
   SMALLINT: 'INT64',
   TINYINT: 'INT64',
+  UBIGINT: 'INT64',
+  UINTEGER: 'INT64',
+  USMALLINT: 'INT64',
+  UTINYINT: 'INT64',
+  UHUGEINT: 'INT64',
   DOUBLE: 'FLOAT64',
   FLOAT: 'FLOAT64',
   REAL: 'FLOAT64',

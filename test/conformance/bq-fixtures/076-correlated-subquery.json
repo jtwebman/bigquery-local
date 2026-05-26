@@ -1,0 +1,51 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T22:11:04.707Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "name",
+        "type": "STRING"
+      },
+      {
+        "name": "headcount",
+        "type": "INTEGER"
+      },
+      {
+        "name": "payroll",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "eng"
+        },
+        {
+          "v": "2"
+        },
+        {
+          "v": "220"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "sales"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "90"
+        }
+      ]
+    }
+  ],
+  "totalRows": "2",
+  "jobComplete": true
+}
