@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:21:19.029Z"
+    "capturedAt": "2026-05-26T19:21:23.733Z"
   },
   "schema": {
     "fields": [
@@ -9,8 +9,8 @@
         "type": "INTEGER"
       },
       {
-        "name": "label",
-        "type": "STRING"
+        "name": "diff_from_avg",
+        "type": "FLOAT"
       }
     ]
   },
@@ -18,44 +18,34 @@
     {
       "f": [
         {
-          "v": "0"
+          "v": "10"
         },
         {
-          "v": "small"
+          "v": "-10.0"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "1"
+          "v": "20"
         },
         {
-          "v": "one"
+          "v": "0.0"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "2"
+          "v": "30"
         },
         {
-          "v": "big"
-        }
-      ]
-    },
-    {
-      "f": [
-        {
-          "v": "3"
-        },
-        {
-          "v": "big"
+          "v": "10.0"
         }
       ]
     }
   ],
-  "totalRows": "4",
+  "totalRows": "3",
   "jobComplete": true
 }

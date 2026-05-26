@@ -1088,6 +1088,16 @@ Fixed: translator rewrites `STRUCT(<expr> AS <name>, ...)` →
 `STRUCT(<expr>, ...)` falls back to row-expression form. Wire shape
 matches real BQ — `bq-fixtures/009-struct-literal` confirms.
 
+### Mixed named/positional STRUCT in array literals ⏳
+
+`[STRUCT(1 AS id, 'a' AS name), STRUCT(2, 'b')]` — BQ propagates the
+first element's field names to subsequent positional structs so the
+array is uniformly typed. Our translator processes each STRUCT
+independently, leaving an inconsistent mix of `{id, name}` and
+`(2, 'b')` that DuckDB rejects. Fix would need array-aware STRUCT
+translation (look-back to sibling structs' field names). Workaround:
+write the data using `UNION ALL` of named-column SELECTs.
+
 ## Phase 25 — Connections, transfer, kitchen sink
 
 ### BL-158 — Connections API ⏳ · Est: 4h · Deps: BL-004

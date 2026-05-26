@@ -1,19 +1,19 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:21:14.131Z"
+    "capturedAt": "2026-05-26T19:21:22.315Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "f",
-        "type": "FLOAT"
+        "name": "parsed",
+        "type": "DATE"
       },
       {
-        "name": "b",
-        "type": "BOOLEAN"
+        "name": "formatted",
+        "type": "STRING"
       },
       {
-        "name": "s",
+        "name": "pretty",
         "type": "STRING"
       }
     ]
@@ -22,13 +22,13 @@
     {
       "f": [
         {
-          "v": "3.14"
+          "v": "2025-06-15"
         },
         {
-          "v": "true"
+          "v": "2025-06-15"
         },
         {
-          "v": "hi"
+          "v": "Sunday, June 15"
         }
       ]
     }

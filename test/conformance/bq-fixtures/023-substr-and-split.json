@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:21:22.631Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "first_five",
+        "type": "STRING"
+      },
+      {
+        "name": "rest",
+        "type": "STRING"
+      },
+      {
+        "name": "last_three",
+        "type": "STRING"
+      },
+      {
+        "name": "parts",
+        "type": "STRING",
+        "mode": "REPEATED"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "hello"
+        },
+        {
+          "v": "world"
+        },
+        {
+          "v": "llo"
+        },
+        {
+          "v": [
+            {
+              "v": "a"
+            },
+            {
+              "v": "b"
+            },
+            {
+              "v": "c"
+            },
+            {
+              "v": "d"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

@@ -1,28 +1,28 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:21:17.367Z"
+    "capturedAt": "2026-05-26T19:21:21.115Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "plain_null",
-        "type": "INTEGER"
-      },
-      {
-        "name": "typed_null",
-        "type": "INTEGER"
-      },
-      {
-        "name": "ifnull_str",
+        "name": "first_offset",
         "type": "STRING"
       },
       {
-        "name": "coalesce_int",
-        "type": "INTEGER"
+        "name": "third_offset",
+        "type": "STRING"
       },
       {
-        "name": "nullif_eq",
-        "type": "INTEGER"
+        "name": "first_ordinal",
+        "type": "STRING"
+      },
+      {
+        "name": "third_ordinal",
+        "type": "STRING"
+      },
+      {
+        "name": "out_of_range",
+        "type": "STRING"
       }
     ]
   },
@@ -30,16 +30,16 @@
     {
       "f": [
         {
-          "v": null
+          "v": "a"
         },
         {
-          "v": null
+          "v": "c"
         },
         {
-          "v": "fallback"
+          "v": "a"
         },
         {
-          "v": "42"
+          "v": "c"
         },
         {
           "v": null

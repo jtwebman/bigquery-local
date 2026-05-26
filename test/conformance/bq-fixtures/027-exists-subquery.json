@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:21:19.029Z"
+    "capturedAt": "2026-05-26T19:21:24.192Z"
   },
   "schema": {
     "fields": [
@@ -9,8 +9,8 @@
         "type": "INTEGER"
       },
       {
-        "name": "label",
-        "type": "STRING"
+        "name": "in_set",
+        "type": "BOOLEAN"
       }
     ]
   },
@@ -18,40 +18,40 @@
     {
       "f": [
         {
-          "v": "0"
+          "v": "10"
         },
         {
-          "v": "small"
+          "v": "true"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "1"
+          "v": "15"
         },
         {
-          "v": "one"
+          "v": "false"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "2"
+          "v": "20"
         },
         {
-          "v": "big"
+          "v": "true"
         }
       ]
     },
     {
       "f": [
         {
-          "v": "3"
+          "v": "25"
         },
         {
-          "v": "big"
+          "v": "false"
         }
       ]
     }

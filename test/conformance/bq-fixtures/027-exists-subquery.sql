@@ -1,0 +1,5 @@
+SELECT
+  x,
+  EXISTS(SELECT 1 FROM UNNEST([10, 20, 30]) AS y WHERE y = x) AS in_set
+FROM UNNEST([10, 15, 20, 25]) AS x
+ORDER BY x
