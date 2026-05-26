@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fast checks that gate every commit. These mirror the JS lint/type CI legs
+# and catch the format/type drift that has slipped through before.
+# Skip with `git commit --no-verify` when you really need to.
+set -e
+npm run format:check
+npm run lint
+npm run typecheck

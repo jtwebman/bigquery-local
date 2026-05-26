@@ -15,7 +15,10 @@ FROM node:24-bookworm-slim AS deps
 
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
-RUN npm ci --omit=dev
+# --ignore-scripts: no dependency needs install scripts (duckdb ships prebuilt
+# binaries), and it skips our `prepare` git-hook setup, which has no source
+# files in this layer and no .git to target anyway.
+RUN npm ci --omit=dev --ignore-scripts
 
 # ---- Stage 1b: prebuild DuckDB extension cache ----
 # INSTALL + LOAD spatial once at build time so the runtime container

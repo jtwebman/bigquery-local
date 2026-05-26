@@ -44,6 +44,7 @@
     "test:coverage": "node --conditions=src --test --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=90 --test-coverage-functions=90",
     "bq-replay:capture": "node --conditions=src scripts/bq-replay-capture.mts",
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "node scripts/install-hooks.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
