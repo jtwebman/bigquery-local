@@ -117,7 +117,7 @@ test('CREATE VIEW: view is registered with type=VIEW, schema, and the raw query 
   assert.deepEqual(
     t.schema.fields.map((f) => [f.name, f.type]),
     [
-      ['id', 'INT64'],
+      ['id', 'INTEGER'],
       ['upper_v', 'STRING'],
     ],
   );

@@ -30,6 +30,7 @@ import {
   type BqMode,
   type BqType,
   bqTypeToDuck,
+  bqTypeToWire,
   duckTypeToBq,
   duckValueToBq,
   normalizeBqType,
@@ -79,7 +80,7 @@ export interface FieldWire {
 export function fieldToWire(field: BqField): FieldWire {
   return {
     name: field.name,
-    type: field.type,
+    type: bqTypeToWire(field.type),
     ...(field.mode !== undefined && { mode: field.mode }),
     ...(field.fields !== undefined && {
       fields: field.fields.map(fieldToWire),

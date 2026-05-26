@@ -94,7 +94,7 @@ test('persistent UDF: CREATE FUNCTION + call returns the declared return type', 
 
   const call = await postQuery(`SELECT \`${DATASET}.add1\`(41) AS r`);
   assert.equal(call.json.rows?.[0]?.f[0]?.v, '42');
-  assert.equal(call.json.schema?.fields[0]?.type, 'INT64');
+  assert.equal(call.json.schema?.fields[0]?.type, 'INTEGER');
 });
 
 test('UDF body can reference multiple args and call built-ins', async () => {
@@ -124,9 +124,9 @@ test('RETURNS coerces the body expression to the declared type', async () => {
   // Body is a DOUBLE; declared INT64 → cast rounds (same as BQ).
   await postQuery(`CREATE FUNCTION \`${DATASET}.to_int\`(x FLOAT64) RETURNS INT64 AS (x)`);
   assert.equal(await scalar(`SELECT \`${DATASET}.to_int\`(3.2) AS r`), '3');
-  // And the returned column is INT64, not FLOAT64 — proving the CAST took effect.
+  // And the returned column is INTEGER (=INT64), not FLOAT — proving the CAST took effect.
   const r = await postQuery(`SELECT \`${DATASET}.to_int\`(3.2) AS r`);
-  assert.equal(r.json.schema?.fields[0]?.type, 'INT64');
+  assert.equal(r.json.schema?.fields[0]?.type, 'INTEGER');
 });
 
 test('omitting RETURNS lets DuckDB infer the type from the expression', async () => {

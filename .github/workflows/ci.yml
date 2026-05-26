@@ -96,3 +96,37 @@ jobs:
 
       - name: Run Python client tests
         run: pytest test/clients/python/ -v
+
+  go-client:
+    name: Go client (${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.25 = current released stable. 1.26 = latest. The Go BQ
+        # client supports a wide window — bump as Go's support window
+        # slides forward.
+        go: ['1.25', '1.26']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Setup Go ${{ matrix.go }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: test/clients/go/go.sum
+
+      - name: Run Go client tests
+        working-directory: test/clients/go
+        run: go test -v ./...

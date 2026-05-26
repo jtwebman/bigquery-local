@@ -99,6 +99,30 @@ export function normalizeBqType(raw: string): BqType {
 }
 
 /**
+ * Map the internal standard-SQL type name to the legacy wire name BQ's
+ * REST API actually returns in tables/jobs/getQueryResults responses.
+ *
+ * The Go client (cloud.google.com/go/bigquery) parses value strings with
+ * a switch on the legacy constants only (`INTEGER`, `FLOAT`, `BOOLEAN`,
+ * `RECORD`), so emitting the standard names here would break it. Python
+ * and Node normalize both forms.
+ */
+export function bqTypeToWire(type: BqType): string {
+  switch (type) {
+    case 'INT64':
+      return 'INTEGER';
+    case 'FLOAT64':
+      return 'FLOAT';
+    case 'BOOL':
+      return 'BOOLEAN';
+    case 'STRUCT':
+      return 'RECORD';
+    default:
+      return type;
+  }
+}
+
+/**
  * BigQuery `data_type` string for a field, as it appears in
  * `INFORMATION_SCHEMA.COLUMNS.data_type`. STRUCT fields render with their
  * full child list (`STRUCT<city STRING, zip STRING>`); REPEATED mode wraps

@@ -49,6 +49,7 @@ import {
   type BqMode,
   type BqType,
   bqTypeToDuck,
+  bqTypeToWire,
   normalizeBqType,
 } from '../storage/types.ts';
 import type { RouteDefinition, RouteRequest, RouteResponse } from '../types.ts';
@@ -93,7 +94,7 @@ interface TableResourceWire {
 function fieldToWire(field: BqField): FieldWire {
   return {
     name: field.name,
-    type: field.type,
+    type: bqTypeToWire(field.type),
     ...(field.mode !== undefined && { mode: field.mode }),
     ...(field.description !== undefined && { description: field.description }),
     ...(field.fields !== undefined && { fields: field.fields.map(fieldToWire) }),

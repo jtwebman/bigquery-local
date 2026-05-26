@@ -101,28 +101,32 @@ test('POST creates a table and persists the schema', async () => {
   assert.equal(body.tableReference.tableId, tableId);
   assert.equal(body.type, 'TABLE');
   assert.deepEqual(body.schema.fields, [
-    { name: 'id', type: 'INT64', mode: 'REQUIRED' },
+    { name: 'id', type: 'INTEGER', mode: 'REQUIRED' },
     { name: 'name', type: 'STRING', mode: 'NULLABLE' },
   ]);
   assert.equal(body.description, 'first table');
   assert.equal(body.etag.length, 16);
 });
 
-test('POST normalizes type aliases (INTEGER → INT64, FLOAT → FLOAT64)', async () => {
+test('POST accepts type aliases (INTEGER/INT64, FLOAT/FLOAT64, BOOLEAN/BOOL, RECORD/STRUCT)', async () => {
+  // The wire response always uses BigQuery's legacy type names — that's
+  // what real BQ returns, and the Go client's value parser only recognizes
+  // these (no fallback to standard names). Python + Node clients alias
+  // both forms internally so they're indifferent to which we emit.
   const body = await createTable(freshTableId(), {
     schema: {
       fields: [
-        { name: 'a', type: 'INTEGER' },
-        { name: 'b', type: 'FLOAT' },
-        { name: 'c', type: 'BOOLEAN' },
-        { name: 'd', type: 'RECORD', fields: [{ name: 'inner', type: 'STRING' }] },
+        { name: 'a', type: 'INT64' },
+        { name: 'b', type: 'FLOAT64' },
+        { name: 'c', type: 'BOOL' },
+        { name: 'd', type: 'STRUCT', fields: [{ name: 'inner', type: 'STRING' }] },
       ],
     },
   });
-  assert.equal(body.schema.fields[0]?.type, 'INT64');
-  assert.equal(body.schema.fields[1]?.type, 'FLOAT64');
-  assert.equal(body.schema.fields[2]?.type, 'BOOL');
-  assert.equal(body.schema.fields[3]?.type, 'STRUCT');
+  assert.equal(body.schema.fields[0]?.type, 'INTEGER');
+  assert.equal(body.schema.fields[1]?.type, 'FLOAT');
+  assert.equal(body.schema.fields[2]?.type, 'BOOLEAN');
+  assert.equal(body.schema.fields[3]?.type, 'RECORD');
 });
 
 test('POST creates a real DuckDB table that accepts INSERT', async () => {
@@ -221,7 +225,7 @@ test('POST returns 400 on STRUCT with no fields', async () => {
 // GET
 // ---------------------------------------------------------------------------
 
-test('GET returns the table wire shape with normalized field types', async () => {
+test('GET returns the table wire shape with legacy field type names', async () => {
   const tableId = freshTableId();
   await createTable(tableId, {
     schema: { fields: [{ name: 'a', type: 'INTEGER' }] },
@@ -233,7 +237,7 @@ test('GET returns the table wire shape with normalized field types', async () =>
   assert.equal(res.status, 200);
   const body = (await res.json()) as TableResource;
   assert.equal(body.tableReference.tableId, tableId);
-  assert.equal(body.schema.fields[0]?.type, 'INT64');
+  assert.equal(body.schema.fields[0]?.type, 'INTEGER');
   assert.equal(body.description, 'a description');
 });
 

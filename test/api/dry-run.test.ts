@@ -146,9 +146,9 @@ test('POST /queries dryRun=true returns schema with no rows', async () => {
   // Schema is filled in.
   assert.equal(body.schema.fields.length, 2);
   assert.equal(body.schema.fields[0]?.name, 'one');
-  assert.equal(body.schema.fields[0]?.type, 'INT64');
+  assert.equal(body.schema.fields[0]?.type, 'INTEGER');
   assert.equal(body.schema.fields[1]?.name, 'two');
-  assert.equal(body.schema.fields[1]?.type, 'FLOAT64');
+  assert.equal(body.schema.fields[1]?.type, 'FLOAT');
 });
 
 test('POST /queries dryRun against a real table types the projection correctly', async () => {
@@ -166,7 +166,7 @@ test('POST /queries dryRun against a real table types the projection correctly',
   );
   assert.deepEqual(
     body.schema.fields.map((f) => f.type),
-    ['STRING', 'INT64'],
+    ['STRING', 'INTEGER'],
   );
 });
 
@@ -248,7 +248,7 @@ test('POST /jobs dryRun with parameters validates the parameter shape', async ()
   assert.equal(status, 200);
   const body = json as JobResourceWire;
   assert.equal(body.statistics.query?.schema?.fields[0]?.name, 'doubled');
-  assert.equal(body.statistics.query?.schema?.fields[0]?.type, 'INT64');
+  assert.equal(body.statistics.query?.schema?.fields[0]?.type, 'INTEGER');
 });
 
 test('POST /jobs dryRun: invalid SQL → 400', async () => {

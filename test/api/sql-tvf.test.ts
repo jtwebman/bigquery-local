@@ -120,12 +120,12 @@ test('CREATE TABLE FUNCTION: callable from FROM clause, returns the SELECT shape
       ['west', '70'],
     ],
   );
-  // Schema is whatever the SELECT produces.
+  // Schema is whatever the SELECT produces (BQ's REST API uses legacy type names).
   assert.deepEqual(
     r.json.schema?.fields.map((f) => [f.name, f.type]),
     [
       ['region', 'STRING'],
-      ['total', 'INT64'],
+      ['total', 'INTEGER'],
     ],
   );
 });

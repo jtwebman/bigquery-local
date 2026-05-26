@@ -8,8 +8,9 @@
 A Node.js, Docker-friendly local emulator for the Google BigQuery REST
 API, backed by [DuckDB](https://duckdb.org/). Aims to be a **full local
 stand-in for BigQuery** for testing, CI, and local development — any
-BigQuery client (`@google-cloud/bigquery`, the Python client, `bq` CLI,
-JDBC/ODBC drivers) can point at it without code changes. Native arm64
+BigQuery client (`@google-cloud/bigquery`, the Python client, the Go
+client `cloud.google.com/go/bigquery`, `bq` CLI, JDBC/ODBC drivers) can
+point at it without code changes. Native arm64
 image, and `PATCH` on datasets and tables actually mutates state (which
 some existing emulators don't).
 
