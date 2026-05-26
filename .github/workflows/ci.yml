@@ -26,15 +26,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: ['24', '26']
-        # Drop Windows + Node 24: node:test in Node 24 on Windows has
-        # a known flake where a test-file's before() hook can fail
-        # silently (subtests run individually, file gets marked ✖).
-        # Fixed in Node 26. We keep Node 24 elsewhere for the older-
-        # version compatibility signal.
-        exclude:
-          - os: windows-latest
-            node: '24'
+        # Pin Node 24 to an explicit patch (24.16.0 — released 2026-05-21)
+        # rather than `'24'` because the GitHub runner image's bundled
+        # cache lags by several patches. Windows + Node 24.15.0 hit a
+        # node:test bug where `before()` hooks could fail silently,
+        # marking the test file ✖ with no subtest error. Fixed in
+        # 24.16.0 ("test_runner: fix suite rerun edge case" +
+        # "fix failing suite hooks when marked with todo").
+        node: ['24.16.0', '26']
 
     steps:
       - name: Checkout
