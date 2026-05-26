@@ -98,6 +98,9 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['ST_GEOGPOINT', 'ST_Point'],
   ['ST_GEOGFROMGEOJSON', 'ST_GeomFromGeoJSON'],
   ['ST_ASGEOJSON', 'ST_AsGeoJSON'],
+  // Geodesic-in-meters semantics — see bq_st_distance macro in db.ts.
+  ['ST_DISTANCE', 'bq_st_distance'],
+  ['ST_DWITHIN', 'bq_st_dwithin'],
 ]);
 
 /** A small list of BQ functions we explicitly call out as unsupported, so

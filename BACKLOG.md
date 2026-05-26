@@ -934,11 +934,19 @@ GEOMETRY, not VARCHAR.
 Done: DuckDB spatial extension wired up at db init. BQ's
 `ST_GEOGFROMTEXT` / `ST_GEOGPOINT` / `ST_GEOGFROMWKB` /
 `ST_GEOGFROMGEOJSON` / `ST_ASGEOJSON` translate to their DuckDB
-equivalents. Every other `ST_*` predicate / distance / construction
-function passes through case-insensitively (`ST_INTERSECTS`,
-`ST_CONTAINS`, `ST_WITHIN`, `ST_COVERS`, `ST_DISTANCE`, etc.).
-Caveat: DuckDB's `ST_Distance` is planar Cartesian, not geodesic —
-documented divergence from real BQ.
+equivalents. Every other `ST_*` predicate / construction function
+passes through case-insensitively (`ST_INTERSECTS`, `ST_CONTAINS`,
+`ST_WITHIN`, `ST_COVERS`, etc.).
+
+`ST_DISTANCE` + `ST_DWITHIN` translate to Haversine macros (`bq_st_distance`
+/ `bq_st_dwithin`) registered at db init so they return geodesic
+distance in meters on the (lng, lat) convention BQ uses. SF → NYC
+matches real BQ within ~1 km (sphere vs WGS-84 ellipsoid); for the
+ellipsoid-exact answer we'd need a libgeographic-style port, which
+isn't worth the complexity for an emulator. POINT-pair geometries
+use the geodesic path; LINESTRING / POLYGON pairs fall back to
+DuckDB's planar `ST_Distance` since geodesic min-distance over
+arbitrary geometries is non-trivial — documented for the long tail.
 
 ### BL-130 — Predicate `ST_*` functions ⏳ · Est: 6h · Deps: BL-129
 

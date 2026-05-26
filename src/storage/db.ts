@@ -62,6 +62,25 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
   // copy in DUCKDB_HOME (default `~/.duckdb`).
   await connection.run('INSTALL spatial');
   await connection.run('LOAD spatial');
+  // BigQuery's ST_DISTANCE is geodesic in meters using (lng, lat); DuckDB's
+  // ST_Distance is planar Cartesian and ST_Distance_Sphere flips the
+  // argument order. Register a Haversine macro on the BQ convention.
+  await connection.run(`
+    CREATE OR REPLACE MACRO bq_st_distance(g1, g2) AS
+      CASE
+        WHEN ST_GeometryType(g1) = 'POINT' AND ST_GeometryType(g2) = 'POINT' THEN
+          6371008.8 * 2 * asin(sqrt(
+            pow(sin(radians(ST_Y(g2) - ST_Y(g1)) / 2), 2) +
+            cos(radians(ST_Y(g1))) * cos(radians(ST_Y(g2))) *
+            pow(sin(radians(ST_X(g2) - ST_X(g1)) / 2), 2)
+          ))
+        ELSE ST_Distance(g1, g2)
+      END
+  `);
+  await connection.run(`
+    CREATE OR REPLACE MACRO bq_st_dwithin(g1, g2, m) AS
+      bq_st_distance(g1, g2) <= m
+  `);
   const preparedCache = new Map<string, Promise<DuckDBPreparedStatement>>();
   let closed = false;
 

@@ -113,14 +113,37 @@ test('ST_CONTAINS, ST_WITHIN, ST_COVERS pass through', async () => {
   assert.ok(out);
 });
 
-test('ST_DISTANCE returns a numeric distance', async () => {
+test('ST_DISTANCE returns geodesic distance in meters (BQ semantics)', async () => {
   const out = await scalar(
     "SELECT ST_DISTANCE(ST_GEOGFROMTEXT('POINT(0 0)'), ST_GEOGFROMTEXT('POINT(3 4)')) AS d",
   );
-  // Cartesian distance over the planar coordinates: sqrt(3^2 + 4^2) = 5.
-  // (DuckDB spatial's ST_Distance is planar, not geodesic — BQ's is
-  // geodesic in meters. Documented divergence.)
-  assert.equal(Number(out), 5);
+  // Haversine on a sphere with R = 6371008.8 m: ~555,812 m.
+  assert.ok(Math.abs(Number(out) - 555812) < 1, `expected ~555812 m, got ${out}`);
+});
+
+test('ST_DISTANCE matches BQ for a real-world city pair (SF → NYC ~4131 km)', async () => {
+  const out = await scalar(`
+    SELECT ST_DISTANCE(
+      ST_GEOGPOINT(-122.4194, 37.7749),
+      ST_GEOGPOINT(-73.9857, 40.7484)
+    ) AS m
+  `);
+  // BQ returns ~4,130,930 m for this pair on WGS-84 ellipsoid; we
+  // compute on a sphere so the result is within ~1 km of BQ's value.
+  const km = Number(out) / 1000;
+  assert.ok(km > 4100 && km < 4150, `expected ~4131 km, got ${km}`);
+});
+
+test('ST_DWITHIN uses geodesic meters for the radius', async () => {
+  const out = await scalar(`
+    SELECT ST_DWITHIN(
+      ST_GEOGPOINT(0, 0),
+      ST_GEOGPOINT(0.001, 0),
+      200
+    ) AS within
+  `);
+  // 0.001° longitude at equator ≈ 111 m, well under the 200 m radius.
+  assert.equal(out, 'true');
 });
 
 test('GEOGRAPHY column stores + filters with ST_INTERSECTS', async () => {
