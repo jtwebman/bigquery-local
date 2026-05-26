@@ -264,3 +264,37 @@ test('translate: realistic v0 reference query rewrites cleanly', () => {
   assert.match(got, /e\.created_at >= \$2/);
   assert.deepEqual(paramOrder, ['ids', 'since']);
 });
+
+// ---------------------------------------------------------------------------
+// DuckDB-reserved-but-BQ-allowed identifier auto-quoting
+// ---------------------------------------------------------------------------
+
+test('translate: bare `user` column reference gets auto-quoted for DuckDB', () => {
+  const { sql } = translate('SELECT user FROM `t`', { project: 'p' });
+  assert.match(norm(sql), /SELECT "user" FROM "t"/);
+});
+
+test('translate: bare `primary` and `unique` in WHERE clause auto-quote', () => {
+  const { sql } = translate('SELECT * FROM `t` WHERE primary = 1 AND unique = 2', {
+    project: 'p',
+  });
+  assert.match(norm(sql), /WHERE "primary" = 1 AND "unique" = 2/);
+});
+
+test('translate: dotted `t.user` qualifier auto-quotes the column part', () => {
+  const { sql } = translate('SELECT t.user FROM `t`', { project: 'p' });
+  assert.match(norm(sql), /SELECT t\."user" FROM "t"/);
+});
+
+test('translate: function-call positions are NOT auto-quoted', () => {
+  const { sql } = translate('SELECT user() AS u', { project: 'p' });
+  assert.match(norm(sql), /SELECT user\(\) AS u/);
+});
+
+test('translate: identifiers NOT in the safelist still pass through bare', () => {
+  // PIVOT / UNPIVOT / GLOB / ILIKE / SIMILAR / TRY_CAST stay verbatim —
+  // they're DuckDB clause/operator keywords whose translation depends on
+  // bare emission. Auto-quoting them would break valid syntax.
+  const { sql } = translate("SELECT * FROM t WHERE name ILIKE 'foo%'", { project: 'p' });
+  assert.match(norm(sql), /WHERE name ILIKE 'foo%'/);
+});

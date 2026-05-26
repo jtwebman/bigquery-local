@@ -114,6 +114,38 @@ const UNSUPPORTED_FUNCTIONS = new Set([
   'VECTOR_SEARCH',
 ]);
 
+/**
+ * Identifiers DuckDB reserves but BigQuery does not, so a user's BQ
+ * query can legally reference a bare column with one of these names —
+ * and DuckDB would parse-error before our translator could help.
+ *
+ * Excluded: identifiers reserved in both dialects (WINDOW, RANGE,
+ * INTERVAL, QUALIFY, ...) — BQ users must backtick-quote those anyway,
+ * and that path translates to DuckDB double-quotes. Also excluded:
+ * DuckDB-only words used as operators / clause syntax we must emit
+ * verbatim (PIVOT, UNPIVOT, GLOB, ILIKE, SIMILAR, TRY_CAST, BOTH,
+ * LEADING, TRAILING, ASYMMETRIC, SYMMETRIC, PLACING, VARIADIC).
+ */
+const DUCKDB_RESERVED_BUT_BQ_ALLOWED = new Set<string>([
+  'CHECK',
+  'COLUMN',
+  'CONSTRAINT',
+  'FOREIGN',
+  'PRIMARY',
+  'REFERENCES',
+  'UNIQUE',
+  'DEFERRABLE',
+  'INITIALLY',
+  'ANALYSE',
+  'ANALYZE',
+  'DESCRIBE',
+  'SUMMARIZE',
+  'RETURNING',
+  'DO',
+  'ONLY',
+  'USER',
+]);
+
 export function translate(sql: string, options: TranslateOptions): TranslateResult {
   const tokens = tokenize(sql);
   const paramOrder: string[] = [];
@@ -1563,6 +1595,10 @@ function handleIdentifier(
     }
     if (upper === '_PARTITIONDATE') {
       out.push('CAST("_partition_time" AS DATE)');
+      return i + 1;
+    }
+    if (DUCKDB_RESERVED_BUT_BQ_ALLOWED.has(upper)) {
+      out.push(`"${tok.value.replace(/"/g, '""')}"`);
       return i + 1;
     }
     out.push(tok.value);
