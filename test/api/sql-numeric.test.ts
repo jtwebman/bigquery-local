@@ -33,19 +33,44 @@ after(async () => {
   await db.close();
 });
 
-async function scalar(query: string): Promise<unknown> {
+async function query(q: string): Promise<{
+  rows: Array<{ f: Array<{ v: unknown }> }>;
+  schema: { fields: Array<{ type: string }> };
+}> {
   const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query: q }),
   });
-  const body = (await res.json()) as { rows: Array<{ f: Array<{ v: unknown }> }> };
+  return res.json() as Promise<{
+    rows: Array<{ f: Array<{ v: unknown }> }>;
+    schema: { fields: Array<{ type: string }> };
+  }>;
+}
+
+async function scalar(q: string): Promise<unknown> {
+  const body = await query(q);
   return unwrapV(body.rows[0]?.f[0]?.v);
 }
 
-// Pass-throughs (same name in DuckDB).
-// Decimal literals (`3.7`) parse as DECIMAL in DuckDB, so TRUNC/CEIL/FLOOR/
-// ROUND emit NUMERIC results — BigQuery wires those as decimal strings.
+// A bare decimal literal (`3.14`) is FLOAT64 in BigQuery, so the translator
+// casts it to DOUBLE and the column wires as FLOAT (not NUMERIC).
+test('bare decimal literal wires as FLOAT64', async () => {
+  const body = await query('SELECT 3.14 AS x');
+  assert.equal(body.schema.fields[0]?.type, 'FLOAT');
+});
+test('integer literal still wires as INTEGER (INT64)', async () => {
+  const body = await query('SELECT 42 AS x');
+  assert.equal(body.schema.fields[0]?.type, 'INTEGER');
+});
+test('NUMERIC typed literal still wires as NUMERIC', async () => {
+  const body = await query("SELECT NUMERIC '1.5' AS x");
+  assert.equal(body.schema.fields[0]?.type, 'NUMERIC');
+});
+
+// Pass-throughs (same name in DuckDB). A bare decimal like `3.7` is FLOAT64
+// (cast to DOUBLE by the translator), so TRUNC/CEIL/FLOOR/ROUND emit FLOAT64
+// results — wired as a decimal string.
 test('TRUNC drops the fractional part', async () => {
   assert.equal(await scalar('SELECT TRUNC(3.7) AS x'), '3.0');
 });

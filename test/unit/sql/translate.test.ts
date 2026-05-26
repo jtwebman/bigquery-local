@@ -568,3 +568,40 @@ test('translate: a dangling ^ with no operand is left alone', () => {
   assert.match(norm(translate('SELECT 1 + (^ 2)', { project: 'p' }).sql), /\^/);
   assert.match(norm(translate('SELECT 2 ^', { project: 'p' }).sql), /\^/);
 });
+
+// ---------------------------------------------------------------------------
+// Decimal literals → FLOAT64 (BQ types bare `3.14` as FLOAT64, not NUMERIC)
+// ---------------------------------------------------------------------------
+
+test('translate: bare decimal literal casts to DOUBLE', () => {
+  assert.equal(norm(translate('SELECT 3.14', { project: 'p' }).sql), 'SELECT CAST(3.14 AS DOUBLE)');
+});
+
+test('translate: exponent literal casts to DOUBLE', () => {
+  assert.equal(norm(translate('SELECT 1e3', { project: 'p' }).sql), 'SELECT CAST(1e3 AS DOUBLE)');
+});
+
+test('translate: integer literal is left as-is (INT64)', () => {
+  assert.equal(norm(translate('SELECT 42', { project: 'p' }).sql), 'SELECT 42');
+});
+
+test('translate: arithmetic on decimals casts each operand', () => {
+  assert.equal(
+    norm(translate('SELECT 1.5 + 2.5', { project: 'p' }).sql),
+    'SELECT CAST(1.5 AS DOUBLE) + CAST(2.5 AS DOUBLE)',
+  );
+});
+
+test('translate: NUMERIC typed-string literal stays DECIMAL (not cast to DOUBLE)', () => {
+  assert.equal(
+    norm(translate("SELECT NUMERIC '123.456'", { project: 'p' }).sql),
+    "SELECT CAST('123.456' AS DECIMAL(38, 9))",
+  );
+});
+
+test('translate: TABLESAMPLE PERCENT value is not cast to DOUBLE', () => {
+  assert.equal(
+    norm(translate('SELECT * FROM t TABLESAMPLE SYSTEM (2.5 PERCENT)', { project: 'p' }).sql),
+    'SELECT * FROM t TABLESAMPLE BERNOULLI (2.5 PERCENT)',
+  );
+});

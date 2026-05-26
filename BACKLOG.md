@@ -1122,16 +1122,13 @@ common C-style specifiers (`%d %s %f %x %05d` etc.) all work.
 Supporting `%t`/`%T` would need format-string parsing to convert the
 matching argument to its string form first.
 
-### Decimal literals type as NUMERIC, not FLOAT64 ⏳
+### Decimal literals type as NUMERIC, not FLOAT64 ✅
 
-BigQuery types a bare decimal literal like `3.14` as FLOAT64; DuckDB
-types it as DECIMAL, which we map to NUMERIC. The wire *value* often
-matches (both "3.14"), but the schema *type* differs (BQ FLOAT vs our
-NUMERIC), and downstream functions inherit the wrong type. Fixing it
-means casting decimal literals to DOUBLE in the translator — a broad
-change that risks the existing NUMERIC-path tests, so deferred.
-Workaround in fixtures: wrap literals in `CAST(... AS FLOAT64)` when
-the schema type matters.
+Fixed: the translator casts a bare decimal/exponent literal (`3.14`,
+`1e3`) to DOUBLE so the column wires as FLOAT, matching BQ. Integer
+literals stay INT64; `NUMERIC '...'` typed-string literals stay
+DECIMAL. The one fractional literal that isn't a value expression — a
+`TABLESAMPLE … (n PERCENT)` percentage — is left untouched.
 
 ### Mixed named/positional STRUCT in array literals ⏳
 

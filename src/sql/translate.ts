@@ -1516,6 +1516,10 @@ function translateRange(
       case 'identifier':
         i = handleIdentifier(tokens, i, endIdx, out, paramOrder, project);
         break;
+      case 'number':
+        out.push(rewriteNumberLiteral(tok, tokens, i, endIdx));
+        i += 1;
+        break;
       default:
         out.push(tok.value);
         i += 1;
@@ -1523,6 +1527,25 @@ function translateRange(
     }
   }
   return out.join('');
+}
+
+// BQ types a bare decimal literal (`3.14`, `1e3`) as FLOAT64; DuckDB types it
+// as DECIMAL, which we surface as NUMERIC. Cast fractional literals to DOUBLE
+// so the result schema reports FLOAT, matching BQ. Integer literals (INT64)
+// are left alone. The one fractional literal that isn't a value expression is
+// a `TABLESAMPLE … (n PERCENT)` percentage — leave that untouched.
+function rewriteNumberLiteral(
+  tok: Token,
+  tokens: readonly Token[],
+  i: number,
+  endIdx: number,
+): string {
+  if (!/[.eE]/.test(tok.value)) return tok.value;
+  const nextIdx = nextNonSkippable(tokens, i + 1);
+  if (nextIdx < endIdx && tokens[nextIdx]?.value.toUpperCase() === 'PERCENT') {
+    return tok.value;
+  }
+  return `CAST(${tok.value} AS DOUBLE)`;
 }
 
 // ---------------------------------------------------------------------------
