@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T18:33:52.819Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "up",
+        "type": "STRING"
+      },
+      {
+        "name": "len",
+        "type": "INTEGER"
+      },
+      {
+        "name": "joined",
+        "type": "STRING"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "HELLO"
+        },
+        {
+          "v": "5"
+        },
+        {
+          "v": "abc"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T18:33:50.441Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "f",
+        "type": "FLOAT"
+      },
+      {
+        "name": "b",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "s",
+        "type": "STRING"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "3.14"
+        },
+        {
+          "v": "true"
+        },
+        {
+          "v": "hi"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

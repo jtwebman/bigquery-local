@@ -1,0 +1,4 @@
+SELECT
+  CAST(3.14 AS FLOAT64) AS f,
+  TRUE AS b,
+  'hi' AS s

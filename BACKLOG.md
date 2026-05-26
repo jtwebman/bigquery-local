@@ -1068,6 +1068,34 @@ Scope: reservations / assignments REST surface; no real slot semantics. Acceptan
 
 Scope: cache query results keyed by SQL + params; return cached results when `useQueryCache: true`. Acceptance: cache hit increments a counter; bypass works.
 
+## Real-BQ parity gaps (surfaced by bq-replay)
+
+These were caught by the conformance suite (`npm run bq-replay:capture`
++ replay tests) but don't have BL- numbers yet. Each is a real wire
+divergence between bigquery-local and real BigQuery.
+
+### UNNEST of array literals wraps in STRUCT ⏳
+
+`SELECT x FROM UNNEST([1,2,3]) AS x` returns rows like
+`{f: [{v: {f: [{v: "1"}]}}]}` in our emulator but `{f: [{v: "1"}]}` in
+real BQ. The schema also reports `RECORD<unnest INTEGER>` instead of
+`INTEGER`. The DuckDB-side `unnest(LIST)` returns a single-field
+struct when applied to a literal; we need to project out the inner
+column when the source is a literal array.
+
+### STRUCT(x AS name, ...) literal not recognized ⏳
+
+`SELECT STRUCT(1 AS id, 'name' AS label) AS s` errors with a
+"syntax error at or near AS". DuckDB's STRUCT constructor takes
+`{id: 1, label: 'name'}` or `(1, 'name')`. Translator should rewrite
+BQ's `STRUCT(<expr> AS <name>, ...)` syntax to either form.
+
+### STRING_AGG with ORDER BY ⏳
+
+`STRING_AGG(x, ',' ORDER BY x)` over `UNNEST([1,2,3])` errors. Some
+of this is downstream of the UNNEST-wrapping bug; the inner expression
+sees a struct rather than the scalar. Re-test after UNNEST is fixed.
+
 ## Phase 25 — Connections, transfer, kitchen sink
 
 ### BL-158 — Connections API ⏳ · Est: 4h · Deps: BL-004

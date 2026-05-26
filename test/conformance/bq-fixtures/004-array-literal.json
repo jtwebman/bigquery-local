@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T18:33:51.308Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "xs",
+        "type": "INTEGER",
+        "mode": "REPEATED"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": [
+            {
+              "v": "1"
+            },
+            {
+              "v": "2"
+            },
+            {
+              "v": "3"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

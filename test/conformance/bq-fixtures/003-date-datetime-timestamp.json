@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T18:33:50.793Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "d",
+        "type": "DATE"
+      },
+      {
+        "name": "dt",
+        "type": "DATETIME"
+      },
+      {
+        "name": "ts",
+        "type": "TIMESTAMP"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "2025-06-01"
+        },
+        {
+          "v": "2025-06-01T12:34:56"
+        },
+        {
+          "v": "1748781296000000"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

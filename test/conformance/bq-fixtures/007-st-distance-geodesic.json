@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T18:33:52.421Z",
+    "numericRoundUnit": 100
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "m",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "4130000"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

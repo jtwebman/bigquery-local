@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T18:33:52.058Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "shifted",
+        "type": "DATETIME"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "2025-06-02T10:00:00"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}
