@@ -652,9 +652,7 @@ test('queries: RANGE<DATE> column inserts + reads back via tabledata.list', asyn
   );
   assert.equal(ins.status, 200);
 
-  const res = await fetch(
-    `${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables/subs/data`,
-  );
+  const res = await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables/subs/data`);
   assert.equal(res.status, 200);
   type Row = { f: Array<{ v: string }> };
   const body = (await res.json()) as { rows: Row[] };

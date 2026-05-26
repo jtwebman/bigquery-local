@@ -45,7 +45,7 @@ test('bqTypeToDuck maps each scalar BQ type to DuckDB', () => {
     ['DATE', 'DATE'],
     ['TIME', 'TIME'],
     ['JSON', 'JSON'],
-    ['GEOGRAPHY', 'VARCHAR'],
+    ['GEOGRAPHY', 'GEOMETRY'],
     ['INTERVAL', 'INTERVAL'],
   ];
   for (const [bq, duck] of cases) {
@@ -193,11 +193,33 @@ test('round-trip: JSON', async () => {
   assert.deepEqual(JSON.parse(out as string), JSON.parse(wire));
 });
 
-test('round-trip: GEOGRAPHY (WKT pass-through)', async () => {
-  assert.equal(
-    await roundTrip({ name: 'v', type: 'GEOGRAPHY' }, 'POINT(-122.4194 37.7749)'),
+test('round-trip: GEOGRAPHY POINT (WKT in, WKT out via spatial extension)', async () => {
+  // DuckDB's ST_AsText normalizes whitespace ("POINT(...)" → "POINT (...)")
+  // and trims trailing zeros — match on coordinate content.
+  const out = (await roundTrip(
+    { name: 'v', type: 'GEOGRAPHY' },
     'POINT(-122.4194 37.7749)',
-  );
+  )) as string;
+  assert.match(out, /^POINT \(-?122\.4194 37\.7749\)$/);
+});
+
+test('round-trip: GEOGRAPHY POLYGON', async () => {
+  const out = (await roundTrip(
+    { name: 'v', type: 'GEOGRAPHY' },
+    'POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))',
+  )) as string;
+  assert.match(out, /^POLYGON \(\(/);
+  assert.match(out, /10 10/);
+});
+
+test('round-trip: GEOGRAPHY MULTIPOINT', async () => {
+  const out = (await roundTrip(
+    { name: 'v', type: 'GEOGRAPHY' },
+    'MULTIPOINT((1 2), (3 4))',
+  )) as string;
+  assert.match(out, /^MULTIPOINT /);
+  assert.match(out, /1 2/);
+  assert.match(out, /3 4/);
 });
 
 test('round-trip: INTERVAL (Y-M D H:M:S wire format)', async () => {

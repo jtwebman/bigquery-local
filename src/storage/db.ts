@@ -57,6 +57,11 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
   // Anchor DuckDB's session timezone to UTC so unzone'd TIMESTAMP literals
   // (which BQ treats as UTC) don't drift through the host's local zone.
   await connection.run("SET TimeZone='UTC'");
+  // Spatial extension backs the GEOGRAPHY type and every ST_* function.
+  // Auto-installs on first run; subsequent runs load from the cached
+  // copy in DUCKDB_HOME (default `~/.duckdb`).
+  await connection.run('INSTALL spatial');
+  await connection.run('LOAD spatial');
   const preparedCache = new Map<string, Promise<DuckDBPreparedStatement>>();
   let closed = false;
 

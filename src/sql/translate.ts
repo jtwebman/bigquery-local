@@ -90,6 +90,14 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['JSON_KEYS', 'json_keys'],
   ['TO_JSON', 'to_json'],
   ['TO_JSON_STRING', 'to_json'],
+  // BL-128/129 — GEOGRAPHY via the DuckDB spatial extension. DuckDB
+  // uses ST_GeomFromText / ST_Point; BQ uses the ST_GEOG* spellings.
+  // Most other ST_* names are identical (case-insensitive in DuckDB).
+  ['ST_GEOGFROMTEXT', 'ST_GeomFromText'],
+  ['ST_GEOGFROMWKB', 'ST_GeomFromWKB'],
+  ['ST_GEOGPOINT', 'ST_Point'],
+  ['ST_GEOGFROMGEOJSON', 'ST_GeomFromGeoJSON'],
+  ['ST_ASGEOJSON', 'ST_AsGeoJSON'],
 ]);
 
 /** A small list of BQ functions we explicitly call out as unsupported, so
@@ -105,9 +113,6 @@ const UNSUPPORTED_FUNCTIONS = new Set([
   'APPROX_QUANTILES',
   'GENERATE_UUID',
   'NET.IP_FROM_STRING',
-  'ST_GEOGFROMTEXT',
-  'ST_INTERSECTS',
-  'ST_DISTANCE',
   'ML.PREDICT',
   'ML.EVALUATE',
   'SEARCH',

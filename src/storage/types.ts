@@ -32,7 +32,9 @@
  *   - DATE            `"YYYY-MM-DD"`
  *   - TIME            `"HH:MM:SS[.SSSSSS]"`
  *   - JSON            any JSON value (object / array / scalar)
- *   - GEOGRAPHY       WKT string (no `ST_*` in v0)
+ *   - GEOGRAPHY       WKT string in/out, stored as DuckDB GEOMETRY via
+ *                     the spatial extension; the full ST_* surface
+ *                     (intersects/contains/distance/…) is available.
  *   - INTERVAL        ISO-8601-ish string `"Y-M D H:M:S[.f]"` (e.g.
  *                     `"1-2 3 4:5:6.5"` = 1y 2mo 3d 4h 5m 6.5s; negative
  *                     intervals carry a leading `-` on the whole value)
@@ -201,8 +203,8 @@ function baseDuckType(field: BqField): string {
     case 'JSON':
       return 'JSON';
     case 'GEOGRAPHY':
-      // WKT in VARCHAR until BL-128+ wires the spatial extension.
-      return 'VARCHAR';
+      // DuckDB spatial extension's native geometry type. Loaded at db init.
+      return 'GEOMETRY';
     case 'INTERVAL':
       return 'INTERVAL';
     case 'RANGE':
@@ -235,8 +237,9 @@ function baseInsertExpr(ordinal: number, field: BqField): string {
   switch (field.type) {
     case 'STRING':
     case 'BIGNUMERIC':
-    case 'GEOGRAPHY':
       return p;
+    case 'GEOGRAPHY':
+      return `ST_GeomFromText(${p}::VARCHAR)`;
     case 'BYTES':
       // We bind base64-encoded strings; from_base64() turns them into BLOB.
       return `from_base64(${p})`;
@@ -301,6 +304,7 @@ export function bqSelectExpression(column: string, field: BqField): string {
   if (field.mode === 'REPEATED') return ident;
   if (field.type === 'BYTES') return `to_base64(${ident})`;
   if (field.type === 'TIME') return `${ident}::VARCHAR`;
+  if (field.type === 'GEOGRAPHY') return `ST_AsText(${ident})`;
   return ident;
 }
 
@@ -517,8 +521,7 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
         throw new Error(`Expected object from DuckDB for RANGE field "${field.name}".`);
       }
       const obj = value as { start?: unknown; end?: unknown };
-      const toBig = (v: unknown): bigint =>
-        typeof v === 'bigint' ? v : BigInt(String(v ?? '0'));
+      const toBig = (v: unknown): bigint => (typeof v === 'bigint' ? v : BigInt(String(v ?? '0')));
       return boundsToBqRange(toBig(obj.start), toBig(obj.end), rangeElementType(field));
     }
     case 'STRUCT': {
@@ -871,6 +874,7 @@ const DUCK_TO_BQ: Readonly<Record<string, BqType>> = {
   TIMESTAMPTZ: 'TIMESTAMP',
   JSON: 'JSON',
   INTERVAL: 'INTERVAL',
+  GEOMETRY: 'GEOGRAPHY',
 };
 
 /** Synthesize a BqField from a DuckDB column type string + a column name.

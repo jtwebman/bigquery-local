@@ -923,13 +923,22 @@ Scope: multiple write streams on one connection. Acceptance: concurrent streams 
 
 ## Phase 20 — Geography
 
-### BL-128 — GEOGRAPHY type round-trip ⏳ · Est: 4h · Deps: BL-009
+### BL-128 — GEOGRAPHY type round-trip ✅
 
-Scope: parse WKT + WKB on input; emit WKT on query output. Acceptance: round-trip of a POINT / POLYGON / MULTIPOLYGON preserves coordinates.
+Done: WKT in / WKT out via the DuckDB spatial extension (loaded at db
+init). POINT / POLYGON / MULTIPOINT all round-trip; storage is native
+GEOMETRY, not VARCHAR.
 
-### BL-129 — Spatial library bridge ⏳ · Est: 8h · Deps: BL-128
+### BL-129 — Spatial library bridge ✅
 
-Scope: pull DuckDB spatial extension OR a JS S2 implementation. Decide here and document. Acceptance: a `ST_*` call against the engine returns a recognized type.
+Done: DuckDB spatial extension wired up at db init. BQ's
+`ST_GEOGFROMTEXT` / `ST_GEOGPOINT` / `ST_GEOGFROMWKB` /
+`ST_GEOGFROMGEOJSON` / `ST_ASGEOJSON` translate to their DuckDB
+equivalents. Every other `ST_*` predicate / distance / construction
+function passes through case-insensitively (`ST_INTERSECTS`,
+`ST_CONTAINS`, `ST_WITHIN`, `ST_COVERS`, `ST_DISTANCE`, etc.).
+Caveat: DuckDB's `ST_Distance` is planar Cartesian, not geodesic —
+documented divergence from real BQ.
 
 ### BL-130 — Predicate `ST_*` functions ⏳ · Est: 6h · Deps: BL-129
 

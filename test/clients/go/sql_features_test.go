@@ -236,6 +236,44 @@ func TestJSONValue(t *testing.T) {
 	}
 }
 
+func TestGeographyStoreAndIntersects(t *testing.T) {
+	ctx := context.Background()
+	client, _ := newClient(t)
+	if err := client.Dataset("ds").Create(ctx, &bigquery.DatasetMetadata{}); err != nil {
+		t.Fatalf("dataset: %v", err)
+	}
+	table := client.Dataset("ds").Table("places")
+	if err := table.Create(ctx, &bigquery.TableMetadata{
+		Schema: bigquery.Schema{
+			{Name: "id", Type: bigquery.IntegerFieldType},
+			{Name: "loc", Type: bigquery.GeographyFieldType},
+		},
+	}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	type row struct {
+		ID  int64  `bigquery:"id"`
+		Loc string `bigquery:"loc"`
+	}
+	if err := table.Inserter().Put(ctx, []*row{
+		{ID: 1, Loc: "POINT(5 5)"},
+		{ID: 2, Loc: "POINT(100 100)"},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := readAll(t, client.Query(`
+		SELECT id FROM `+"`ds.places`"+`
+		WHERE ST_INTERSECTS(loc, ST_GEOGFROMTEXT('POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))'))
+		ORDER BY id
+	`))
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 || rows[0][0].(int64) != 1 {
+		t.Errorf("intersecting ids = %v, want [1]", rows)
+	}
+}
+
 func TestRangeColumnRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	client, _ := newClient(t)

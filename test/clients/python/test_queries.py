@@ -244,6 +244,41 @@ def test_range_column_round_trip(bq: bigquery.Client, project_id: str) -> None:
     assert by_id[2]["end"] is None
 
 
+def test_geography_round_trip_and_st_intersects(
+    bq: bigquery.Client, project_id: str
+) -> None:
+    bq.create_dataset(DatasetReference(project_id, "ds"))
+    table_ref = TableReference.from_string(f"{project_id}.ds.places")
+    bq.create_table(
+        Table(
+            table_ref,
+            schema=[SchemaField("id", "INT64"), SchemaField("loc", "GEOGRAPHY")],
+        )
+    )
+    bq.insert_rows_json(
+        table_ref,
+        [
+            {"id": 1, "loc": "POINT(5 5)"},
+            {"id": 2, "loc": "POINT(100 100)"},
+        ],
+    )
+    rows = list(
+        bq.query(
+            f"""
+            SELECT id, ST_ASTEXT(loc) AS wkt
+            FROM `{project_id}.ds.places`
+            WHERE ST_INTERSECTS(
+              loc,
+              ST_GEOGFROMTEXT('POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))')
+            )
+            ORDER BY id
+            """
+        ).result()
+    )
+    assert [r["id"] for r in rows] == [1]
+    assert "POINT" in rows[0]["wkt"]
+
+
 def test_interval_round_trip(bq: bigquery.Client) -> None:
     # BQ INTERVAL "Y-M D H:M:S" survives through the wire and DuckDB
     # interval storage. Bound as a query parameter (the typical Python
