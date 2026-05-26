@@ -566,9 +566,11 @@ function timestampToWireMicros(value: unknown): string {
 
 function datetimeToWire(value: unknown): string {
   if (value instanceof Date) {
-    // DuckDB returns a JS Date for TIMESTAMP types; for DATETIME (which has
-    // no zone), drop the trailing Z to match BQ's canonical form.
-    return value.toISOString().replace(/Z$/, '');
+    // BQ canonical: no Z, no trailing-zero fractional seconds.
+    return value
+      .toISOString()
+      .replace(/\.0+Z$/, '')
+      .replace(/Z$/, '');
   }
   return String(value);
 }

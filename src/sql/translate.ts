@@ -134,6 +134,19 @@ const UNSUPPORTED_FUNCTIONS = new Set([
  * verbatim (PIVOT, UNPIVOT, GLOB, ILIKE, SIMILAR, TRY_CAST, BOTH,
  * LEADING, TRAILING, ASYMMETRIC, SYMMETRIC, PLACING, VARIADIC).
  */
+/**
+ * BQ type-name → DuckDB type-name. Used when a bare identifier appears
+ * outside a function-call position (e.g. inside CAST). Function-call
+ * positions like `FLOAT64(json)` are handled by their dedicated case
+ * branches in handleIdentifier.
+ */
+const BQ_TYPE_ALIAS_FOR_CAST: ReadonlyMap<string, string> = new Map([
+  ['INT64', 'BIGINT'],
+  ['FLOAT64', 'DOUBLE'],
+  ['BOOL', 'BOOLEAN'],
+  ['BYTES', 'BLOB'],
+]);
+
 const DUCKDB_RESERVED_BUT_BQ_ALLOWED = new Set<string>([
   'CHECK',
   'COLUMN',
@@ -1603,6 +1616,13 @@ function handleIdentifier(
     }
     if (upper === '_PARTITIONDATE') {
       out.push('CAST("_partition_time" AS DATE)');
+      return i + 1;
+    }
+    // Bare BQ type identifiers (CAST(x AS FLOAT64), etc.) — DuckDB
+    // doesn't know FLOAT64/INT64/BOOL/BYTES under those names.
+    const typeAlias = BQ_TYPE_ALIAS_FOR_CAST.get(upper);
+    if (typeAlias !== undefined) {
+      out.push(typeAlias);
       return i + 1;
     }
     if (DUCKDB_RESERVED_BUT_BQ_ALLOWED.has(upper)) {

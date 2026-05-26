@@ -11,6 +11,7 @@ coverage/
 npm-debug.log*
 .vscode/
 .idea/
+.claude/
 
 # Python client tests virtualenv
 test/clients/python/.venv/

@@ -559,7 +559,10 @@ test('duckValueToBq: INTERVAL accepts string fallback for non-object input', () 
 
 test('duckValueToBq: RANGE rejects non-object value', () => {
   const field: BqField = { name: 'r', type: 'RANGE', rangeElementType: { type: 'DATE' } };
-  assert.throws(() => duckValueToBq('not-a-struct', field), /Expected object from DuckDB for RANGE/);
+  assert.throws(
+    () => duckValueToBq('not-a-struct', field),
+    /Expected object from DuckDB for RANGE/,
+  );
 });
 
 test('duckValueToBq: BIGNUMERIC long decimal string passes through verbatim', () => {
@@ -619,10 +622,16 @@ test('duckValueToBq: TIMESTAMP with a string falls back to String() coercion', (
   assert.equal(duckValueToBq('2026-05-17T10:30:00Z', field), '2026-05-17T10:30:00Z');
 });
 
-test('duckValueToBq: DATETIME from a Date drops the trailing Z', () => {
+test('duckValueToBq: DATETIME from a Date drops trailing zeros + Z (matches BQ wire format)', () => {
   const field: BqField = { name: 'dt', type: 'DATETIME' };
   const date = new Date(Date.UTC(2026, 4, 17, 12, 34, 56));
-  assert.equal(duckValueToBq(date, field), '2026-05-17T12:34:56.000');
+  assert.equal(duckValueToBq(date, field), '2026-05-17T12:34:56');
+});
+
+test('duckValueToBq: DATETIME from a Date keeps non-zero fractional seconds', () => {
+  const field: BqField = { name: 'dt', type: 'DATETIME' };
+  const date = new Date(Date.UTC(2026, 4, 17, 12, 34, 56, 789));
+  assert.equal(duckValueToBq(date, field), '2026-05-17T12:34:56.789');
 });
 
 test('duckValueToBq: DATETIME with a string passes through verbatim', () => {

@@ -124,9 +124,9 @@ test('translate: JSON_VALUE renamed to json_extract_string', () => {
   assert.equal(norm(sql), "json_extract_string(payload, '$.path')");
 });
 
-test('translate: SAFE_CAST renamed to try_cast', () => {
+test('translate: SAFE_CAST renamed to try_cast and INT64 → BIGINT in cast target', () => {
   const { sql } = translate('SAFE_CAST(col AS INT64)', { project: 'p' });
-  assert.equal(norm(sql), 'try_cast(col AS INT64)');
+  assert.equal(norm(sql), 'try_cast(col AS BIGINT)');
 });
 
 test('translate: STARTS_WITH passes through (DuckDB has it natively)', () => {
