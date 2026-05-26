@@ -1,19 +1,19 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:15:08.734Z"
+    "capturedAt": "2026-05-26T19:15:13.134Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "f",
-        "type": "FLOAT"
+        "name": "b_literal",
+        "type": "BYTES"
       },
       {
-        "name": "b",
-        "type": "BOOLEAN"
+        "name": "b_decoded",
+        "type": "BYTES"
       },
       {
-        "name": "s",
+        "name": "b64_encoded",
         "type": "STRING"
       }
     ]
@@ -22,13 +22,13 @@
     {
       "f": [
         {
-          "v": "3.14"
+          "v": "aGVsbG8="
         },
         {
-          "v": "true"
+          "v": "d29ybGQ="
         },
         {
-          "v": "hi"
+          "v": "d29ybGQ="
         }
       ]
     }

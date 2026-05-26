@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:15:12.822Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "rows_total",
+        "type": "INTEGER"
+      },
+      {
+        "name": "rows_non_null",
+        "type": "INTEGER"
+      },
+      {
+        "name": "sum_x",
+        "type": "INTEGER"
+      },
+      {
+        "name": "avg_x",
+        "type": "FLOAT"
+      },
+      {
+        "name": "min_x",
+        "type": "INTEGER"
+      },
+      {
+        "name": "max_x",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "5"
+        },
+        {
+          "v": "3"
+        },
+        {
+          "v": "6"
+        },
+        {
+          "v": "2.0"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "3"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

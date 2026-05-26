@@ -305,6 +305,9 @@ export function bqSelectExpression(column: string, field: BqField): string {
   if (field.type === 'BYTES') return `to_base64(${ident})`;
   if (field.type === 'TIME') return `${ident}::VARCHAR`;
   if (field.type === 'GEOGRAPHY') return `ST_AsText(${ident})`;
+  // DuckDB returns DECIMAL via JS number, which loses precision past
+  // ~15 significant digits. Cast to VARCHAR so the full string survives.
+  if (field.type === 'NUMERIC') return `${ident}::VARCHAR`;
   return ident;
 }
 
@@ -491,9 +494,11 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
       // "false" — not JSON booleans. The client libs depend on this.
       return value ? 'true' : 'false';
     case 'NUMERIC':
-      // DuckDB returns DECIMAL as a number (small) or a stringFromDecimal-style
-      // string; getRowObjectsJS coerces to number when it fits, string when not.
-      return typeof value === 'number' ? trimDecimal(value.toString()) : String(value);
+      // bqSelectExpression casts NUMERIC → VARCHAR so DuckDB hands back the
+      // full-precision string. Trailing `.0` is added when DuckDB drops the
+      // fractional part (e.g. TRUNC(3.7) → "3") so the wire form stays a
+      // decimal — matches what BQ emits for FLOAT64-typed integer results.
+      return trimDecimal(typeof value === 'string' ? value : String(value));
     case 'TIMESTAMP':
       // BQ's modern default (when the client sets `useInt64Timestamp=true`,
       // which the @google-cloud/bigquery client does by default) is

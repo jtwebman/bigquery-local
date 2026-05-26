@@ -1,19 +1,23 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:15:08.734Z"
+    "capturedAt": "2026-05-26T19:15:15.320Z"
   },
   "schema": {
     "fields": [
       {
-        "name": "f",
-        "type": "FLOAT"
+        "name": "num",
+        "type": "STRING"
       },
       {
-        "name": "b",
+        "name": "domain",
+        "type": "STRING"
+      },
+      {
+        "name": "starts_with_h",
         "type": "BOOLEAN"
       },
       {
-        "name": "s",
+        "name": "replaced",
         "type": "STRING"
       }
     ]
@@ -22,13 +26,16 @@
     {
       "f": [
         {
-          "v": "3.14"
+          "v": "123"
+        },
+        {
+          "v": "example.com"
         },
         {
           "v": "true"
         },
         {
-          "v": "hi"
+          "v": "hello BQ"
         }
       ]
     }

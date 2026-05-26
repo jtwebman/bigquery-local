@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:15:12.482Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "plain_null",
+        "type": "INTEGER"
+      },
+      {
+        "name": "typed_null",
+        "type": "INTEGER"
+      },
+      {
+        "name": "ifnull_str",
+        "type": "STRING"
+      },
+      {
+        "name": "coalesce_int",
+        "type": "INTEGER"
+      },
+      {
+        "name": "nullif_eq",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": null
+        },
+        {
+          "v": null
+        },
+        {
+          "v": "fallback"
+        },
+        {
+          "v": "42"
+        },
+        {
+          "v": null
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

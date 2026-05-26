@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:15:14.915Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "nested_string",
+        "type": "STRING"
+      },
+      {
+        "name": "array_idx",
+        "type": "STRING"
+      },
+      {
+        "name": "null_val",
+        "type": "STRING"
+      },
+      {
+        "name": "missing_path",
+        "type": "STRING"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "hello"
+        },
+        {
+          "v": "20"
+        },
+        {
+          "v": null
+        },
+        {
+          "v": null
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

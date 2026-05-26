@@ -1,20 +1,20 @@
 {
   "_meta": {
-    "capturedAt": "2026-05-26T19:15:12.140Z"
+    "capturedAt": "2026-05-26T19:15:13.545Z"
   },
   "schema": {
     "fields": [
       {
         "name": "n",
-        "type": "INTEGER"
+        "type": "NUMERIC"
       },
       {
-        "name": "total",
-        "type": "INTEGER"
+        "name": "larger_n",
+        "type": "NUMERIC"
       },
       {
-        "name": "list",
-        "type": "STRING"
+        "name": "negative_n",
+        "type": "NUMERIC"
       }
     ]
   },
@@ -22,13 +22,13 @@
     {
       "f": [
         {
-          "v": "5"
+          "v": "123.456"
         },
         {
-          "v": "15"
+          "v": "999999.999999"
         },
         {
-          "v": "1,2,3,4,5"
+          "v": "-42.5"
         }
       ]
     }

@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:15:14.588Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "yr",
+        "type": "INTEGER"
+      },
+      {
+        "name": "mo",
+        "type": "INTEGER"
+      },
+      {
+        "name": "dow",
+        "type": "INTEGER"
+      },
+      {
+        "name": "plus_week",
+        "type": "DATE"
+      },
+      {
+        "name": "week_diff",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "2025"
+        },
+        {
+          "v": "6"
+        },
+        {
+          "v": "1"
+        },
+        {
+          "v": "2025-06-22"
+        },
+        {
+          "v": "7"
+        }
+      ]
+    }
+  ],
+  "totalRows": "1",
+  "jobComplete": true
+}

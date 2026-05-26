@@ -1,0 +1,61 @@
+{
+  "_meta": {
+    "capturedAt": "2026-05-26T19:15:14.312Z"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "x",
+        "type": "INTEGER"
+      },
+      {
+        "name": "label",
+        "type": "STRING"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "f": [
+        {
+          "v": "0"
+        },
+        {
+          "v": "small"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "1"
+        },
+        {
+          "v": "one"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "2"
+        },
+        {
+          "v": "big"
+        }
+      ]
+    },
+    {
+      "f": [
+        {
+          "v": "3"
+        },
+        {
+          "v": "big"
+        }
+      ]
+    }
+  ],
+  "totalRows": "4",
+  "jobComplete": true
+}

@@ -1,0 +1,4 @@
+SELECT
+  NUMERIC '123.456' AS n,
+  NUMERIC '999999.999999' AS larger_n,
+  NUMERIC '-42.5' AS negative_n

@@ -1,0 +1,7 @@
+SELECT
+  x,
+  ROW_NUMBER() OVER (ORDER BY x) AS rn,
+  RANK() OVER (ORDER BY x) AS rk,
+  LAG(x) OVER (ORDER BY x) AS prev_x
+FROM UNNEST([10, 20, 30, 40]) AS x
+ORDER BY x

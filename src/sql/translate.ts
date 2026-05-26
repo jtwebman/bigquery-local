@@ -1239,6 +1239,14 @@ function translateRange(
         out.push(tok.value.replace(/^[rR]/, ''));
         i += 1;
         break;
+      case 'bytes':
+      case 'raw-bytes':
+        // BQ bytes literal `b'hello'` → DuckDB `BLOB 'hello'`. The same
+        // path covers `rb'...'` / `br'...'` (raw bytes — no backslash
+        // escapes, same as raw strings).
+        out.push(`BLOB ${tok.value.replace(/^(rb|br|b)/i, '')}`);
+        i += 1;
+        break;
       case 'identifier':
         i = handleIdentifier(tokens, i, endIdx, out, paramOrder, project);
         break;
@@ -1555,6 +1563,19 @@ function handleIdentifier(
     }
   }
 
+  // `NUMERIC '123.456'` / `BIGNUMERIC '...'` typed-string literals.
+  // DuckDB doesn't accept this syntax — rewrite to a cast.
+  if (upper === 'NUMERIC' || upper === 'BIGNUMERIC') {
+    const nextIdx = skipWhitespace(tokens, i + 1, endIdx);
+    if (nextIdx !== null) {
+      const literal = tokens[nextIdx];
+      if (literal?.kind === 'string') {
+        out.push(`CAST(${literal.value} AS DECIMAL(38, 9))`);
+        return nextIdx + 1;
+      }
+    }
+  }
+
   // `TABLESAMPLE SYSTEM (n PERCENT)` — BQ's SYSTEM is storage-block-based,
   // matching DuckDB's SYSTEM. But DuckDB's SYSTEM only emits whole storage
   // blocks, which for small / in-memory tables means N% of "one block" rounds
@@ -1708,6 +1729,34 @@ function handleIdentifier(
     case 'TIMESTAMP_ADD':
       return rewriteTimestampArith(tokens, i, parenIdx, endIdx, '+', out, paramOrder, project);
 
+    case 'DATE_ADD':
+    case 'DATE_SUB': {
+      // BQ DATE_ADD / DATE_SUB return DATE. DuckDB returns TIMESTAMP
+      // for DATE + INTERVAL. Wrap in CAST(... AS DATE) so the result
+      // type matches BQ.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      out.push(`CAST(${upper}(${inner}) AS DATE)`);
+      return close + 1;
+    }
+
+    case 'EXTRACT': {
+      // BQ's EXTRACT(DAYOFWEEK FROM x) is Sun=1..Sat=7; DuckDB returns
+      // Sun=0..Sat=6. Add 1 to bridge. Other parts pass through unchanged.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const firstArgIdx = skipWhitespace(tokens, parenIdx + 1, close);
+      const firstArg = firstArgIdx !== null ? tokens[firstArgIdx] : undefined;
+      const isDayOfWeek =
+        firstArg?.kind === 'identifier' && firstArg.value.toUpperCase() === 'DAYOFWEEK';
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      if (isDayOfWeek) {
+        out.push(`(EXTRACT(${inner})::BIGINT + 1)`);
+      } else {
+        out.push(`EXTRACT(${inner})`);
+      }
+      return close + 1;
+    }
+
     case 'NORMALIZE_AND_CASEFOLD':
       // BQ has it natively; DuckDB has nfc_normalize() and lower(), so we
       // synthesize the composition: NORMALIZE_AND_CASEFOLD(x[, form])
@@ -1719,6 +1768,32 @@ function handleIdentifier(
       // BigQuery replaces ALL. Add a 'g' (global) options arg so the
       // semantics line up.
       return rewriteRegexpReplace(tokens, parenIdx, endIdx, out, paramOrder, project);
+
+    case 'REGEXP_EXTRACT': {
+      // BQ: returns first capture group if pattern has one, else whole match.
+      // DuckDB: returns whole match unless explicit group index given.
+      // Inspect the pattern literal — append `, 1` when it has a group.
+      const close = findMatchingClose(tokens, parenIdx, endIdx);
+      const commaIdx = findTopLevelComma(tokens, parenIdx + 1, close);
+      if (commaIdx !== null) {
+        const trailingCommaIdx = findTopLevelComma(tokens, commaIdx + 1, close);
+        // If the call already has an explicit position argument, pass
+        // through verbatim — user opted into DuckDB's positional form.
+        if (trailingCommaIdx === null) {
+          const patternIdx = skipWhitespace(tokens, commaIdx + 1, close);
+          const patternTok = patternIdx !== null ? tokens[patternIdx] : undefined;
+          const patternValue = extractStringLiteral(patternTok);
+          if (patternValue !== null && hasCaptureGroup(patternValue)) {
+            const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+            out.push(`regexp_extract(${inner}, 1)`);
+            return close + 1;
+          }
+        }
+      }
+      const inner = translateRange(tokens, parenIdx + 1, close, paramOrder, project);
+      out.push(`regexp_extract(${inner})`);
+      return close + 1;
+    }
 
     case 'SAFE_DIVIDE':
       // BQ: returns NULL if denominator is 0. `x / NULLIF(y, 0)` gives the
@@ -2325,6 +2400,36 @@ function tryParseStructNamedArgs(
     argStart = commaIdx + 1;
   }
   return out.length > 0 ? out : null;
+}
+
+function extractStringLiteral(tok: Token | undefined): string | null {
+  if (tok === undefined) return null;
+  if (tok.kind === 'string') return tok.value.slice(1, -1);
+  if (tok.kind === 'raw-string') return tok.value.replace(/^[rR]/, '').slice(1, -1);
+  return null;
+}
+
+function hasCaptureGroup(pattern: string): boolean {
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === '\\') {
+      i += 2;
+      continue;
+    }
+    if (ch === '[') {
+      i += 1;
+      while (i < pattern.length && pattern[i] !== ']') {
+        if (pattern[i] === '\\') i += 2;
+        else i += 1;
+      }
+      i += 1;
+      continue;
+    }
+    if (ch === '(' && pattern[i + 1] !== '?') return true;
+    i += 1;
+  }
+  return false;
 }
 
 function areArgsEmpty(tokens: readonly Token[], openIdx: number, closeIdx: number): boolean {
