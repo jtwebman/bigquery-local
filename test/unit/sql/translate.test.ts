@@ -299,6 +299,58 @@ test('translate: identifiers NOT in the safelist still pass through bare', () =>
   assert.match(norm(sql), /WHERE name ILIKE 'foo%'/);
 });
 
+// ---------------------------------------------------------------------------
+// STRUCT() literal translation
+// ---------------------------------------------------------------------------
+
+test('translate: STRUCT(<expr> AS <name>, ...) becomes a named DuckDB struct literal', () => {
+  const { sql } = translate("SELECT STRUCT(1 AS id, 'x' AS label) AS s", { project: 'p' });
+  assert.match(norm(sql), /SELECT \{"id": 1, "label": 'x'\} AS s/);
+});
+
+test('translate: STRUCT named-field literal accepts complex expressions', () => {
+  const { sql } = translate('SELECT STRUCT(a + b AS sum, UPPER(c) AS upper) FROM t', {
+    project: 'p',
+  });
+  assert.match(norm(sql), /SELECT \{"sum": a \+ b, "upper": UPPER\(c\)\} FROM t/);
+});
+
+test('translate: positional STRUCT(...) falls back to a row expression', () => {
+  const { sql } = translate("SELECT STRUCT(1, 'x')", { project: 'p' });
+  assert.match(norm(sql), /SELECT \(1, 'x'\)/);
+});
+
+test('translate: empty STRUCT() falls back to a row expression', () => {
+  const { sql } = translate('SELECT STRUCT()', { project: 'p' });
+  assert.match(norm(sql), /SELECT \(\)/);
+});
+
+test('translate: mixed positional + named STRUCT falls back (no partial named form)', () => {
+  // First arg is positional, second is named — translator can't emit a
+  // half-named DuckDB literal, so it falls back to the positional form.
+  const { sql } = translate('SELECT STRUCT(1, 2 AS b)', { project: 'p' });
+  assert.match(norm(sql), /SELECT \(1, 2 AS b\)/);
+});
+
+// ---------------------------------------------------------------------------
+// UNNEST table-source alias
+// ---------------------------------------------------------------------------
+
+test('translate: UNNEST(arr) AS x becomes UNNEST(...) AS _unnest_alias(x)', () => {
+  const { sql } = translate('SELECT x FROM UNNEST([1, 2, 3]) AS x', { project: 'p' });
+  assert.match(norm(sql), /UNNEST\(\[1, 2, 3\]\) AS _unnest_alias\("x"\)/);
+});
+
+test('translate: UNNEST without AS passes through unchanged', () => {
+  const { sql } = translate('SELECT * FROM UNNEST([1, 2, 3])', { project: 'p' });
+  assert.match(norm(sql), /SELECT \* FROM UNNEST\(\[1, 2, 3\]\)/);
+});
+
+test('translate: UNNEST already in DuckDB AS t(c) form passes through', () => {
+  const { sql } = translate('SELECT s FROM UNNEST([1, 2]) AS t(s)', { project: 'p' });
+  assert.match(norm(sql), /UNNEST\(\[1, 2\]\) AS t\(s\)/);
+});
+
 test('translate: full safelist auto-quotes when used as a column', () => {
   // Walk every safelist entry to make sure each branch is exercised.
   const cases = [
