@@ -50,6 +50,34 @@ export interface PreparedStatement {
   all<Row = Record<string, unknown>>(params?: readonly unknown[]): Promise<readonly Row[]>;
 }
 
+// Install + load a DuckDB extension, tolerant of a cold cache hit by many
+// connections at once: an extension auto-installs on first use (downloading
+// into DUCKDB_HOME), and a concurrent LOAD can fire before another process
+// finishes writing it. Retry LOAD (re-running INSTALL) a few times so the
+// first-time race settles. Docker bakes the cache, so this is a no-op there.
+async function loadExtension(
+  connection: { run(sql: string): Promise<unknown> },
+  name: string,
+  installSql: string,
+): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await connection.run(installSql);
+    } catch {
+      // Concurrent install, or already installed; LOAD decides availability.
+    }
+    try {
+      await connection.run(`LOAD ${name}`);
+      return;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 export async function createDb(config: DbConfig = {}): Promise<Db> {
   const path = config.path ?? ':memory:';
   const instance = await DuckDBInstance.create(path);
@@ -61,18 +89,7 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
   // DESC. DuckDB defaults to NULLs-last for both.
   await connection.run("SET default_null_order = 'nulls_first_on_asc_last_on_desc'");
   // Spatial extension backs the GEOGRAPHY type and every ST_* function.
-  // Auto-installs on first run; subsequent runs load from the cached
-  // copy in DUCKDB_HOME (default `~/.duckdb`). On Windows, multiple
-  // concurrent INSTALLs race on the rename of the downloaded
-  // extension file ("Access is denied"); swallow INSTALL errors and
-  // let LOAD speak for whether the extension is actually available.
-  try {
-    await connection.run('INSTALL spatial');
-  } catch {
-    // Already installed by another connection in this process, or
-    // the test image baked it in (Docker build pre-loads the cache).
-  }
-  await connection.run('LOAD spatial');
+  await loadExtension(connection, 'spatial', 'INSTALL spatial');
   // BigQuery's ST_DISTANCE is geodesic in meters using (lng, lat); DuckDB's
   // ST_Distance is planar Cartesian and ST_Distance_Sphere flips the
   // argument order. Register a Haversine macro on the BQ convention.
@@ -94,17 +111,9 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
     CREATE OR REPLACE MACRO bq_st_dwithin(g1, g2, m) AS
       bq_st_distance(g1, g2) <= m
   `);
-  // SHA-512 has no DuckDB built-in. The community `crypto` extension provides
-  // crypto_hash('sha2-512', x) returning BYTES, matching BQ's SHA512. It's
-  // native (no JS callback), so unlike a registered scalar UDF it leaves no
-  // ThreadSafeFunction holding the event loop open. Same install/cache and
-  // Windows concurrent-INSTALL handling as spatial.
-  try {
-    await connection.run('INSTALL crypto FROM community');
-  } catch {
-    // Already installed by another connection, or baked into the image.
-  }
-  await connection.run('LOAD crypto');
+  // SHA512 via the community crypto extension's crypto_hash('sha2-512', x):
+  // native (no JS-callback ThreadSafeFunction to leak), returns BYTES like BQ.
+  await loadExtension(connection, 'crypto', 'INSTALL crypto FROM community');
   const preparedCache = new Map<string, Promise<DuckDBPreparedStatement>>();
   let closed = false;
 
