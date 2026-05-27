@@ -605,3 +605,51 @@ test('translate: TABLESAMPLE PERCENT value is not cast to DOUBLE', () => {
     'SELECT * FROM t TABLESAMPLE BERNOULLI (2.5 PERCENT)',
   );
 });
+
+// ---------------------------------------------------------------------------
+// Function-rewrite arg-count errors (combinator guard paths)
+// ---------------------------------------------------------------------------
+
+test('translate: rewrite combinators reject wrong argument counts', () => {
+  const bad = (sql: string): void => {
+    assert.throws(() => translate(sql, { project: 'p' }), BqError);
+  };
+  bad('SELECT SAFE_DIVIDE(1)'); // rewriteTwoArg: needs two
+  bad('SELECT TIMESTAMP_SUB(x)'); // rewriteTimestampArith: needs two
+  bad('SELECT PARSE_JSON(a, b)'); // rewriteOneArg: needs exactly one
+  bad('SELECT TIMESTAMP_TRUNC(x)'); // rewritePartArg2: needs (ts, PART)
+  bad('SELECT DATE_TRUNC(x)'); // dateTrunc: needs (date, PART)
+  bad('SELECT DATE_DIFF(a)'); // rewriteDiff: needs three (first comma)
+  bad('SELECT DATE_DIFF(a, b)'); // rewriteDiff: needs three (second comma)
+  bad('SELECT GENERATE_DATE_ARRAY()'); // rewriteGenerateArray: needs (start, end)
+});
+
+test('translate: decodeBqString tolerates malformed escapes (literal fallthrough)', () => {
+  // Incomplete \x / \u / \U fall back to emitting the escape char verbatim.
+  assert.equal(norm(translate("SELECT '\\xZZ'", { project: 'p' }).sql), "SELECT 'xZZ'");
+  assert.equal(norm(translate("SELECT '\\uZZ'", { project: 'p' }).sql), "SELECT 'uZZ'");
+  assert.equal(norm(translate("SELECT '\\UZZ'", { project: 'p' }).sql), "SELECT 'UZZ'");
+});
+
+test('translate: REGEXP_EXTRACT handles raw-string patterns, char classes, escapes', () => {
+  // raw-string pattern + char class + capture group → append `, 1`.
+  assert.match(
+    norm(translate("SELECT REGEXP_EXTRACT(s, r'[0-9]+(a)') FROM t", { project: 'p' }).sql),
+    /regexp_extract\(.*, 1\)/,
+  );
+  // escaped metachar, no real group → no positional arg appended.
+  const noGroup = norm(translate("SELECT REGEXP_EXTRACT(s, '\\\\d') FROM t", { project: 'p' }).sql);
+  assert.match(noGroup, /regexp_extract\(/);
+  assert.doesNotMatch(noGroup, /, 1\)/);
+});
+
+test('translate: UNNEST ... WITH OFFSET without AS uses the default offset name', () => {
+  assert.match(
+    norm(translate('SELECT a, o FROM UNNEST([1, 2, 3]) AS a WITH OFFSET', { project: 'p' }).sql),
+    /AS "offset"/,
+  );
+});
+
+test('translate: STRUCT field alias may be backtick-quoted', () => {
+  assert.equal(norm(translate('SELECT STRUCT(1 AS `b`)', { project: 'p' }).sql), 'SELECT {"b": 1}');
+});
