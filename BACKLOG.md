@@ -1140,6 +1140,64 @@ independently, leaving an inconsistent mix of `{id, name}` and
 translation (look-back to sibling structs' field names). Workaround:
 write the data using `UNION ALL` of named-column SELECTs.
 
+## Upstream
+
+### Report @duckdb/node-bindings scalar-UDF event-loop leak ⏳
+
+`connection.registerScalarFunction(...)` creates a napi ThreadSafeFunction
+(the bridge that lets DuckDB's execution thread call the JS callback) that
+the binding never `unref`s or releases — not even on `connection.closeSync()`
+/ `instance.closeSync()`. A ref'd TSFN keeps the libuv event loop alive, so
+the process never exits on its own.
+
+**Repro (minimal):** open instance + connection, `registerScalarFunction`,
+run one query, `closeSync` both → the process hangs (does not exit). A bare
+connection and a `LOAD spatial` connection both exit cleanly; only the UDF
+registration leaks. Reproduces on `@duckdb/node-api` `1.5.2-r.1` *and* the
+latest `1.5.3-r.2`. Not surfaced in `process._getActiveHandles()` or
+`getActiveResourcesInfo()`, so there is no JS-side `unref` lever.
+
+**How it bit us:** the leak was masked for weeks because `node --test`
+force-exits past lingering handles on Node 24.15.0 / 26. Node 24.16.0's
+test_runner drains the loop instead → CI hung in the coverage step (all
+tests passing, no exit). `--test-force-exit` "fixed" the hang but then
+crashed Windows (`UV_HANDLE_CLOSING` libuv assertion) by tearing down while
+the TSFN async handle was mid-close.
+
+**Suggested fix (PR):** `napi_unref_threadsafe_function` the UDF's TSFN at
+creation (a registered function shouldn't pin the process open) and
+`napi_release_threadsafe_function` it on connection close. The change is
+portable napi C++ — one source edit — but the release must **republish every
+per-platform binary**, including `@duckdb/node-bindings-{linux,darwin}-arm64`
+(not just x64) and `-win32-x64`; offer to help verify on arm. Can't be
+patched locally: it's compiled native code (patch-package is JS-only) and
+the bindings ship prebuilt, so a self-fix means forking + the full
+cross-platform build matrix.
+
+**Status:** not reported upstream (searched duckdb/duckdb-node-neo issues;
+the closest, #375 "fix scalar fn race", is a different bug). Action: file
+the issue with the repro above + propose the PR.
+
+**Why it matters:** fixing it unlocks leak-free pure-JS scalar UDFs in
+general — we could drop the crypto-extension dependency for SHA512 and
+implement FARM_FINGERPRINT in pure JS (see below) without any native build.
+
+### FARM_FINGERPRINT ⏳
+
+BQ's `FARM_FINGERPRINT(value)` → INT64 via Google FarmHash `Fingerprint64`
+(the stable, platform-independent variant — not `Hash64`). Only useful if
+bit-exact with BQ, so it can't be approximated with DuckDB's `hash()`. Two
+viable native paths (a Node-callback UDF is ruled out — see the leak above):
+- **Upstream a FarmHash DuckDB extension** (C++ vendoring Google's MIT
+  source) to community-extensions, then `INSTALL farmhash FROM community`
+  like we do `crypto`. The community pipeline owns the per-platform/version
+  builds. Preferred over a per-project extension (which we'd have to rebuild
+  for every DuckDB version × platform).
+- **Pure-JS** `Fingerprint64` UDF — only viable once the binding leak above
+  is fixed; still needs a JS impl verified bit-exact against BQ.
+Currently a precise `unsupportedFeature` error. Moderately common in BQ for
+deterministic bucketing / sharding / sampling / surrogate keys.
+
 ## Phase 25 — Connections, transfer, kitchen sink
 
 ### BL-158 — Connections API ⏳ · Est: 4h · Deps: BL-004
