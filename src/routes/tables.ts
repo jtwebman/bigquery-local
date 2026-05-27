@@ -297,8 +297,10 @@ function parseTableBody(body: unknown): ParsedTableBody {
       tpObj['field'] !== undefined
         ? expectString(tpObj['field'], 'timePartitioning.field')
         : undefined;
+    // The Java client serializes an unset expiration as an explicit null;
+    // treat null like absent (no expiration) rather than rejecting it.
     const expirationMs =
-      tpObj['expirationMs'] !== undefined
+      tpObj['expirationMs'] !== undefined && tpObj['expirationMs'] !== null
         ? expectNonNegativeInteger(tpObj['expirationMs'], 'timePartitioning.expirationMs')
         : undefined;
     timePartitioning = {

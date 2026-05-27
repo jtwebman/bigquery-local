@@ -71,6 +71,11 @@ const routes: RouteDefinition[] = [
       body: { contentType: req.headers['content-type'], body: req.body },
     }),
   },
+  {
+    method: 'PATCH',
+    path: '/patch-only',
+    handler: (req) => ({ status: 200, body: { method: req.method, body: req.body } }),
+  },
 ];
 
 let server: Server;
@@ -149,6 +154,16 @@ test('returns 400 when a body claims gzip but is not', async () => {
     body: 'not actually gzip',
   });
   assert.equal(res.status, 400);
+});
+
+test('honors X-HTTP-Method-Override (Java client tunnels PATCH through POST)', async () => {
+  const res = await fetch(`${server.url}/patch-only`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-http-method-override': 'PATCH' },
+    body: JSON.stringify({ label: 'x' }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { method: 'PATCH', body: { label: 'x' } });
 });
 
 test('passes through raw string when content-type is not JSON', async () => {

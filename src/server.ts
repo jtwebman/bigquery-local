@@ -54,8 +54,14 @@ export function createRouterServer(config: ServerConfig = {}): Server {
     // req.url and req.method are always defined for server-side IncomingMessage
     // (the IncomingMessage type also covers the client side, where they're optional).
     const url = new URL(req.url as string, 'http://localhost');
-    const method = (req.method as string).toUpperCase();
     const headers = normalizeHeaders(req.headers);
+    // Google clients (e.g. the Java BigQuery client) tunnel PATCH through a
+    // POST + `X-HTTP-Method-Override` header; honor it so those route correctly.
+    let method = (req.method as string).toUpperCase();
+    const override = headers['x-http-method-override'];
+    if (method === 'POST' && override) {
+      method = override.toUpperCase();
+    }
 
     let body: unknown;
     try {

@@ -241,3 +241,16 @@ test('timePartitioning.expirationMs round-trips', async () => {
   const body = (await get.json()) as { timePartitioning?: { type: string; expirationMs?: number } };
   assert.equal(body.timePartitioning?.expirationMs, 7776000000);
 });
+
+test('timePartitioning.expirationMs = null is treated as no expiration (Java client)', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/datasets/${DATASET}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tableReference: { tableId: 'null_exp' },
+      schema: { fields: [{ name: 'x', type: 'STRING' }] },
+      timePartitioning: { type: 'DAY', expirationMs: null },
+    }),
+  });
+  assert.equal(res.status, 200);
+});
