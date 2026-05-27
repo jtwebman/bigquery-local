@@ -61,7 +61,7 @@ async function loadExtension(
   installSql: string,
 ): Promise<void> {
   let lastErr: unknown;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       await connection.run(installSql);
     } catch {
@@ -72,7 +72,10 @@ async function loadExtension(
       return;
     } catch (err) {
       lastErr = err;
-      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      // Backoff grows to ~1s, plus jitter to de-sync a thundering herd of
+      // parallel first-time installs (community downloads can take a beat).
+      const backoff = Math.min(1000, 100 * (attempt + 1)) + Math.floor(Math.random() * 100);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
     }
   }
   throw lastErr;
