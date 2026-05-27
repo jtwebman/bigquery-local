@@ -1,57 +1,23 @@
 /**
- * BigQuery ↔ DuckDB type translation.
+ * BigQuery ↔ DuckDB type translation. Layers: `bqTypeToDuck` (column type),
+ * `bqInsertExpression`/`bqSelectExpression` (SQL casts), `bqValueToDuck`/
+ * `duckValueToBq` (JS value encode/decode), plus row wrappers and the inverse
+ * `duckTypeToBq` (synthesizes a BqField from a DuckDB type for query schemas).
  *
- * Three layers, used by every route that touches user data:
- *
- *   1. `bqTypeToDuck(field)`             — DuckDB column type expression for
- *                                          `CREATE TABLE` / `ALTER TABLE`.
- *   2. `bqInsertExpression(n, field)`    — SQL placeholder + the casts /
- *                                          conversions needed to bind a JS
- *                                          value into the column. Examples:
- *                                          `$1`, `$1::DATE`, `from_base64($1)`,
- *                                          `$1::JSON::INTEGER[]`.
- *      `bqSelectExpression(col, field)`  — SQL projection wrapper for reads
- *                                          (e.g. `to_base64("v")` for BYTES).
- *   3. `bqValueToDuck(v, field)` /
- *      `duckValueToBq(v, field)`         — JS value encoding/decoding.
- *
- * Row-level wrappers (`bqRowToDuck`, `duckRowToBq`) just iterate the schema.
- * The inverse `duckTypeToBq(type, name)` synthesizes a `BqField` from a
- * DuckDB type string and is used when emitting result schemas for ad-hoc
- * SQL queries.
- *
- * **BQ wire-format conventions** for values flowing in/out:
- *   - INT64           string (e.g. `"123"`) — JSON loses precision past 2^53
- *   - FLOAT64         number
- *   - BOOL            boolean
- *   - STRING          string
- *   - BYTES           base64-encoded string
- *   - NUMERIC/BIGNUMERIC  decimal string (e.g. `"123.456"`)
- *   - TIMESTAMP       ISO-8601 string (e.g. `"2026-05-16T10:11:12Z"`)
- *   - DATETIME        ISO-8601 without TZ (e.g. `"2026-05-16T10:11:12"`)
- *   - DATE            `"YYYY-MM-DD"`
- *   - TIME            `"HH:MM:SS[.SSSSSS]"`
- *   - JSON            any JSON value (object / array / scalar)
- *   - GEOGRAPHY       WKT string in/out, stored as DuckDB GEOMETRY via
- *                     the spatial extension; the full ST_* surface
- *                     (intersects/contains/distance/…) is available.
- *   - INTERVAL        ISO-8601-ish string `"Y-M D H:M:S[.f]"` (e.g.
- *                     `"1-2 3 4:5:6.5"` = 1y 2mo 3d 4h 5m 6.5s; negative
- *                     intervals carry a leading `-` on the whole value)
- *   - RANGE<T>        half-open interval string `"[<start>, <end>)"` where
- *                     each bound is either a literal of element type T
- *                     (DATE / DATETIME / TIMESTAMP) or `UNBOUNDED`.
- *                     Internally stored as `STRUCT(start BIGINT, end
- *                     BIGINT)` with sentinels MIN_I64 / MAX_I64 for
- *                     unbounded ends — every overlap/contains check is
- *                     then a branch-free integer compare.
- *   - REPEATED mode   array of T-typed values
- *   - STRUCT          object with field names as keys
+ * BQ wire conventions — scalars are strings to survive JSON precision loss:
+ *   - INT64 / NUMERIC / BIGNUMERIC  decimal string
+ *   - FLOAT64 number, BOOL boolean, STRING string
+ *   - BYTES           base64 string
+ *   - TIMESTAMP       ISO-8601 w/ TZ; DATETIME w/o TZ; DATE `YYYY-MM-DD`;
+ *                     TIME `HH:MM:SS[.SSSSSS]`
+ *   - JSON            any JSON value
+ *   - GEOGRAPHY       WKT string, stored as DuckDB GEOMETRY (spatial ext)
+ *   - INTERVAL        `"Y-M D H:M:S[.f]"`, leading `-` negates whole value
+ *   - RANGE<T>        `"[<start>, <end>)"` (T = DATE/DATETIME/TIMESTAMP or
+ *                     UNBOUNDED), stored as STRUCT(start,end BIGINT) with
+ *                     MIN_I64/MAX_I64 sentinels so overlap checks are int compares
+ *   - REPEATED        array of T; STRUCT object keyed by field name
  */
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export type BqMode = 'NULLABLE' | 'REQUIRED' | 'REPEATED';
 
@@ -120,13 +86,9 @@ export function normalizeBqType(raw: string): BqType {
 }
 
 /**
- * Map the internal standard-SQL type name to the legacy wire name BQ's
- * REST API actually returns in tables/jobs/getQueryResults responses.
- *
- * The Go client (cloud.google.com/go/bigquery) parses value strings with
- * a switch on the legacy constants only (`INTEGER`, `FLOAT`, `BOOLEAN`,
- * `RECORD`), so emitting the standard names here would break it. Python
- * and Node normalize both forms.
+ * Standard-SQL type name → legacy wire name BQ's REST API returns. The Go
+ * client switches on the legacy constants only (INTEGER/FLOAT/BOOLEAN/RECORD),
+ * so standard names would break it; Python and Node normalize both.
  */
 export function bqTypeToWire(type: BqType): string {
   switch (type) {
@@ -144,10 +106,8 @@ export function bqTypeToWire(type: BqType): string {
 }
 
 /**
- * BigQuery `data_type` string for a field, as it appears in
- * `INFORMATION_SCHEMA.COLUMNS.data_type`. STRUCT fields render with their
- * full child list (`STRUCT<city STRING, zip STRING>`); REPEATED mode wraps
- * the base type as `ARRAY<…>`.
+ * BigQuery `data_type` string as in `INFORMATION_SCHEMA.COLUMNS.data_type`.
+ * STRUCT renders its full child list; REPEATED wraps as `ARRAY<…>`.
  */
 export function renderBqType(field: BqField): string {
   const base = renderBaseBqType(field);
@@ -165,10 +125,6 @@ function renderBaseBqType(field: BqField): string {
   const inner = children.map((f) => `${f.name} ${renderBqType(f)}`).join(', ');
   return `STRUCT<${inner}>`;
 }
-
-// ---------------------------------------------------------------------------
-// DuckDB column type for CREATE TABLE / ALTER TABLE
-// ---------------------------------------------------------------------------
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
@@ -189,8 +145,7 @@ function baseDuckType(field: BqField): string {
     case 'NUMERIC':
       return 'DECIMAL(38, 9)';
     case 'BIGNUMERIC':
-      // DuckDB DECIMAL caps at 38 precision; store as VARCHAR to round-trip
-      // the full BIGNUMERIC range losslessly.
+      // DuckDB DECIMAL caps at 38 precision; VARCHAR round-trips the full range.
       return 'VARCHAR';
     case 'TIMESTAMP':
       return 'TIMESTAMP WITH TIME ZONE';
@@ -203,13 +158,12 @@ function baseDuckType(field: BqField): string {
     case 'JSON':
       return 'JSON';
     case 'GEOGRAPHY':
-      // DuckDB spatial extension's native geometry type. Loaded at db init.
+      // Spatial extension's native geometry type (loaded at db init).
       return 'GEOMETRY';
     case 'INTERVAL':
       return 'INTERVAL';
     case 'RANGE':
-      // STRUCT of two BIGINT bounds; sentinels MIN_I64 / MAX_I64 cover
-      // the UNBOUNDED cases without NULL-handling in comparisons.
+      // Two BIGINT bounds; MIN_I64/MAX_I64 sentinels cover UNBOUNDED without NULLs.
       return 'STRUCT("start" BIGINT, "end" BIGINT)';
     case 'STRUCT': {
       if (field.fields === undefined || field.fields.length === 0) {
@@ -221,16 +175,11 @@ function baseDuckType(field: BqField): string {
   }
 }
 
-/** DuckDB column type for `CREATE TABLE` / `ALTER TABLE`. REPEATED mode
- * appends `[]` (DuckDB LIST). */
+/** DuckDB column type for `CREATE TABLE` / `ALTER TABLE`; REPEATED appends `[]`. */
 export function bqTypeToDuck(field: BqField): string {
   const base = baseDuckType(field);
   return field.mode === 'REPEATED' ? `${base}[]` : base;
 }
-
-// ---------------------------------------------------------------------------
-// INSERT placeholder + casts
-// ---------------------------------------------------------------------------
 
 function baseInsertExpr(ordinal: number, field: BqField): string {
   const p = `$${ordinal}`;
@@ -241,10 +190,10 @@ function baseInsertExpr(ordinal: number, field: BqField): string {
     case 'GEOGRAPHY':
       return `ST_GeomFromText(${p}::VARCHAR)`;
     case 'BYTES':
-      // We bind base64-encoded strings; from_base64() turns them into BLOB.
+      // Bound base64; from_base64() turns it into BLOB.
       return `from_base64(${p})`;
     case 'INT64':
-      // JS bigint binds as HUGEINT; explicit cast to BIGINT.
+      // JS bigint binds as HUGEINT; cast to BIGINT.
       return `${p}::BIGINT`;
     case 'FLOAT64':
       return `${p}::DOUBLE`;
@@ -263,57 +212,41 @@ function baseInsertExpr(ordinal: number, field: BqField): string {
     case 'JSON':
       return `${p}::JSON`;
     case 'INTERVAL':
-      // Bind the BQ "Y-M D H:M:S" string already pre-translated to a
-      // DuckDB-parseable form (see bqValueToDuckLeaf below). DuckDB
-      // accepts `INTERVAL '14 months 3 days 14706500 microseconds'`.
+      // Bound pre-translated to DuckDB's `months days microseconds` form
+      // (see bqValueToDuckLeaf).
       return `${p}::INTERVAL`;
     case 'RANGE':
-      // Bound as a JSON-encoded `{start, end}` object; DuckDB casts the
-      // JSON into the STRUCT(start BIGINT, end BIGINT) storage shape.
+      // Bound as JSON `{start, end}`; DuckDB casts to the STRUCT storage shape.
       return `${p}::JSON::STRUCT("start" BIGINT, "end" BIGINT)`;
     case 'STRUCT':
-      // Bound as a JSON-encoded string; DuckDB casts it to the STRUCT type.
+      // Bound as JSON; DuckDB casts to the STRUCT type.
       return `${p}::JSON::${baseDuckType(field)}`;
   }
 }
 
-/** SQL expression for binding parameter `$ordinal` as this field's column
- * type. Includes casts (`::DATE`, `::TIMESTAMPTZ`, etc.) and conversion
- * functions (`from_base64`) where needed. REPEATED arrays bind as
- * JSON-encoded strings and cast to `T[]`. */
+/** SQL binding expression for `$ordinal` as this field's column type, with
+ * casts/conversions. REPEATED arrays bind as JSON and cast to `T[]`. */
 export function bqInsertExpression(ordinal: number, field: BqField): string {
   if (field.mode === 'REPEATED') {
-    // The base type already handles its own casting/conversion for a single
-    // value; for the REPEATED case we always go through JSON, so use the
-    // base DuckDB type for the final cast.
+    // REPEATED always goes through JSON, so cast to the base DuckDB type.
     return `$${ordinal}::JSON::${baseDuckType(field)}[]`;
   }
   return baseInsertExpr(ordinal, field);
 }
 
-// ---------------------------------------------------------------------------
-// SELECT projection
-// ---------------------------------------------------------------------------
-
-/** SQL projection expression for reading a column back out. Wraps the
- * column in `to_base64()` for BYTES (so we get a wire-format string), and
- * leaves everything else as-is — `getRowObjectsJS()` returns sensible JS
- * forms for the rest, which `duckValueToBq` then normalizes. */
+/** SQL projection for reading a column. Wraps BYTES in `to_base64()` for a
+ * wire-format string; everything else is left to `duckValueToBq`. */
 export function bqSelectExpression(column: string, field: BqField): string {
   const ident = quoteIdent(column);
   if (field.mode === 'REPEATED') return ident;
   if (field.type === 'BYTES') return `to_base64(${ident})`;
   if (field.type === 'TIME') return `${ident}::VARCHAR`;
   if (field.type === 'GEOGRAPHY') return `replace(ST_AsText(${ident}), ' (', '(')`;
-  // DuckDB returns DECIMAL via JS number, which loses precision past
-  // ~15 significant digits. Cast to VARCHAR so the full string survives.
+  // DuckDB returns DECIMAL via JS number (loses precision past ~15 digits);
+  // cast to VARCHAR so the full string survives.
   if (field.type === 'NUMERIC') return `${ident}::VARCHAR`;
   return ident;
 }
-
-// ---------------------------------------------------------------------------
-// Value encoding (BQ wire → DuckDB bind value)
-// ---------------------------------------------------------------------------
 
 export function bqValueToDuck(value: unknown, field: BqField): unknown {
   if (value === null || value === undefined) return null;
@@ -321,9 +254,8 @@ export function bqValueToDuck(value: unknown, field: BqField): unknown {
     if (!Array.isArray(value)) {
       throw new Error(`Expected array for REPEATED field "${field.name}".`);
     }
-    // Encode each item via the JSON-safe encoder so we can JSON-stringify the
-    // whole list. Using bqValueToDuckLeaf here would (a) return bigints for
-    // INT64 (unserializable) and (b) double-stringify STRUCT elements.
+    // JSON-safe encoder per item: bqValueToDuckLeaf would return unserializable
+    // bigints for INT64 and double-stringify STRUCT elements.
     const innerField: BqField = { ...field, mode: 'NULLABLE' };
     return JSON.stringify(value.map((item) => structuredEncodeForJson(item, innerField)));
   }
@@ -344,16 +276,15 @@ function bqValueToDuckLeaf(value: unknown, field: BqField): unknown {
       // Bind as string; DuckDB casts in SQL.
       return String(value);
     case 'BYTES':
-      // Already a base64 string in BQ wire; SQL wraps with from_base64().
+      // Already base64; SQL wraps with from_base64().
       return String(value);
     case 'INT64':
       return typeof value === 'bigint' ? value : BigInt(String(value));
     case 'FLOAT64':
       return Number(value);
     case 'BOOL':
-      // `Boolean("false")` is `true` because non-empty strings are
-      // truthy; honor CSV / BQ-wire conventions where boolean values
-      // arrive as the literal strings "true" / "false" (case-insensitive).
+      // `Boolean("false")` is true (non-empty string), so honor the literal
+      // "true"/"false" strings CSV/BQ-wire use (case-insensitive).
       if (typeof value === 'string') {
         const lower = value.toLowerCase();
         if (lower === 'true') return true;
@@ -370,7 +301,6 @@ function bqValueToDuckLeaf(value: unknown, field: BqField): unknown {
       return JSON.stringify({ start: start.toString(), end: end.toString() });
     }
     case 'STRUCT': {
-      // Encode each field, JSON-stringify the whole object. SQL casts to STRUCT.
       if (typeof value !== 'object' || Array.isArray(value)) {
         throw new Error(`Expected object for STRUCT field "${field.name}".`);
       }
@@ -388,10 +318,8 @@ function bqValueToDuckLeaf(value: unknown, field: BqField): unknown {
   }
 }
 
-/** Same as bqValueToDuck but for use inside a JSON-encoded structure
- * (REPEATED items, STRUCT field values). The values returned go through
- * JSON.stringify by the caller, so we produce JSON-friendly forms
- * (strings, numbers, booleans, nested arrays/objects). */
+/** Like bqValueToDuck but for values inside a JSON envelope (REPEATED items,
+ * STRUCT fields): returns JSON-friendly forms the caller will stringify. */
 function structuredEncodeForJson(value: unknown, field: BqField): unknown {
   if (value === null || value === undefined) return null;
   if (field.mode === 'REPEATED') {
@@ -413,7 +341,7 @@ function structuredEncodeForJson(value: unknown, field: BqField): unknown {
     case 'BYTES':
       return String(value);
     case 'INT64':
-      // Inside JSON we lose bigint, so keep as decimal string.
+      // JSON has no bigint; keep as decimal string.
       return typeof value === 'bigint' ? value.toString(10) : String(value);
     case 'FLOAT64':
       return Number(value);
@@ -422,8 +350,7 @@ function structuredEncodeForJson(value: unknown, field: BqField): unknown {
     case 'JSON':
       return typeof value === 'string' ? JSON.parse(value) : value;
     case 'INTERVAL':
-      // Inside a JSON envelope, keep the BQ wire form (DuckDB will parse
-      // the outer ARRAY[…]::INTERVAL[] cast on the way in).
+      // Keep BQ wire form; the outer ::INTERVAL[] cast parses it on the way in.
       return String(value);
     case 'RANGE': {
       const { start, end } = bqRangeToBounds(String(value), rangeElementType(field));
@@ -447,22 +374,11 @@ function structuredEncodeForJson(value: unknown, field: BqField): unknown {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Value decoding (DuckDB getRowObjectsJS → BQ wire)
-// ---------------------------------------------------------------------------
-
 /**
- * BigQuery wire encoding: every `rows[i].f[j].v` is a JSON value, but for
- * scalars BQ always uses a string (so INT64 / FLOAT64 / BOOL / NUMERIC /
- * TIMESTAMP / etc. survive precision loss in JSON). NULL is JSON null.
- * Arrays and structs wrap each element / field in the same `{v}` / `{f}`
- * envelope recursively.
- *
- * Refs:
- *  - https://cloud.google.com/bigquery/docs/reference/rest/v2/jobs/query#response-body
- *  - https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types
- *  - Discovery doc `TableCell.v: any` + Int64Value pattern used across the
- *    same response.
+ * BQ wire encoding: each `rows[i].f[j].v` is a JSON value, but scalars are
+ * always strings (so INT64/FLOAT64/BOOL/NUMERIC/TIMESTAMP survive JSON
+ * precision loss). NULL is JSON null. Arrays/structs wrap each element/field
+ * in the same `{v}`/`{f}` envelope recursively.
  */
 export function duckValueToBq(value: unknown, field: BqField): unknown {
   if (value === null || value === undefined) return null;
@@ -470,8 +386,7 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
     if (!Array.isArray(value)) {
       throw new Error(`Expected array from DuckDB for REPEATED field "${field.name}".`);
     }
-    // Each array element is itself an `{ "v": ... }` cell — same envelope
-    // as top-level row cells. Element NULLs render as `{"v": null}`.
+    // Each element is its own `{v}` cell; NULLs render as `{"v": null}`.
     const innerField: BqField = { ...field, mode: 'NULLABLE' };
     return value.map((item) => ({ v: duckValueToBq(item, innerField) }));
   }
@@ -481,7 +396,7 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
     case 'GEOGRAPHY':
       return typeof value === 'string' ? value : String(value);
     case 'BYTES':
-      // `to_base64()` in SELECT means we get a string back already.
+      // `to_base64()` in SELECT yields a string already.
       return typeof value === 'string'
         ? value
         : Buffer.from(value as Uint8Array).toString('base64');
@@ -490,34 +405,28 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
     case 'FLOAT64':
       return floatToWire(value);
     case 'BOOL':
-      // BQ wire format encodes booleans as the literal strings "true" /
-      // "false" — not JSON booleans. The client libs depend on this.
+      // BQ wire uses literal "true"/"false" strings, not JSON booleans;
+      // client libs depend on this.
       return value ? 'true' : 'false';
     case 'NUMERIC':
-      // bqSelectExpression casts NUMERIC → VARCHAR so DuckDB hands back the
-      // full-precision string. Trailing `.0` is added when DuckDB drops the
-      // fractional part (e.g. TRUNC(3.7) → "3") so the wire form stays a
-      // decimal — matches what BQ emits for FLOAT64-typed integer results.
+      // SELECT casts NUMERIC → VARCHAR for full precision; trailing `.0` keeps
+      // integer results decimal (matches BQ).
       return trimDecimal(typeof value === 'string' ? value : String(value));
     case 'TIMESTAMP':
-      // BQ's modern default (when the client sets `useInt64Timestamp=true`,
-      // which the @google-cloud/bigquery client does by default) is
-      // microseconds-since-epoch as a decimal Int64Value string. This is
-      // also lossless across the 1µs precision DuckDB stores.
+      // BQ default (useInt64Timestamp, on by default in @google-cloud/bigquery)
+      // is epoch-micros as a decimal Int64Value string — lossless at DuckDB's 1µs.
       return timestampToWireMicros(value);
     case 'DATETIME':
-      // DATETIME has no zone; canonical form is `YYYY-MM-DDTHH:MM:SS[.f]`.
+      // No zone; canonical `YYYY-MM-DDTHH:MM:SS[.f]`.
       return datetimeToWire(value);
     case 'DATE':
       if (value instanceof Date) return value.toISOString().slice(0, 10);
       return String(value);
     case 'TIME':
-      // DuckDB returns TIME as a string already (no native JS type). BQ
-      // canonical is `HH:MM:SS[.ffffff]` — coerce defensively.
+      // DuckDB returns TIME as a string; BQ canonical is `HH:MM:SS[.ffffff]`.
       return timeToWire(value);
     case 'JSON':
-      // DuckDB JSON columns come back as parsed values OR JSON strings;
-      // normalize to a string so callers get consistent BQ wire format.
+      // DuckDB hands back parsed values or JSON strings; normalize to a string.
       return typeof value === 'string' ? value : JSON.stringify(value);
     case 'INTERVAL':
       return intervalToWire(value);
@@ -536,8 +445,7 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
       if (field.fields === undefined) {
         throw new Error(`STRUCT field "${field.name}" requires a non-empty fields list.`);
       }
-      // BQ STRUCT wire shape: `{ "f": [ {"v": …}, {"v": …} ] }` (same
-      // envelope as the top-level row). Sub-field order follows the schema.
+      // BQ STRUCT wire shape: `{ "f": [ {"v": …}, … ] }`, field order = schema.
       const obj = value as Record<string, unknown>;
       const cells = field.fields.map((f) => ({ v: duckValueToBq(obj[f.name], f) }));
       return { f: cells };
@@ -550,9 +458,7 @@ function floatToWire(value: unknown): string {
     if (Number.isNaN(value)) return 'NaN';
     if (value === Number.POSITIVE_INFINITY) return 'Infinity';
     if (value === Number.NEGATIVE_INFINITY) return '-Infinity';
-    // Integer-valued floats need a `.0` suffix so the wire stays
-    // distinguishable from INT64 (which is also a decimal string but
-    // never has a fractional component).
+    // `.0` suffix keeps integer-valued floats distinguishable from INT64.
     return trimDecimal(value.toString());
   }
   return String(value);
@@ -571,7 +477,7 @@ function timestampToWireMicros(value: unknown): string {
 
 function datetimeToWire(value: unknown): string {
   if (value instanceof Date) {
-    // BQ canonical: no Z, no trailing-zero fractional seconds.
+    // BQ canonical: no Z, no trailing-zero fraction.
     return value
       .toISOString()
       .replace(/\.0+Z$/, '')
@@ -586,8 +492,7 @@ function timeToWire(value: unknown): string {
     return value.toISOString().slice(11, 23);
   }
   if (typeof value === 'bigint') {
-    // DuckDB returns TIME as microseconds-since-midnight (bigint). Convert
-    // to canonical `HH:MM:SS[.ffffff]`.
+    // DuckDB TIME = micros-since-midnight; convert to `HH:MM:SS[.ffffff]`.
     const totalUs = value;
     const usPerSecond = 1_000_000n;
     const seconds = totalUs / usPerSecond;
@@ -599,8 +504,7 @@ function timeToWire(value: unknown): string {
     const mm = String(minutes).padStart(2, '0');
     const ss = String(secs).padStart(2, '0');
     if (us === 0n) return `${hh}:${mm}:${ss}`;
-    // Drop trailing zeros (BQ canonical: `HH:MM:SS.f` where f is variable
-    // length, no padding required).
+    // BQ canonical fraction is variable-length, no trailing zeros.
     const usStr = String(us).padStart(6, '0').replace(/0+$/, '');
     return `${hh}:${mm}:${ss}.${usStr}`;
   }
@@ -612,9 +516,8 @@ function timeToWire(value: unknown): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a BigQuery INTERVAL wire string ("Y-M D H:M:S[.f]", possibly
- * sign-prefixed) into the {months, days, micros} triple DuckDB stores.
- * The sign on the whole string negates all components.
+ * Parse a BQ INTERVAL wire string ("Y-M D H:M:S[.f]", optionally sign-prefixed)
+ * into the {months, days, micros} triple DuckDB stores; leading sign negates all.
  */
 function parseBqInterval(raw: string): { months: bigint; days: bigint; micros: bigint } {
   let s = raw.trim();
@@ -657,10 +560,8 @@ function parseBqInterval(raw: string): { months: bigint; days: bigint; micros: b
 
 /** Format DuckDB's {months, days, micros} interval back to BQ wire format. */
 function formatBqInterval(months: bigint, days: bigint, micros: bigint): string {
-  // BQ canonical form pulls the overall sign out front when every
-  // non-zero component shares the same sign. If signs are mixed (e.g.
-  // 1 month + -1 day) we keep per-component signs — that's still a
-  // valid BQ INTERVAL literal.
+  // BQ pulls the overall sign out front when all non-zero components share it;
+  // mixed signs keep per-component signs (still a valid BQ literal).
   const allNonPositive =
     months <= 0n && days <= 0n && micros <= 0n && (months < 0n || days < 0n || micros < 0n);
   const sign = allNonPositive ? -1n : 1n;
@@ -689,9 +590,7 @@ function formatBqInterval(months: bigint, days: bigint, micros: bigint): string 
 /** Build the DuckDB INTERVAL literal we bind via `$n::INTERVAL`. */
 export function bqIntervalToDuckBindString(raw: string): string {
   const { months, days, micros } = parseBqInterval(raw);
-  // DuckDB accepts mixed-unit interval strings; quote a `months days
-  // microseconds` form to keep precision (microseconds covers H/M/S/f
-  // exactly).
+  // `months days microseconds` form; micros covers H/M/S/f exactly.
   return `${months.toString()} months ${days.toString()} days ${micros.toString()} microseconds`;
 }
 
@@ -810,7 +709,7 @@ export function boundsToBqRange(start: bigint, end: bigint, elem: RangeElementTy
 }
 
 function intervalToWire(value: unknown): string {
-  // DuckDB getRowObjectsJS returns INTERVAL as {months, days, micros}.
+  // DuckDB returns INTERVAL as {months, days, micros}.
   if (typeof value === 'object' && value !== null) {
     const v = value as { months?: unknown; days?: unknown; micros?: unknown };
     const months = typeof v.months === 'bigint' ? v.months : BigInt(Number(v.months ?? 0));
@@ -818,14 +717,12 @@ function intervalToWire(value: unknown): string {
     const micros = typeof v.micros === 'bigint' ? v.micros : BigInt(Number(v.micros ?? 0));
     return formatBqInterval(months, days, micros);
   }
-  // Fallback: if upstream already serialized to a string (DuckDB has no
-  // such path today, but defensive).
+  // Defensive fallback if upstream already serialized to a string.
   return String(value);
 }
 
 function trimDecimal(s: string): string {
-  // Avoid `"1"` for integer-valued NUMERIC; keep at least one decimal place
-  // so the output round-trips as a decimal string.
+  // Keep at least one decimal place so integer-valued NUMERIC round-trips as decimal.
   if (s.includes('.')) return s;
   return `${s}.0`;
 }
@@ -834,8 +731,7 @@ function trimDecimal(s: string): string {
 // Row-level wrappers
 // ---------------------------------------------------------------------------
 
-/** Encode an entire row in schema field order. Returns an array suitable
- * for passing as parameters to `db.exec(sql, values)`. */
+/** Encode a row in schema field order, as params for `db.exec(sql, values)`. */
 export function bqRowToDuck(
   row: Readonly<Record<string, unknown>>,
   schema: readonly BqField[],
@@ -889,9 +785,8 @@ const DUCK_TO_BQ: Readonly<Record<string, BqType>> = {
   GEOMETRY: 'GEOGRAPHY',
 };
 
-/** Synthesize a BqField from a DuckDB column type string + a column name.
- * Strips a trailing `[]` (LIST) and sets `mode: 'REPEATED'`. Recognizes
- * `DECIMAL(p,s)` and `STRUCT(...)` syntactically.  */
+/** Synthesize a BqField from a DuckDB column type + name. Trailing `[]` (LIST)
+ * → REPEATED; recognizes `DECIMAL(p,s)` and `STRUCT(...)` syntactically. */
 export function duckTypeToBq(duckType: string, name: string): BqField {
   const trimmed = duckType.trim();
   if (trimmed.endsWith('[]')) {
@@ -913,8 +808,8 @@ export function duckTypeToBq(duckType: string, name: string): BqField {
 }
 
 function parseStructFields(structType: string): readonly BqField[] {
-  // Parse "STRUCT(name1 type1, name2 type2, ...)" — splits on top-level commas
-  // to handle nested STRUCTs/DECIMALs without a full parser.
+  // Splits "STRUCT(name1 type1, ...)" on top-level commas to handle nesting
+  // without a full parser.
   const openIdx = structType.indexOf('(');
   if (openIdx === -1 || !structType.endsWith(')')) {
     throw new Error(`Malformed STRUCT type "${structType}".`);
@@ -936,8 +831,7 @@ function parseStructFields(structType: string): readonly BqField[] {
   }
   if (current.trim() !== '') parts.push(current.trim());
   return parts.map((part) => {
-    // "fieldName fieldType" — split on the first whitespace (or after the first
-    // identifier, allowing quoted identifiers).
+    // "fieldName fieldType" — split on first whitespace, allowing quoted idents.
     let name: string;
     let rest: string;
     if (part.startsWith('"')) {

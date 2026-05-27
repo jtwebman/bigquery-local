@@ -1,30 +1,11 @@
 /**
- * BigQuery SQL → DuckDB SQL translator.
- *
- * Not a parser — a targeted token-stream rewriter. We pass through most
- * of the SQL unchanged and rewrite a fixed set of BQ-isms that DuckDB
- * doesn't accept verbatim:
- *
- *   `proj.dataset.table` (backtick)   →  "<proj>__<dataset>"."<table>"
- *   `dataset.table`                   →  "<current-proj>__<dataset>"."<table>"
- *   `name`                            →  "name"
- *
- * The "current project" comes from the request's URL path (`/projects/{p}/…`).
- * `dataset_schema_name(project, dataset) = project__dataset` keeps two
- * projects with the same dataset id from colliding at the DuckDB layer.
- *   @paramName                        →  $N (positional; paramOrder lists names)
- *   CURRENT_TIMESTAMP()               →  CURRENT_TIMESTAMP
- *   TIMESTAMP_SUB(x, INTERVAL n U)    →  (x - INTERVAL n U)
- *   TIMESTAMP_ADD(x, INTERVAL n U)    →  (x + INTERVAL n U)
- *   JSON_VALUE(j, '$.path')           →  json_extract_string(j, '$.path')
- *   SAFE_CAST(x AS T)                 →  try_cast(x AS T)
- *   STARTS_WITH / ENDS_WITH           →  pass-through (DuckDB has them)
- *
- * Known-unsupported BigQuery functions throw `BqError.unsupportedFeature`
- * so the caller surfaces a precise error to the API client. Anything else
- * is passed through verbatim — if it's a DuckDB-compatible identifier or
- * function, it just works; if it isn't, DuckDB itself returns the error
- * and the route layer turns that into a 400.
+ * BigQuery SQL → DuckDB SQL translator. Not a parser — a targeted
+ * token-stream rewriter: most SQL passes through unchanged; a fixed set of
+ * BQ-isms get rewritten. The "current project" (from the request URL) scopes
+ * backtick table refs to `project__dataset`.`table` so same-named datasets in
+ * different projects don't collide. Known-unsupported BQ functions throw
+ * `BqError.unsupportedFeature`; anything else passes through for DuckDB to
+ * accept or reject.
  */
 
 import { BqError } from '../util/errors.ts';
@@ -45,46 +26,30 @@ export interface TranslateOptions {
   readonly project: string;
 }
 
-/**
- * BQ function name → DuckDB function name, for the cases where the names
- * differ but the call signatures match closely enough that a name swap is
- * the whole rewrite.
- *
- * Functions whose BQ and DuckDB names *match* (case-insensitive — DuckDB
- * is case-insensitive on function names) don't need an entry here; the
- * translator's default branch passes them through verbatim.
- *
- * Functions that need *more* than a rename (e.g. argument reshuffle,
- * wrapper call) live as explicit `case` branches in `handleIdentifier`.
- */
+// BQ function name → DuckDB name, for cases where only the name differs.
+// Matching names need no entry (DuckDB is case-insensitive on function
+// names). Functions needing argument reshuffles or wrappers live as branches
+// in `handleIdentifier`.
 const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['JSON_VALUE', 'json_extract_string'],
   ['SAFE_CAST', 'try_cast'],
-  // BL-037 — strings:
   ['REGEXP_CONTAINS', 'regexp_matches'],
   ['FORMAT', 'printf'],
   ['NORMALIZE', 'nfc_normalize'],
-  // DuckDB's `length()` is char count; `strlen()` is byte count, matching
-  // BigQuery's OCTET_LENGTH / BYTE_LENGTH for STRING.
+  // strlen() is byte count (matches BQ OCTET_LENGTH/BYTE_LENGTH); length() is char count.
   ['OCTET_LENGTH', 'strlen'],
   ['BYTE_LENGTH', 'strlen'],
-  // BL-038 — numeric/math:
   ['IS_INF', 'isinf'],
   ['IS_NAN', 'isnan'],
-  // BL-040 — date/time (2): straight renames.
   ['UNIX_MILLIS', 'epoch_ms'],
   ['UNIX_MICROS', 'epoch_us'],
   ['LAST_DAY', 'last_day'],
   ['SPLIT', 'string_split'],
-  // BL-042 — arrays: BQ GENERATE_ARRAY/FLATTEN don't exist in DuckDB by
-  // those names; the semantics map directly.
   ['GENERATE_ARRAY', 'generate_series'],
   ['FLATTEN', 'flatten'],
-  // BL-043 — aggregates:
   ['STRING_AGG', 'string_agg'],
   ['LOGICAL_AND', 'bool_and'],
   ['LOGICAL_OR', 'bool_or'],
-  // BL-041 — JSON:
   ['JSON_QUERY', 'json_extract'],
   ['JSON_QUERY_ARRAY', 'json_extract'],
   ['JSON_VALUE_ARRAY', 'json_extract_string'],
@@ -92,9 +57,7 @@ const FUNCTION_RENAMES: ReadonlyMap<string, string> = new Map([
   ['JSON_KEYS', 'json_keys'],
   ['TO_JSON', 'to_json'],
   ['TO_JSON_STRING', 'to_json'],
-  // BL-128/129 — GEOGRAPHY via the DuckDB spatial extension. DuckDB
-  // uses ST_GeomFromText / ST_Point; BQ uses the ST_GEOG* spellings.
-  // Most other ST_* names are identical (case-insensitive in DuckDB).
+  // GEOGRAPHY (spatial extension): BQ's ST_GEOG* spellings → DuckDB's. Other ST_* match.
   ['ST_GEOGFROMTEXT', 'ST_GeomFromText'],
   ['ST_GEOGFROMWKB', 'ST_GeomFromWKB'],
   ['ST_GEOGPOINT', 'ST_Point'],
@@ -122,24 +85,9 @@ const UNSUPPORTED_FUNCTIONS = new Set([
   'VECTOR_SEARCH',
 ]);
 
-/**
- * Identifiers DuckDB reserves but BigQuery does not, so a user's BQ
- * query can legally reference a bare column with one of these names —
- * and DuckDB would parse-error before our translator could help.
- *
- * Excluded: identifiers reserved in both dialects (WINDOW, RANGE,
- * INTERVAL, QUALIFY, ...) — BQ users must backtick-quote those anyway,
- * and that path translates to DuckDB double-quotes. Also excluded:
- * DuckDB-only words used as operators / clause syntax we must emit
- * verbatim (PIVOT, UNPIVOT, GLOB, ILIKE, SIMILAR, TRY_CAST, BOTH,
- * LEADING, TRAILING, ASYMMETRIC, SYMMETRIC, PLACING, VARIADIC).
- */
-/**
- * BQ type-name → DuckDB type-name. Used when a bare identifier appears
- * outside a function-call position (e.g. inside CAST). Function-call
- * positions like `FLOAT64(json)` are handled by their dedicated case
- * branches in handleIdentifier.
- */
+// BQ type-name → DuckDB type-name, for a bare identifier outside a
+// function-call position (e.g. inside CAST). `FLOAT64(json)`-style call
+// positions are handled by branches in handleIdentifier.
 const BQ_TYPE_ALIAS_FOR_CAST: ReadonlyMap<string, string> = new Map([
   ['INT64', 'BIGINT'],
   ['FLOAT64', 'DOUBLE'],
@@ -147,6 +95,9 @@ const BQ_TYPE_ALIAS_FOR_CAST: ReadonlyMap<string, string> = new Map([
   ['BYTES', 'BLOB'],
 ]);
 
+// Identifiers DuckDB reserves but BQ allows as bare columns — auto-quote them
+// so DuckDB doesn't parse-error. Words reserved in both dialects (WINDOW,
+// RANGE, QUALIFY, ...) are excluded: BQ users backtick-quote those anyway.
 const DUCKDB_RESERVED_BUT_BQ_ALLOWED = new Set<string>([
   'CHECK',
   'COLUMN',
@@ -453,12 +404,7 @@ function parseTableTarget(
   throw BqError.invalid(`Unexpected token "${tok.value}" where a view name was expected.`, 'query');
 }
 
-/**
- * Resolves `CREATE SCHEMA [IF NOT EXISTS] <name>` / `DROP SCHEMA
- * [IF EXISTS] <name> [CASCADE]` into its (project, datasetId) target.
- * Names may be backtick-quoted (`\`project.dataset\``) or bare
- * (`project.dataset` / `dataset`).
- */
+// Resolves CREATE/DROP SCHEMA DDL into a (project, datasetId) target.
 export interface SchemaDdlTarget {
   readonly kind: 'CREATE_SCHEMA' | 'DROP_SCHEMA';
   readonly project: string;
@@ -571,19 +517,10 @@ function parseSchemaName(
   );
 }
 
-/**
- * Resolves `CREATE [OR REPLACE] [TEMP|TEMPORARY] FUNCTION [IF NOT EXISTS]
- * <name>(<args>) [RETURNS <type>] AS (<expr>) | AS """<expr>"""` and the
- * corresponding `DROP FUNCTION` form into a structured target.
- *
- * Argument types and the RETURNS type are captured but DuckDB's CREATE
- * MACRO doesn't enforce them — the queryEngine wraps the body in
- * `CAST(... AS <duck_type>)` to honor RETURNS.
- *
- * For TEMP functions, BQ accepts an unqualified `<function_name>`. For
- * persistent ones, a `<dataset>.<name>` or `<project>.<dataset>.<name>`
- * reference is required.
- */
+// Resolves CREATE/DROP FUNCTION DDL into a structured target. Arg/RETURNS
+// types are captured but DuckDB's CREATE MACRO doesn't enforce them — the
+// queryEngine wraps the body in CAST(... AS <type>) to honor RETURNS. TEMP
+// functions may be unqualified; persistent ones need <dataset>.<name>.
 export interface FunctionDdlArg {
   readonly name: string;
   /** Raw BQ type text as written — e.g. "INT64", "ARRAY<STRING>". */
@@ -1197,14 +1134,11 @@ function skipCteBlock(tokens: readonly Token[], start: number): number | null {
 // `^` infix → xor() rewrite
 // ---------------------------------------------------------------------------
 
-// BQ's `^` is bitwise XOR; DuckDB's `^` is exponentiation. The translator is
-// token-based, so we rewrite `a ^ b` into `xor(a, b)` by extracting the
-// primary expression on each side of the operator. Chained `a ^ b ^ c` folds
-// left-associatively. Operand extraction grabs a *primary* (atom plus member
-// access / call / subscript postfixes, or a parenthesized group), so it never
-// wanders into a trailing keyword. The rare unparenthesized mix with a
-// higher-precedence binary (`a + b ^ c`) associates by primary, not BQ
-// precedence — parenthesize if that matters.
+// BQ's `^` is bitwise XOR; DuckDB's is exponentiation. Rewrite `a ^ b` →
+// `xor(a, b)` by grabbing the primary expression on each side (atom +
+// member/call/subscript postfixes, or a parenthesized group), folding chained
+// `^` left-associatively. An unparenthesized mix with a higher-precedence
+// binary (`a + b ^ c`) associates by primary, not BQ precedence.
 
 function syntheticToken(kind: TokenKind, value: string): Token {
   return { kind, value, start: 0, end: 0 };
@@ -1563,10 +1497,8 @@ function rewriteNumberLiteral(
 interface InformationSchemaView {
   readonly duckdbView: string;
   readonly catalogColumn: string;
-  /** Some views (JOBS*, SCHEMATA*) are project-scoped only — no
-   * per-dataset filter applies even when the caller wrote
-   * `dataset.INFORMATION_SCHEMA.X`. `undefined` means "ignore dataset
-   * even if one was named". */
+  /** `undefined` for project-scoped views (JOBS*, SCHEMATA*) — no per-dataset
+   * filter applies even if the caller named a dataset. */
   readonly schemaColumn: string | undefined;
 }
 
@@ -1624,21 +1556,14 @@ interface PrefixSegment {
 }
 
 /**
- * If the tokens starting at `i` form a `<prefix>.INFORMATION_SCHEMA.<view>`
- * reference, return the DuckDB-side rewrite plus the index to resume at.
- * Otherwise return null and let the regular translator path handle the
- * tokens.
- *
- * Accepts prefix shapes:
- *   `\`region-us\``                      — region-scoped, current project
- *   `\`project.region-us\``              — region-scoped, named project
- *   `\`project.dataset\``                — dataset-scoped, named project
- *   `dataset`                            — dataset-scoped, current project
- *   `project.dataset`                    — dataset-scoped, named project
- *
- * Region segments (any segment starting with `region-`) just drop out of
- * the filter — the emulator doesn't track regions, so a region-scoped
- * query returns all datasets in the project.
+ * If tokens at `i` form `<prefix>.INFORMATION_SCHEMA.<view>`, return the
+ * DuckDB rewrite + resume index; else null. Region segments (`region-*`)
+ * drop out of the filter — the emulator doesn't track regions. Prefix shapes:
+ *   `\`region-us\``           — region-scoped, current project
+ *   `\`project.region-us\``   — region-scoped, named project
+ *   `\`project.dataset\``     — dataset-scoped, named project
+ *   `dataset`                 — dataset-scoped, current project
+ *   `project.dataset`         — dataset-scoped, named project
  */
 function tryRewriteInformationSchema(
   tokens: readonly Token[],
@@ -1884,11 +1809,9 @@ function handleIdentifier(
     }
   }
 
-  // `TABLESAMPLE SYSTEM (n PERCENT)` — BQ's SYSTEM is storage-block-based,
-  // matching DuckDB's SYSTEM. But DuckDB's SYSTEM only emits whole storage
-  // blocks, which for small / in-memory tables means N% of "one block" rounds
-  // to all-or-nothing. BERNOULLI is row-level uniform sampling and gives the
-  // ~N%-of-rows result callers expect from `SYSTEM (n PERCENT)`.
+  // `TABLESAMPLE SYSTEM (n PERCENT)` → BERNOULLI. DuckDB's SYSTEM samples whole
+  // storage blocks, so on small/in-memory tables N% rounds to all-or-nothing;
+  // BERNOULLI is row-level and gives the ~N%-of-rows callers expect.
   if (upper === 'TABLESAMPLE') {
     const nextIdx = skipWhitespace(tokens, i + 1, endIdx);
     if (nextIdx !== null) {
@@ -1984,14 +1907,10 @@ function handleIdentifier(
     }
 
     case 'UNNEST': {
-      // BQ's `UNNEST(expr) AS x` names the unnested column `x`.
-      // DuckDB names it `unnest` and parses `AS x` as a table alias.
-      // Rewrite to `UNNEST(expr) AS _unnest_alias(x)` so the unnested
-      // column adopts the user's chosen name.
-      //
-      // Skip the rewrite if the alias is already in DuckDB's native
-      // `AS table_alias(col_alias)` form — that's what existing
-      // emulator-side tests use and it already gives the right shape.
+      // BQ's `UNNEST(expr) AS x` names the unnested column `x`; DuckDB parses
+      // `AS x` as a table alias and names the column `unnest`. Rewrite to
+      // `AS _unnest_alias(x)` so the column adopts `x`. Skip if already in
+      // DuckDB's native `AS table_alias(col_alias)` form.
       const close = findMatchingClose(tokens, parenIdx, endIdx);
       const afterParen = skipWhitespace(tokens, close + 1, endIdx);
       if (afterParen !== null) {

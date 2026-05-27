@@ -1,24 +1,15 @@
 /**
- * Metadata schema + CRUD.
+ * Metadata schema + CRUD. `ensureMetaSchema(db)` creates the `_bq` schema and
+ * its metadata tables; user-visible BQ datasets get their own DuckDB schemas
+ * elsewhere.
  *
- * On startup, `ensureMetaSchema(db)` creates the `_bq` schema and the four
- * metadata tables (`datasets`, `tables`, `jobs`, `job_rows`). All BigQuery
- * resource metadata flows through this module; user-visible BQ datasets get
- * their own DuckDB schemas elsewhere.
+ * Timestamp columns are stored as native `TIMESTAMP` so SQL surfaces
+ * (INFORMATION_SCHEMA, filters) use them directly; the JS API stays on
+ * millisecond numbers, converted in SQL via `epoch_ms()` both directions.
  *
- * **Timestamp columns** (`created_at`, `updated_at`, `started_at`,
- * `ended_at`, `expires_at`) are stored as DuckDB native `TIMESTAMP`, so
- * future SQL surfaces — INFORMATION_SCHEMA views, time-based filters,
- * ad-hoc dev queries — can use them directly. The JS-facing API stays on
- * millisecond `number`s; conversion happens in the SQL via DuckDB's
- * `epoch_ms()` (bidirectional: `BIGINT ms → TIMESTAMP` on insert,
- * `TIMESTAMP → BIGINT ms` on select).
- *
- * Each resource exposes a small CRUD surface (`get*`, `upsert*`,
- * `delete*` where applicable). `upsert*` accepts an optional `ifMatch`
- * argument and surfaces `BqError.conditionNotMet` (HTTP 412) on a stale
- * ETag, or `BqError.notFound` when If-Match is sent against a missing
- * resource (matching BigQuery's behavior).
+ * `upsert*` takes an optional `ifMatch` and surfaces `BqError.conditionNotMet`
+ * (412) on a stale ETag, or `BqError.notFound` when If-Match targets a missing
+ * resource (matching BigQuery).
  */
 
 import type { Db } from './db.ts';
@@ -104,10 +95,8 @@ const DDL_STATEMENTS: readonly string[] = [
     updated_at TIMESTAMP NOT NULL,
     PRIMARY KEY (project, dataset_id, routine_id)
   )`,
-  // BL-072 — models metadata. No training happens here; this is purely
-  // a REST surface so clients listing or describing models against the
-  // emulator get realistic shapes. feature_columns / label_columns are
-  // opaque JSON arrays (BQ wire shape).
+  // Models metadata — REST surface only, no training. feature_columns /
+  // label_columns are opaque BQ-wire-shape JSON arrays.
   `CREATE TABLE IF NOT EXISTS _bq.models (
     project VARCHAR NOT NULL,
     dataset_id VARCHAR NOT NULL,
@@ -125,12 +114,10 @@ const DDL_STATEMENTS: readonly string[] = [
     expires_at TIMESTAMP,
     PRIMARY KEY (project, dataset_id, model_id)
   )`,
-  // Denormalized projections of _bq.tables' schema JSON, refreshed by
-  // upsertTable / deleteTable. They keep INFORMATION_SCHEMA.COLUMNS &
-  // COLUMN_FIELD_PATHS as plain SQL views — no JSON unnesting at query
-  // time. The is_partitioning_column / clustering_ordinal_position values
-  // are computed from _bq.tables.partitioning / .clustering when these
-  // rows are written.
+  // Denormalized projections of _bq.tables' schema JSON (refreshed by
+  // upsertTable/deleteTable) so INFORMATION_SCHEMA.COLUMNS & COLUMN_FIELD_PATHS
+  // are plain views with no query-time JSON unnesting. is_partitioning_column /
+  // clustering_ordinal_position are derived from partitioning/clustering on write.
   `CREATE TABLE IF NOT EXISTS _bq.table_columns (
     project VARCHAR NOT NULL,
     dataset_id VARCHAR NOT NULL,
@@ -154,12 +141,9 @@ const DDL_STATEMENTS: readonly string[] = [
     description VARCHAR,
     PRIMARY KEY (project, dataset_id, table_id, column_name, field_path)
   )`,
-  // INFORMATION_SCHEMA views — read-only projections over the metadata
-  // tables. The query translator rewrites
-  //   `region-us`.INFORMATION_SCHEMA.TABLES
-  //   <dataset>.INFORMATION_SCHEMA.TABLES
-  // into SELECTs against these views (with table_catalog / table_schema
-  // filters applied as a WHERE).
+  // INFORMATION_SCHEMA views — read-only projections; the query translator
+  // rewrites `<region/dataset>.INFORMATION_SCHEMA.TABLES` into SELECTs against
+  // them with table_catalog/table_schema filters as a WHERE.
   `CREATE OR REPLACE VIEW _bq.info_tables AS
    SELECT
      project AS table_catalog,
@@ -221,15 +205,9 @@ const DDL_STATEMENTS: readonly string[] = [
      CAST(NULL AS VARCHAR) AS collation_name,
      CAST(NULL AS VARCHAR) AS rounding_mode
    FROM _bq.table_field_paths`,
-  // TABLE_OPTIONS exposes per-table options as (option_name, option_type,
-  // option_value) rows. We populate the ones we currently store on
-  // _bq.tables (description, expiration_timestamp). Labels become
-  // available when BL-154 lands; the view will pick them up automatically
-  // once the column exists in _bq.tables.
-  // INFORMATION_SCHEMA.VIEWS — one row per `type = 'VIEW'` table, exposing
-  // the SQL body in `view_definition`. `check_option` is always NULL in BQ
-  // (no WITH CHECK OPTION clause exists); `use_standard_sql` is always
-  // 'YES' since legacy SQL is deprecated and we don't accept it.
+  // INFORMATION_SCHEMA.VIEWS — one row per `type = 'VIEW'`, SQL body in
+  // `view_definition`. check_option is always NULL (no WITH CHECK OPTION in BQ);
+  // use_standard_sql is always 'YES' (legacy SQL unsupported).
   `CREATE OR REPLACE VIEW _bq.info_views AS
    SELECT
      project AS table_catalog,
@@ -240,11 +218,8 @@ const DDL_STATEMENTS: readonly string[] = [
      'YES' AS use_standard_sql
    FROM _bq.tables
    WHERE type = 'VIEW'`,
-  // INFORMATION_SCHEMA.MATERIALIZED_VIEWS — populated once BL-101 stores
-  // MVs with `type = 'MATERIALIZED_VIEW'`. The view is wired now so
-  // clients querying it today get a clean empty result instead of an
-  // unsupportedFeature error (matches real BQ behavior for projects with
-  // no MVs).
+  // INFORMATION_SCHEMA.MATERIALIZED_VIEWS — empty until MVs are stored with
+  // `type = 'MATERIALIZED_VIEW'`; wired now so clients get a clean empty result.
   `CREATE OR REPLACE VIEW _bq.info_materialized_views AS
    SELECT
      project AS table_catalog,
@@ -255,13 +230,10 @@ const DDL_STATEMENTS: readonly string[] = [
      CAST(NULL AS TIMESTAMP) AS refresh_watermark
    FROM _bq.tables
    WHERE type = 'MATERIALIZED_VIEW'`,
-  // INFORMATION_SCHEMA.ROUTINES — one row per persistent routine (SQL
-  // UDFs, TVFs, procedures). BQ collapses both function flavors to
-  // `routine_type = 'FUNCTION'`; only `PROCEDURE` stands alone. `data_type`
-  // is the return-type kind for FUNCTION rows, NULL for PROCEDURE and
-  // table-valued functions. `routine_body` distinguishes SQL ('SQL') from
-  // external-language bodies ('EXTERNAL', currently unused — lands when
-  // BL-070 JS UDFs do).
+  // INFORMATION_SCHEMA.ROUTINES — one row per routine. BQ collapses both
+  // function flavors to `FUNCTION`; only PROCEDURE stands alone. data_type is
+  // the return-type kind for scalar FUNCTION rows, else NULL. routine_body is
+  // 'SQL' vs 'EXTERNAL'.
   `CREATE OR REPLACE VIEW _bq.info_routines AS
    SELECT
      project AS specific_catalog,
@@ -284,10 +256,9 @@ const DDL_STATEMENTS: readonly string[] = [
      updated_at AS last_altered,
      body AS ddl
    FROM _bq.routines`,
-  // INFORMATION_SCHEMA.PARAMETERS — unnests the routine `arguments` JSON
-  // into one row per parameter. Argument shape (set by queryEngine when
-  // it persists a routine): `[{ name, mode?, dataType: { typeKind } }]`.
-  // Procedures may carry mode = IN / OUT / INOUT; functions default to IN.
+  // INFORMATION_SCHEMA.PARAMETERS — unnests routine `arguments` JSON
+  // (`[{ name, mode?, dataType: { typeKind } }]`) into one row per parameter.
+  // Procedures may carry mode IN/OUT/INOUT; functions default to IN.
   `CREATE OR REPLACE VIEW _bq.info_parameters AS
    SELECT
      r.project AS specific_catalog,
@@ -301,9 +272,8 @@ const DDL_STATEMENTS: readonly string[] = [
    FROM _bq.routines r,
         json_each(r.arguments) a
    WHERE r.arguments IS NOT NULL`,
-  // INFORMATION_SCHEMA.ROUTINE_OPTIONS — we don't currently persist any
-  // options on routines, so the view returns no rows. Wired so clients
-  // get an empty result rather than an unsupportedFeature error.
+  // INFORMATION_SCHEMA.ROUTINE_OPTIONS — no routine options persisted yet;
+  // returns no rows (wired for a clean empty result).
   `CREATE OR REPLACE VIEW _bq.info_routine_options AS
    SELECT
      project AS specific_catalog,
@@ -314,12 +284,10 @@ const DDL_STATEMENTS: readonly string[] = [
      CAST(NULL AS VARCHAR) AS option_value
    FROM _bq.routines
    WHERE FALSE`,
-  // INFORMATION_SCHEMA.JOBS — base shape over _bq.jobs. BQ scopes this
-  // by visibility (your jobs vs. all in project vs. all in org); we
-  // don't track user identity, so JOBS / JOBS_BY_USER / JOBS_BY_PROJECT /
-  // JOBS_BY_ORGANIZATION all return the same rows. Columns we don't yet
-  // populate (slot ms, bytes processed, labels, cache_hit) are NULL —
-  // schema parity is what matters for dbt + BI tools introspecting.
+  // INFORMATION_SCHEMA.JOBS — base shape over _bq.jobs. No user identity is
+  // tracked, so JOBS / JOBS_BY_USER / _BY_PROJECT / _BY_ORGANIZATION return the
+  // same rows. Unpopulated columns (slot ms, bytes, labels, cache_hit) are NULL;
+  // schema parity is what matters for dbt/BI introspection.
   `CREATE OR REPLACE VIEW _bq.info_jobs AS
    SELECT
      created_at AS creation_time,
@@ -348,10 +316,8 @@ const DDL_STATEMENTS: readonly string[] = [
   `CREATE OR REPLACE VIEW _bq.info_jobs_by_user AS SELECT * FROM _bq.info_jobs`,
   `CREATE OR REPLACE VIEW _bq.info_jobs_by_project AS SELECT * FROM _bq.info_jobs`,
   `CREATE OR REPLACE VIEW _bq.info_jobs_by_organization AS SELECT * FROM _bq.info_jobs`,
-  // INFORMATION_SCHEMA.JOBS_TIMELINE_* — one row per (job, 1-minute
-  // bucket from job start). period_slot_ms is 0 since we don't track
-  // slot consumption — backlog acceptance only asks for "plausible
-  // numbers". elapsed_ms is real (job end − start).
+  // INFORMATION_SCHEMA.JOBS_TIMELINE_* — one row per (job, 1-minute bucket).
+  // period_slot_ms is 0 (no slot tracking); elapsed_ms is real (end − start).
   `CREATE OR REPLACE VIEW _bq.info_jobs_timeline AS
    SELECT
      date_trunc('minute', created_at) AS period_start,
@@ -371,8 +337,8 @@ const DDL_STATEMENTS: readonly string[] = [
   `CREATE OR REPLACE VIEW _bq.info_jobs_timeline_by_user AS SELECT * FROM _bq.info_jobs_timeline`,
   `CREATE OR REPLACE VIEW _bq.info_jobs_timeline_by_project AS SELECT * FROM _bq.info_jobs_timeline`,
   `CREATE OR REPLACE VIEW _bq.info_jobs_timeline_by_organization AS SELECT * FROM _bq.info_jobs_timeline`,
-  // INFORMATION_SCHEMA.SCHEMATA — datasets visible at the project level.
-  // catalog_name = project, schema_name = dataset.
+  // INFORMATION_SCHEMA.SCHEMATA — datasets at project level (catalog = project,
+  // schema = dataset).
   `CREATE OR REPLACE VIEW _bq.info_schemata AS
    SELECT
      project AS catalog_name,
@@ -383,11 +349,9 @@ const DDL_STATEMENTS: readonly string[] = [
      CAST(NULL AS VARCHAR) AS ddl,
      CAST(NULL AS VARCHAR) AS default_collation_name
    FROM _bq.datasets`,
-  // INFORMATION_SCHEMA.SCHEMATA_OPTIONS — dataset options as
-  // (option_name, option_type, option_value) rows. We expose what we
-  // store today: description (when set) and default_table_expiration_days
-  // (when default_table_expiration_ms is set; BQ surface uses days as
-  // FLOAT64).
+  // INFORMATION_SCHEMA.SCHEMATA_OPTIONS — (option_name, option_type, value)
+  // rows for what we store: description and default_table_expiration_days
+  // (BQ exposes days as FLOAT64).
   `CREATE OR REPLACE VIEW _bq.info_schemata_options AS
    SELECT project AS catalog_name, dataset_id AS schema_name,
           'description' AS option_name, 'STRING' AS option_type,
@@ -426,8 +390,8 @@ export async function ensureMetaSchema(db: Db): Promise<void> {
 
 type PartialField<K extends string, V> = Partial<Record<K, V>>;
 
-/** Spread helper for optional fields: produces `{ [key]: value }` when value
- * is defined, or `{}` otherwise. Plays nicely with `exactOptionalPropertyTypes`. */
+/** Spread helper: `{ [key]: value }` when defined, else `{}` (for
+ * exactOptionalPropertyTypes). */
 function optional<K extends string, V>(key: K, value: V | null | undefined): PartialField<K, V> {
   if (value === null || value === undefined) return {};
   return { [key]: value } as Record<K, V>;
@@ -457,23 +421,19 @@ function jsonOrNull(value: unknown): string | null {
   return value === undefined ? null : JSON.stringify(value);
 }
 
-/** Bind a millisecond timestamp / count as DuckDB BIGINT — DuckDB-Node's
- * default coercion of JS `number` is INTEGER (32-bit), which truncates
- * `Date.now()` values. Always wrap BIGINT-typed columns (and BIGINT inputs
- * to `epoch_ms()` for TIMESTAMP columns) through this. */
+/** Bind a number as DuckDB BIGINT — JS `number` coerces to 32-bit INTEGER,
+ * which truncates `Date.now()`. Use for all BIGINT-typed (and epoch_ms) inputs. */
 function bigintOrNull(value: number | undefined): bigint | null {
   return value === undefined ? null : BigInt(value);
 }
 
 // ---------------------------------------------------------------------------
-// Projects (BL-073)
+// Projects
 // ---------------------------------------------------------------------------
 
-/** Distinct project ids the emulator has seen, in lexicographic order.
- * The list is derived from `_bq.datasets` — any project with at least
- * one dataset shows up; an empty server returns []. The route layer
- * unions this with the URL-path project so the *current* caller's
- * project is always visible even if no datasets exist yet. */
+/** Distinct project ids (lexicographic), derived from `_bq.datasets`. The route
+ * layer unions this with the URL-path project so the current caller's project
+ * is always visible even with no datasets. */
 export async function listProjects(
   db: Db,
   options: { readonly offset: number; readonly limit: number },
@@ -552,7 +512,7 @@ export async function upsertDataset(
   if (existing !== null) {
     checkIfMatch(existing.etag, ifMatch);
   } else if (ifMatch !== undefined) {
-    // BigQuery returns 404 when If-Match is supplied for a missing resource.
+    // BQ returns 404 when If-Match targets a missing resource.
     throw BqError.notFound(`Dataset "${input.project}:${input.datasetId}" not found.`);
   }
   const newEtag = etag(input);
@@ -608,8 +568,8 @@ export async function deleteDataset(
   return true;
 }
 
-/** Paginated list of datasets in a project, ordered by `dataset_id`.
- * `offset` is a non-negative integer; callers translate `pageToken` to it. */
+/** Paginated datasets in a project, ordered by `dataset_id`; callers translate
+ * `pageToken` to `offset`. */
 export async function listDatasets(
   db: Db,
   project: string,
@@ -630,7 +590,7 @@ export async function listDatasets(
      LIMIT $2::BIGINT OFFSET $3::BIGINT`,
     [project, BigInt(options.limit + 1), BigInt(options.offset)],
   );
-  // Read one extra to know if there's a next page without a separate count query.
+  // Read N+1 to detect a next page without a count query.
   const hasMore = rows.length > options.limit;
   const sliced = hasMore ? rows.slice(0, options.limit) : rows;
   const datasets = sliced.map((row) => ({
@@ -734,11 +694,9 @@ interface FieldPathRow {
   readonly description: string | null;
 }
 
-/** Flatten a stored table schema into the rows that back the
- * `_bq.table_columns` and `_bq.table_field_paths` projections. The shape
- * mirrors what `INFORMATION_SCHEMA.COLUMNS` and `COLUMN_FIELD_PATHS`
- * expose, with `is_partitioning_column` / `clustering_ordinal_position`
- * derived from the table's partitioning + clustering JSON. */
+/** Flatten a table schema into rows backing `_bq.table_columns` and
+ * `_bq.table_field_paths`, with is_partitioning_column /
+ * clustering_ordinal_position derived from the partitioning + clustering JSON. */
 function flattenSchemaForInfo(
   schema: unknown,
   partitioning: unknown,
@@ -946,10 +904,8 @@ export async function deleteTable(
   return true;
 }
 
-/** Paginated list of tables in a dataset, ordered by `table_id`.
- * Mirrors `listDatasets`. The route layer is responsible for confirming
- * the parent dataset exists (so an empty list isn't ambiguous with a
- * missing dataset). */
+/** Paginated tables in a dataset, ordered by `table_id`. The route layer must
+ * confirm the parent dataset exists so an empty list isn't ambiguous. */
 export async function listTables(
   db: Db,
   project: string,
@@ -1020,7 +976,7 @@ export interface JobMetaInput {
   readonly labels?: Readonly<Record<string, string>>;
   /** Region the job ran in. Defaults to 'US' when unset. */
   readonly location?: string;
-  /** True when the job returned cached results (BL-157). */
+  /** True when the job returned cached results. */
   readonly cacheHit?: boolean;
 }
 
@@ -1123,13 +1079,9 @@ export async function upsertJob(db: Db, input: JobMetaInput): Promise<JobMeta> {
   };
 }
 
-/** Paginated list of jobs in a project, ordered by `created_at` DESC then `job_id`
- * (matching BigQuery, where newest jobs come first). Optional filters:
- *
- *   - `states`: include only these states (PENDING/RUNNING/DONE). Empty = all.
- *   - `minCreatedMs` / `maxCreatedMs`: inclusive bounds on creation time.
- *
- * Mirrors `listDatasets`/`listTables` — reads N+1 to detect "has more". */
+/** Paginated jobs in a project, newest first (`created_at` DESC, `job_id`),
+ * matching BigQuery. Optional filters: `states` (empty = all),
+ * `minCreatedMs`/`maxCreatedMs` (inclusive). Reads N+1 to detect "has more". */
 export async function listJobs(
   db: Db,
   project: string,
@@ -1148,9 +1100,7 @@ export async function listJobs(
   const params: unknown[] = [project];
   let next = 2;
   if (options.states !== undefined && options.states.length > 0) {
-    // DuckDB rejects a JS array bound as a parameter (it lands as ANY).
-    // Same trick as the query engine: pass the array as JSON, cast to
-    // VARCHAR[] in the SQL.
+    // DuckDB rejects a JS array param; pass as JSON and cast to VARCHAR[].
     where.push(`state = ANY ($${next}::JSON::VARCHAR[])`);
     params.push(JSON.stringify(options.states));
     next += 1;
@@ -1208,10 +1158,8 @@ export async function listJobs(
   return { jobs, nextOffset: hasMore ? options.offset + options.limit : null };
 }
 
-/** Cancel a job. If it's PENDING or RUNNING, transition it to DONE with an
- * `error` payload of `{ reason: 'stopped' }`. Already-DONE jobs are returned
- * as-is (matching real BigQuery, where cancelling a finished job is a no-op).
- * Returns null if the job doesn't exist. */
+/** Cancel a job: PENDING/RUNNING transition to DONE with a `{ reason: 'stopped' }`
+ * error; already-DONE jobs return as-is (BQ no-op). null if not found. */
 export async function cancelJob(db: Db, project: string, jobId: string): Promise<JobMeta | null> {
   const existing = await getJob(db, project, jobId);
   if (existing === null) return null;
@@ -1229,8 +1177,7 @@ export async function cancelJob(db: Db, project: string, jobId: string): Promise
   return { ...existing, state: 'DONE', error, endedMs: now };
 }
 
-/** Remove a job record. Returns `true` if a row was deleted, `false` if the
- * job didn't exist. Also drops any persisted result rows (see job_rows). */
+/** Remove a job record and its persisted result rows. `true` if deleted. */
 export async function deleteJob(db: Db, project: string, jobId: string): Promise<boolean> {
   const existing = await getJob(db, project, jobId);
   if (existing === null) return false;
@@ -1252,11 +1199,10 @@ export interface RoutineMetaInput {
   readonly routineId: string;
   readonly routineType: RoutineType;
   readonly language: RoutineLanguage;
-  /** [{ name, type }] mirroring BQ's `arguments` array. */
+  /** BQ `arguments` array: `[{ name, type }]`. */
   readonly arguments?: unknown;
-  /** BQ `returnType` object — { type, ... } — or null for TVFs / procedures. */
+  /** BQ `returnType` object, or null for TVFs / procedures. */
   readonly returnType?: unknown;
-  /** Raw body text as written by the user. */
   readonly body: string;
 }
 
@@ -1355,8 +1301,7 @@ export async function deleteRoutine(
   return true;
 }
 
-/** Paginated list of routines in a dataset, ordered by `routine_id`.
- * Reads N+1 to detect "has more". */
+/** Paginated routines in a dataset, ordered by `routine_id`. */
 export async function listRoutines(
   db: Db,
   project: string,
@@ -1396,23 +1341,22 @@ export async function listRoutines(
 }
 
 // ---------------------------------------------------------------------------
-// Models (BL-072 — metadata only, no training)
+// Models (metadata only, no training)
 // ---------------------------------------------------------------------------
 
 export interface ModelMetaInput {
   readonly project: string;
   readonly datasetId: string;
   readonly modelId: string;
-  /** BQML model kind — 'LINEAR_REGRESSION', 'LOGISTIC_REGRESSION', etc.
-   * We don't validate the kind in v0; the wire format passes it through. */
+  /** BQML model kind (e.g. 'LINEAR_REGRESSION'); passed through unvalidated. */
   readonly modelType: string;
   readonly description?: string;
   readonly friendlyName?: string;
   readonly labels?: Readonly<Record<string, string>>;
   readonly expirationMs?: number;
-  /** Feature columns — BQ wire shape, kept as opaque JSON. */
+  /** Feature columns — opaque BQ-wire-shape JSON. */
   readonly featureColumns?: unknown;
-  /** Label columns — BQ wire shape, kept as opaque JSON. */
+  /** Label columns — opaque BQ-wire-shape JSON. */
   readonly labelColumns?: unknown;
   readonly location?: string;
 }

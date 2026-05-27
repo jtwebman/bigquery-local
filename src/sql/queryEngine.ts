@@ -1,13 +1,7 @@
 /**
- * Shared SQL execution engine — used by both `POST /queries` (BL-015) and
- * `POST /jobs` for `configuration.query` (BL-016). Takes a BigQuery SQL
- * string + parsed parameters, runs the full pipeline (translate → bind →
- * cast → execute → shape → persist), and returns everything the caller
- * needs to build its own wire response.
- *
- * Parameter parsing also lives here so the two routes can share it:
- * `parseQueryParameter(raw, path)` produces a `QueryParameterParsed`
- * record from the BQ wire shape.
+ * Shared SQL execution engine for `POST /queries` and `POST /jobs`. Runs the
+ * full pipeline (translate → bind → cast → execute → shape → persist) and also
+ * houses parameter parsing so both routes can share it.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -153,12 +147,8 @@ export function parseQueryParameter(raw: unknown, path: string): QueryParameterP
   return { name, type: scalarType, scalar };
 }
 
-/** Accept the BQ wire form (`"42"`) AND the Python-client form (`42` as
- *  a JSON number, `true` as a boolean). Some clients — notably the
- *  Python `google-cloud-bigquery` library — serialize numeric / boolean
- *  parameter values as their native JSON type rather than as a
- *  decimal/literal string. We coerce to string so the downstream
- *  binding pipeline (which expects strings) keeps working. */
+/** Accept both the BQ wire form (`"42"`) and the Python-client form (native
+ *  JSON number/boolean); coerce to string for the downstream binding pipeline. */
 function coerceParameterValue(value: unknown, path: string): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
@@ -199,9 +189,8 @@ function encodeScalarForBind(value: string, type: BqType): unknown {
     case 'GEOGRAPHY':
       return value;
     case 'INTERVAL':
-      // Pre-translate BQ wire form ("Y-M D H:M:S") into a DuckDB-parseable
-      // interval literal at bind time so the `::INTERVAL` cast in
-      // scalarPlaceholderCast can accept it.
+      // Pre-translate BQ wire form ("Y-M D H:M:S") to a DuckDB-parseable literal
+      // so the `::INTERVAL` cast in scalarPlaceholderCast can accept it.
       return bqIntervalToDuckBindString(value);
     case 'RANGE':
       throw BqError.invalid(
@@ -235,19 +224,11 @@ function arrayPlaceholderCast(elementType: BqType): string {
 }
 
 /**
- * Cast applied to scalar `$N` placeholders for types that DuckDB does not
- * implicitly coerce from VARCHAR in every context. Equality and comparison
- * coerce fine, but arithmetic with `INTERVAL` (e.g. `@now - INTERVAL 1 HOUR`)
- * requires an explicit typed cast. The cast targets must match the
- * column types chosen by `bqTypeToDuck` so cross-type comparisons line up:
- *
- *   BQ TIMESTAMP → DuckDB TIMESTAMPTZ (tz-aware, like real BQ)
- *   BQ DATETIME  → DuckDB TIMESTAMP
- *   BQ DATE      → DuckDB DATE
- *   BQ TIME      → DuckDB TIME
- *
- * Returning `null` means no cast is needed — DuckDB will infer the right
- * type from the bound JS value.
+ * Cast for scalar `$N` placeholders whose types DuckDB won't implicitly coerce
+ * from VARCHAR in arithmetic contexts (e.g. `@now - INTERVAL 1 HOUR`). Targets
+ * must match the column types `bqTypeToDuck` picks so comparisons line up: BQ
+ * TIMESTAMP → DuckDB TIMESTAMPTZ (tz-aware, like real BQ), DATETIME → TIMESTAMP,
+ * DATE → DATE, TIME → TIME. `null` means DuckDB infers the type from the value.
  */
 function scalarPlaceholderCast(type: BqType): string | null {
   switch (type) {
@@ -356,27 +337,11 @@ export interface QueryExecution {
 }
 
 /**
- * Run the full BQ → DuckDB pipeline for a query and persist it as a
- * completed job. Returns enough to build either the `bigquery#queryResponse`
- * shape (BL-015) or the `bigquery#job` shape (BL-016).
- *
- * `jobId` may be passed in (e.g. when the request supplied
- * `jobReference.jobId`) or omitted to generate a fresh UUID.
- */
-/**
- * BL-157 — per-server query result cache.
- *
- * Keyed by `${project}\x00${normalizedSql}\x00${JSON.stringify(params)}`.
- * Identical queries within the same server lifetime return cached
- * rows + schema without hitting DuckDB; the new job still gets its own
- * jobId and `_bq.job_rows` so pagination + result fetches work the
- * same way as on a cache miss.
- *
- * No TTL, no cross-query invalidation: a SELECT that doesn't touch
- * the changed table happily returns its previously-cached rows even
- * after an INSERT lands. Real BQ tracks per-table mod time; for an
- * emulator this is acceptable — clients that need fresh data can
- * pass `useQueryCache: false`.
+ * Per-server query result cache (BL-157). Keyed by project + normalized SQL +
+ * params; identical SELECTs within a server lifetime skip DuckDB but still get
+ * a fresh jobId and `_bq.job_rows` so pagination works like a miss. No TTL and
+ * no per-table invalidation — unlike real BQ a cached SELECT can go stale after
+ * an INSERT; clients needing fresh data pass `useQueryCache: false`.
  */
 interface CachedResult {
   readonly statementType: StatementType;
@@ -390,36 +355,24 @@ function cacheKey(
   query: string,
   parameters: readonly QueryParameterParsed[],
 ): string {
-  // Normalize whitespace + trim so semantically-identical SQL hashes
-  // the same; a real production-grade cache would also strip comments
-  // and lowercase keywords, but trim-and-collapse covers the
-  // copy-paste-twice case the cache exists to optimize.
+  // Collapse whitespace + trim so semantically-identical SQL hashes the same.
   const normalized = query.replace(/\s+/g, ' ').trim();
   return `${project}\x00${normalized}\x00${JSON.stringify(parameters)}`;
 }
 
-/** Test-only: clear the cache between unit tests. Not exported for
- *  production callers — use `useQueryCache: false` to bypass. */
+/** Test-only: clear the cache between unit tests. */
 export function _resetQueryCacheForTests(): void {
   queryCache.clear();
 }
 
-/**
- * Invalidate the entire query cache. Called by any code path that
- * mutates persisted data — DML, DDL, MV refresh, copy, load,
- * insertAll, table CRUD. v0 doesn't track per-table dependencies; we
- * just clear the lot. Anyone running enough cached SELECTs to care
- * about granular invalidation can set `useQueryCache: false`.
- */
+/** Clear the entire query cache. Called by any path that mutates persisted
+ *  data; v0 doesn't track per-table dependencies, so we drop everything. */
 export function invalidateQueryCache(): void {
   queryCache.clear();
 }
 
-/** Build a fresh job from a cached SELECT result. The new jobId is
- *  unique (callers expect to be able to GET /queries/{j} for paging),
- *  and the rows go into `_bq.job_rows` under the new id — pagination
- *  works the same as on a non-cached job. `cacheHit=true` lands in
- *  `_bq.jobs.cache_hit` so the wire response can surface it. */
+/** Build a fresh job from a cached SELECT result: new unique jobId, rows
+ *  re-inserted into `_bq.job_rows`, and `cacheHit=true` for the wire response. */
 async function returnCachedSelect(
   db: Db,
   project: string,
@@ -467,24 +420,18 @@ export async function executeQuery(
   options: {
     readonly jobId?: string;
     readonly labels?: Readonly<Record<string, string>>;
-    /** Job-level region (BL-155). Defaults to 'US'. If the query
-     *  references a dataset stored with a different `location`, the
-     *  job fails with `invalid`. */
+    /** Job-level region (defaults to 'US'). A query referencing a dataset in a
+     *  different `location` fails with `invalid`. */
     readonly location?: string;
-    /** When `false`, skip the cache lookup; the query runs and the
-     *  result is NOT stored. Default `true` matches BQ behavior. */
+    /** When `false`, skip the cache (don't read or store). Default `true`. */
     readonly useQueryCache?: boolean;
   } = {},
 ): Promise<QueryExecution> {
   const statementType = detectStatementType(query);
-  // BL-155 — cross-location guard. Walk backticked references in the
-  // query, find each dataset, and verify its `location` (when set)
-  // matches the job's location. Any divergence → 400 invalid.
   await enforceJobLocation(db, project, query, options.location);
 
-  // Seed the job row up front so labels / location land in storage and
-  // are preserved through every subsequent branch-specific upsertJob
-  // (which use COALESCE on those fields).
+  // Seed the job row up front so labels/location persist through later
+  // branch-specific upsertJob calls (which COALESCE on those fields).
   const jobId = options.jobId ?? randomUUID();
   const optionsWithJobId = { ...options, jobId };
   if (options.labels !== undefined || options.location !== undefined) {
@@ -497,9 +444,8 @@ export async function executeQuery(
     });
   }
 
-  // BL-157 — cache lookup / invalidation. Only SELECT is cacheable;
-  // every other statement type mutates state, so we clear the cache up
-  // front. `useQueryCache` defaults to true (matches BQ).
+  // Only SELECT is cacheable; every other statement type mutates state, so
+  // clear the cache up front.
   const useCache = options.useQueryCache !== false;
   if (statementType !== 'SELECT') {
     invalidateQueryCache();
@@ -525,10 +471,8 @@ export async function executeQuery(
     return executeSchemaDdl(db, project, query, statementType, optionsWithJobId);
   }
   if (statementType === 'SCRIPT') {
-    // Intercept the BQ built-in procedure before the script interpreter
-    // sees it. `CALL BQ.REFRESH_MATERIALIZED_VIEW('ds.mv')` is the only
-    // BQ-procedure we support in v0; everything else flows to the
-    // scripting runtime.
+    // `CALL BQ.REFRESH_MATERIALIZED_VIEW('ds.mv')` is the only BQ built-in
+    // procedure we support; everything else flows to the scripting runtime.
     const mvRefresh = parseRefreshMaterializedViewCall(query, project);
     if (mvRefresh !== null) {
       return executeRefreshMaterializedView(db, project, query, mvRefresh, optionsWithJobId);
@@ -558,8 +502,8 @@ export async function executeQuery(
   const endedMs = startedMs;
 
   if (statementType !== 'SELECT') {
-    // DuckDB DML returns a single row { Count: BIGINT }. BQ's wire shape for
-    // DML has no schema and no rows — just `numDmlAffectedRows` in stats.
+    // DuckDB DML returns a single { Count: BIGINT } row; BQ's DML wire shape has
+    // no schema/rows, just `numDmlAffectedRows` in stats.
     const affected = readDmlCount(result);
     await upsertJob(db, {
       project,
@@ -608,7 +552,6 @@ export async function executeQuery(
       [project, jobId, BigInt(i), JSON.stringify(wireRows[i])],
     );
   }
-  // BL-157 — store the result for future cache hits when caching is on.
   if (useCache) {
     queryCache.set(cacheKey(project, query, parameters), {
       statementType: 'SELECT',
@@ -657,7 +600,6 @@ async function executeViewDdl(
     throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
   }
   await ensureDatasetSchema(db, target.project, target.datasetId);
-
   try {
     await db.exec(translatedSql);
   } catch (err) {
@@ -696,23 +638,10 @@ async function executeViewDdl(
 }
 
 /**
- * Materialized-view DDL (BL-101).
- *
- * CREATE MATERIALIZED VIEW <name> AS <SELECT>:
- *   1. Translate the SELECT body through the same pipeline used for
- *      ad-hoc queries.
- *   2. `CREATE TABLE <dest> AS SELECT * FROM (<select>)` materializes
- *      rows + schema in one shot.
- *   3. Register metadata with `type='MATERIALIZED_VIEW'` so
- *      INFORMATION_SCHEMA.MATERIALIZED_VIEWS (BL-076) surfaces it.
- *
- * DROP MATERIALIZED VIEW <name>:
- *   1. `DROP TABLE` the backing storage.
- *   2. Remove metadata.
- *
- * MV refresh lands in BL-102. For now the rows are a point-in-time
- * snapshot of the source query, matching real BQ's freshly-created MV
- * behavior.
+ * Materialized-view DDL. CREATE translates the SELECT body, materializes it via
+ * `CREATE TABLE <dest> AS SELECT ...`, and registers `type='MATERIALIZED_VIEW'`
+ * metadata; DROP removes the backing table and metadata. Rows are a point-in-time
+ * snapshot (matching a freshly-created BQ MV) until an explicit refresh.
  */
 async function executeMaterializedViewDdl(
   db: Db,
@@ -732,8 +661,6 @@ async function executeMaterializedViewDdl(
   const qualified = `${quoteIdent(dsName)}.${quoteIdent(target.viewId)}`;
 
   if (statementType === 'CREATE_MATERIALIZED_VIEW') {
-    // The source SELECT goes through the same translator pipeline ad-hoc
-    // queries use — backticks, params, etc. all resolve.
     if (target.viewQuery === undefined) {
       throw BqError.invalid('CREATE MATERIALIZED VIEW requires an AS <query> body.', 'query');
     }
@@ -807,20 +734,11 @@ async function executeMaterializedViewDdl(
 }
 
 /**
- * Cross-location guard (BL-155).
- *
- * BigQuery scopes datasets to a region; queries that reference datasets
- * in a different location than the job runs in fail. The emulator
- * doesn't physically partition by region — every dataset lives in the
- * same DuckDB — but we still enforce the contract: walk the
- * backticked references in the SQL, extract the dataset names, and
- * verify every dataset's stored `location` matches the job's location.
- *
- * A job with no explicit location (the BQ default 'US') is treated as
- * matching any dataset that has no stored location. A dataset whose
- * location is unset is also treated as compatible with any job —
- * lenient by design, so existing tests that don't set location keep
- * passing.
+ * Cross-location guard. BQ scopes datasets to a region and rejects queries
+ * referencing a dataset in a different location than the job. The emulator
+ * doesn't physically partition, but enforces the contract: walk backticked
+ * refs and check each dataset's stored `location` against the job's. An unset
+ * location on either side is treated as compatible (lenient by design).
  */
 async function enforceJobLocation(
   db: Db,
@@ -862,12 +780,9 @@ async function enforceJobLocation(
 }
 
 /**
- * MV refresh (BL-102).
- *
- * Recognizes `CALL BQ.REFRESH_MATERIALIZED_VIEW('<name>')` where
- * `<name>` is `dataset.mv` (current project) or `project.dataset.mv`.
- * Returns the parsed (project, dataset, mv) triple, or null if the
- * SQL isn't this specific procedure call.
+ * Recognizes `CALL BQ.REFRESH_MATERIALIZED_VIEW('<name>')` where `<name>` is
+ * `dataset.mv` or `project.dataset.mv`. Returns the parsed triple, or null if
+ * the SQL isn't this specific procedure call.
  */
 interface RefreshMvTarget {
   readonly project: string;
@@ -882,26 +797,22 @@ function parseRefreshMaterializedViewCall(
   const tokens = tokenize(sql);
   let i = 0;
   while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
-  // CALL
   const t0 = tokens[i];
   if (t0 === undefined || t0.kind !== 'identifier' || t0.value.toUpperCase() !== 'CALL') {
     return null;
   }
   i += 1;
   while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
-  // BQ
   const t1 = tokens[i];
   if (t1 === undefined || t1.kind !== 'identifier' || t1.value.toUpperCase() !== 'BQ') {
     return null;
   }
   i += 1;
   while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
-  // .
   const t2 = tokens[i];
   if (t2 === undefined || t2.kind !== 'punctuation' || t2.value !== '.') return null;
   i += 1;
   while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
-  // REFRESH_MATERIALIZED_VIEW
   const t3 = tokens[i];
   if (
     t3 === undefined ||
@@ -912,16 +823,13 @@ function parseRefreshMaterializedViewCall(
   }
   i += 1;
   while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
-  // (
   const t4 = tokens[i];
   if (t4 === undefined || t4.kind !== 'punctuation' || t4.value !== '(') return null;
   i += 1;
   while (i < tokens.length && (tokens[i] as { kind: string }).kind === 'whitespace') i += 1;
-  // 'name'
   const nameTok = tokens[i];
   if (nameTok === undefined || nameTok.kind !== 'string') return null;
   const rawValue = nameTok.value;
-  // Strip surrounding quotes.
   const stripped = rawValue.replace(/^['"]|['"]$/g, '');
   const parts = stripped.split('.');
   let projectId: string;
@@ -938,9 +846,8 @@ function parseRefreshMaterializedViewCall(
   return { project: projectId, datasetId, mvId };
 }
 
-/** Run a single MV refresh: clear the backing table, then re-INSERT from
- *  the stored source query. Implemented as a SCRIPT-shaped job (it's a
- *  CALL, after all). */
+/** Run a single MV refresh: clear the backing table, then re-INSERT from the
+ *  stored source query. Reported as a SCRIPT-shaped job. */
 async function executeRefreshMaterializedView(
   db: Db,
   project: string,
@@ -1011,12 +918,9 @@ async function executeScript(
   originalQuery: string,
   options: { readonly jobId?: string },
 ): Promise<QueryExecution> {
-  // BQ multi-statement script. The interpreter (src/sql/script.ts) walks
-  // DECLARE/SET/IF/BEGIN constructs and dispatches plain SQL to DuckDB. For
-  // `BEGIN TRANSACTION; … COMMIT;` scripts (which have no scripting
-  // constructs) it just runs each statement in order — semantics match
-  // BL-062. On a mid-script failure we still explicitly ROLLBACK so the
-  // shared connection doesn't carry over an open transaction.
+  // The interpreter (src/sql/script.ts) walks DECLARE/SET/IF/BEGIN constructs
+  // and dispatches plain SQL to DuckDB. On a mid-script failure we explicitly
+  // ROLLBACK so the shared connection doesn't carry over an open transaction.
   let result: ScriptResult;
   try {
     result = await executeBqScript(db, project, originalQuery);
@@ -1024,7 +928,7 @@ async function executeScript(
     try {
       await db.exec('ROLLBACK');
     } catch {
-      // No transaction was open — nothing to undo.
+      // No open transaction — nothing to undo.
     }
     if (err instanceof BqError) throw err;
     throw BqError.invalid(err instanceof Error ? err.message : 'Script execution failed.', 'query');
@@ -1114,10 +1018,8 @@ async function runDropSchema(db: Db, target: SchemaDdlTarget): Promise<void> {
     if (target.ifExists) return;
     throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
   }
-  // For CASCADE, surface the actual DuckDB error (e.g. "schema not empty")
-  // before any metadata removal happens — otherwise a half-cleared state
-  // would survive a failed DROP. So: DROP first in DuckDB, reconcile metadata
-  // only on success.
+  // DROP in DuckDB first, reconcile metadata only on success — otherwise a
+  // failed DROP (e.g. "schema not empty") would leave a half-cleared state.
   const schemaName = datasetSchemaName(target.project, target.datasetId);
   const cascadeKw = target.cascade ? ' CASCADE' : '';
   try {
@@ -1125,7 +1027,7 @@ async function runDropSchema(db: Db, target: SchemaDdlTarget): Promise<void> {
   } catch (err) {
     throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
   }
-  // CASCADE took the underlying tables with it; mirror that in _bq.tables.
+  // CASCADE dropped the underlying tables; mirror that in _bq.tables.
   if (target.cascade) {
     await db.exec('DELETE FROM _bq.tables WHERE project = $1 AND dataset_id = $2', [
       target.project,
@@ -1222,7 +1124,6 @@ async function executeProcedureDdl(
 }
 
 async function runCreateProcedure(db: Db, target: ProcedureDdlTarget): Promise<void> {
-  // Procedures live in datasets; require the dataset to exist first.
   const ds = await getDataset(db, target.project, target.datasetId);
   if (ds === null) {
     throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
@@ -1230,7 +1131,6 @@ async function runCreateProcedure(db: Db, target: ProcedureDdlTarget): Promise<v
   if (target.body === undefined) {
     throw BqError.invalid('CREATE PROCEDURE requires a body.', 'query');
   }
-  // Idempotency: respect IF NOT EXISTS / OR REPLACE.
   const existing = await getRoutineSafe(db, target.project, target.datasetId, target.procedureId);
   if (existing !== null && !target.orReplace) {
     if (target.ifNotExists) return;
@@ -1265,8 +1165,8 @@ async function runDropProcedure(db: Db, target: ProcedureDdlTarget): Promise<voi
 }
 
 async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<void> {
-  // Persistent functions live in their dataset; TEMP lives in DuckDB's
-  // session-temp schema (closest analogue to BQ session-scoped TEMP).
+  // TEMP functions live in DuckDB's session-temp schema (closest analogue to
+  // BQ's session-scoped TEMP); persistent ones live in their dataset.
   if (!target.isTemp) {
     if (target.datasetId === undefined) {
       throw BqError.invalid(
@@ -1286,8 +1186,7 @@ async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<voi
   } catch (err) {
     throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
   }
-  // Only persist non-TEMP routines — DuckDB owns the lifecycle of TEMP macros,
-  // and a process-restart drops the in-memory state anyway.
+  // Only persist non-TEMP routines — DuckDB owns the TEMP macro lifecycle.
   if (!target.isTemp && target.datasetId !== undefined && target.body !== undefined) {
     await upsertRoutine(db, {
       project: target.project,
@@ -1305,8 +1204,7 @@ async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<voi
 }
 
 async function runDropFunction(db: Db, target: FunctionDdlTarget): Promise<void> {
-  // DuckDB has separate DROP keywords for scalar vs table macros; mirror that
-  // with the `TABLE` infix when the caller used `DROP TABLE FUNCTION`.
+  // DuckDB has separate DROP keywords for scalar vs table macros.
   const macroKind = target.isTableValued ? 'MACRO TABLE' : 'MACRO';
   if (target.isTemp || target.datasetId === undefined) {
     // TEMP path: drop via DuckDB directly; nothing to reconcile in _bq.routines.
@@ -1351,10 +1249,9 @@ async function getRoutineSafe(
 }
 
 /**
- * Build the DuckDB `CREATE [OR REPLACE] [TEMP] MACRO [IF NOT EXISTS] ...`
- * statement for a BQ UDF definition. Argument types are dropped (DuckDB
- * doesn't enforce them on macros); the RETURNS type is honored by wrapping
- * the body in `CAST(... AS <duckType>)`.
+ * Build the DuckDB `CREATE [OR REPLACE] [TEMP] MACRO ...` statement for a BQ
+ * UDF. Argument types are dropped (DuckDB doesn't enforce them on macros); the
+ * RETURNS type is honored by wrapping the body in `CAST(... AS <duckType>)`.
  */
 function buildCreateMacroSql(target: FunctionDdlTarget): string {
   const orReplace = target.orReplace ? 'OR REPLACE ' : '';
@@ -1366,12 +1263,12 @@ function buildCreateMacroSql(target: FunctionDdlTarget): string {
         target.functionId,
       )}`;
   const argList = target.args.map((a) => quoteIdent(a.name)).join(', ');
-  // Bodies can contain backtick table refs and other BQ-isms; run them
-  // through the translator so the macro stores DuckDB-resolvable SQL.
+  // Run the body through the translator so backtick refs and other BQ-isms
+  // become DuckDB-resolvable SQL.
   const rawBody = target.body ?? '';
   const body = rawBody === '' ? '' : translate(rawBody, { project: target.project }).sql;
-  // TVF: DuckDB's `AS TABLE <select>` form. The body is a SELECT statement;
-  // the RETURNS TABLE<…> clause is captured in metadata but not enforced.
+  // TVF uses DuckDB's `AS TABLE <select>` form; the RETURNS TABLE<…> clause is
+  // captured in metadata but not enforced.
   if (target.isTableValued) {
     return `CREATE ${orReplace}${temp}MACRO ${ifNotExists}${qualifiedName}(${argList}) AS TABLE (${body})`;
   }
@@ -1383,9 +1280,8 @@ function buildCreateMacroSql(target: FunctionDdlTarget): string {
 }
 
 /**
- * Lightweight BQ → DuckDB type-text translation for use in CAST.
- * Covers the common scalar names and ARRAY<…>. Anything else passes through
- * verbatim, which works for DuckDB-compatible spellings the user wrote.
+ * Lightweight BQ → DuckDB type-text translation for CAST. Covers common scalar
+ * names and ARRAY<…>; anything else passes through verbatim.
  */
 function bqTypeTextToDuck(text: string): string {
   let s = text.trim();
@@ -1426,19 +1322,14 @@ async function registerViewMetadata(db: Db, target: ViewDdlTarget): Promise<void
 export interface DryRunResult {
   readonly statementType: StatementType;
   readonly schema: readonly BqField[];
-  /** Estimated bytes the query would process at execute time. For
-   *  SELECT, this is `output-row-count × estimated-bytes-per-row`. The
-   *  count drops naturally when partition filters or other WHERE
-   *  predicates narrow the result, so a `_PARTITIONTIME` filter shows
-   *  up as a smaller estimate (BL-099). For DML we return 0 — the
-   *  query plans against the table without scanning. */
+  /** Estimated bytes processed at execute time. For SELECT, `output-row-count ×
+   *  estimated-bytes-per-row`, so WHERE/partition filters shrink the estimate.
+   *  DML returns 0 (it plans without scanning). */
   readonly totalBytesProcessed: number;
 }
 
-/** Rough bytes-per-value estimate for each BQ type. Used by the dry-run
- *  estimator. Values are intentionally simple (fixed per type rather
- *  than length-aware) — the goal is monotonicity with row count, not
- *  pinpoint accuracy. */
+/** Rough fixed bytes-per-value per BQ type for the dry-run estimator; the goal
+ *  is monotonicity with row count, not accuracy. */
 const BQ_TYPE_BYTES: Readonly<Record<string, number>> = {
   STRING: 16,
   BYTES: 32,
@@ -1460,8 +1351,7 @@ function estimateRowBytes(schema: readonly BqField[]): number {
   let total = 0;
   for (const field of schema) {
     const base = BQ_TYPE_BYTES[field.type] ?? 16;
-    // REPEATED columns multiply by a conservative average length (3
-    // items) — better than ignoring them entirely.
+    // REPEATED columns assume a conservative average length of 3.
     total += field.mode === 'REPEATED' ? base * 3 : base;
   }
   // Floor of 1 so empty-schema queries (SCRIPT etc.) don't underflow to 0.
@@ -1469,19 +1359,11 @@ function estimateRowBytes(schema: readonly BqField[]): number {
 }
 
 /**
- * Validate + plan a query without executing it. Returns the result schema
- * the query would produce. Matches BigQuery's `dryRun: true` semantics:
- * the query is parsed, bound, and planned — but no rows are read, no job is
- * persisted, and no result page is allocated.
- *
- * Implementation rides on DuckDB's `DESCRIBE <query>`, which does the full
- * bind step (so unknown columns / type mismatches / unknown tables surface
- * here exactly as they would at execute time) and returns column metadata
- * without running the plan.
- *
- * Parameters still go through the same translate → augment → bind pipeline
- * so `@param` placeholders resolve cleanly. The bound values don't influence
- * the output schema, but they have to be valid for DESCRIBE to succeed.
+ * Validate + plan a query without executing it (BQ `dryRun: true`): parse, bind,
+ * and plan, but read no rows and persist no job. Rides on DuckDB's
+ * `DESCRIBE <query>`, whose full bind step surfaces unknown columns/tables and
+ * type mismatches exactly as execute time would. Params still flow through the
+ * normal translate → augment → bind pipeline and must be valid for DESCRIBE.
  */
 export async function executeQueryDryRun(
   db: Db,
@@ -1496,9 +1378,8 @@ export async function executeQueryDryRun(
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 
   if (statementType !== 'SELECT') {
-    // DESCRIBE doesn't parse DML in DuckDB; EXPLAIN plans the statement
-    // without mutating rows, which still surfaces unknown tables / columns /
-    // type mismatches as proper errors here.
+    // DESCRIBE doesn't parse DML in DuckDB; EXPLAIN plans it without mutating
+    // rows while still surfacing unknown tables/columns/type mismatches.
     try {
       await db.query(`EXPLAIN ${sqlWithCasts}`, values);
     } catch (err) {
@@ -1510,8 +1391,6 @@ export async function executeQueryDryRun(
     return { statementType, schema: [], totalBytesProcessed: 0 };
   }
 
-  // DuckDB accepts DESCRIBE on a query string; the parameter bindings flow
-  // through the same prepared-statement path the executor uses.
   const describeSql = `DESCRIBE ${sqlWithCasts}`;
 
   let described: ReadonlyArray<Record<string, unknown>>;
@@ -1527,15 +1406,9 @@ export async function executeQueryDryRun(
     return duckTypeToBq(type, name);
   });
 
-  // BL-099 — estimate `totalBytesProcessed` as
-  //   (count of rows the query would output) × estimated-bytes-per-row
-  // The count naturally drops when a WHERE clause prunes (including
-  // `_PARTITIONTIME` / partition-column filters), giving partition
-  // pruning a visible knock-on effect in the dry-run estimate.
-  //
-  // The query is wrapped in `SELECT count(*) FROM (<orig>)` — DuckDB
-  // runs only the count plan, so this is effectively free at the row
-  // counts the emulator deals with.
+  // Estimate `totalBytesProcessed` as output-row-count × bytes-per-row by
+  // wrapping the query in `SELECT count(*) FROM (<orig>)`; WHERE/partition
+  // pruning shrinks the count and thus the estimate.
   let totalBytesProcessed = 0;
   try {
     const countResult = await db.query<{ n: bigint }>(
@@ -1545,10 +1418,8 @@ export async function executeQueryDryRun(
     const rowCount = Number(countResult[0]?.n ?? 0);
     totalBytesProcessed = rowCount * estimateRowBytes(schema);
   } catch {
-    // Some queries (e.g. ones that reference session-local state in a
-    // way DuckDB can't replay) won't survive the COUNT wrap. Fall back
-    // to 0 — the DESCRIBE above already validated the query, so
-    // surfacing this as an error would be worse than just under-reporting.
+    // Some queries won't survive the COUNT wrap; fall back to 0 since DESCRIBE
+    // already validated the query (under-reporting beats erroring).
     totalBytesProcessed = 0;
   }
 
@@ -1560,17 +1431,10 @@ export async function executeQueryDryRun(
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves BQ wildcard table references at the SQL-string level, before
- * translation. For each backtick of the form `\`[proj.]ds.prefix_*\``, looks
- * up matching tables in `_bq.tables`, and substitutes the wildcard with a
- * UNION ALL subquery that surfaces the `_TABLE_SUFFIX` pseudo-column:
- *
- *   `ds.events_*`  →  (SELECT *, '20240101' AS _TABLE_SUFFIX FROM `ds.events_20240101`
- *                       UNION ALL
- *                      SELECT *, '20240102' AS _TABLE_SUFFIX FROM `ds.events_20240102`)
- *
- * The result is still BQ SQL (backticks intact), so `translate()` does the
- * usual project-qualified rewrite on the substituted parts.
+ * Resolves BQ wildcard table refs (`\`[proj.]ds.prefix_*\``) at the SQL-string
+ * level before translation: looks up matching `_bq.tables` and substitutes a
+ * UNION ALL subquery surfacing the `_TABLE_SUFFIX` pseudo-column. The result is
+ * still BQ SQL (backticks intact), so `translate()` rewrites the substituted parts.
  */
 async function expandWildcardTables(
   query: string,
@@ -1624,7 +1488,7 @@ async function expandWildcardTables(
     });
   }
   if (replacements.length === 0) return query;
-  // Apply tail-to-head so earlier offsets stay valid as we splice.
+  // Splice tail-to-head so earlier offsets stay valid.
   let out = query;
   for (let i = replacements.length - 1; i >= 0; i -= 1) {
     const r = replacements[i] as { start: number; end: number; text: string };

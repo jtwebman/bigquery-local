@@ -1,21 +1,14 @@
 /**
- * BL-066 — BigQuery scripting interpreter.
+ * BL-066 — BigQuery scripting interpreter. Handles DECLARE / SET / IF / loops
+ * and BEGIN…END; everything else is plain SQL handed to DuckDB after variable
+ * refs are substituted with bound `$N` params.
  *
- * Implements DECLARE / SET / IF (with ELSEIF / ELSE / END IF) and BEGIN…END
- * blocks. Everything else in a script is treated as a regular SQL statement
- * and handed to DuckDB after variable references are substituted with bound
- * `$N` parameters.
+ * Variables are bare identifiers (NOT `@@var` — that's BQ's read-only system
+ * vars). Scope is flat across the whole script; nested BEGIN…END blocks don't
+ * get their own scope yet.
  *
- * Variables follow BQ semantics: declared with a type, optionally a DEFAULT,
- * referenced as bare identifiers (NOT `@@var` — that's BQ's read-only system
- * variables, a different concept). The scope is flat across the whole
- * script for now; nested BEGIN…END blocks don't get their own scope (a
- * future enhancement once we see real cases that need it).
- *
- * The interpreter returns the rows + schema of the *last* SELECT in the
- * script, matching the synchronous shape callers expect from
- * `POST /queries`. Other statements (DECLARE, SET, IF, DML, DDL) run for
- * their side effects.
+ * Returns rows + schema of the *last* SELECT, matching the synchronous shape
+ * `POST /queries` callers expect; other statements run for side effects.
  */
 
 import type { Db } from '../storage/db.ts';
@@ -56,8 +49,7 @@ class Scope {
     this.vars.set(key, { name, bqType, value: initialValue });
   }
 
-  /** Bind a FOR-loop row to a name. The same name can be re-bound across
-   *  iterations of the loop — that's what FOR does. */
+  /** Bind a FOR-loop row to a name; re-bound each iteration. */
   bindRow(name: string, row: Record<string, unknown>, colTypes: Record<string, BqType>): void {
     const key = name.toLowerCase();
     if (this.vars.has(key)) {
@@ -97,9 +89,8 @@ class Scope {
 
 class BreakSignal {}
 class ContinueSignal {}
-/** Thrown by `RETURN`; caught by the nearest CALL frame. Procedure bodies
- *  use it to exit early. At the top of the script (no enclosing CALL),
- *  RETURN becomes a clean script termination. */
+/** Thrown by `RETURN`; caught by the nearest CALL frame to exit a procedure
+ *  early. At the top of a script (no enclosing CALL) it's a clean termination. */
 class ReturnSignal {}
 
 // ---------------------------------------------------------------------------
@@ -132,8 +123,7 @@ type Stmt =
 interface UsingClause {
   /** Caller-side expression to evaluate. */
   readonly expr: string;
-  /** Optional `AS <name>` — when set, the value is bound as `@name` in
-   *  the dynamic SQL. When absent, it's a positional `?` placeholder. */
+  /** `AS <name>` binds as `@name`; absent means a positional `?`. */
   readonly name?: string;
 }
 
@@ -175,36 +165,27 @@ export async function executeBqScript(
   try {
     await runList(program);
   } catch (signal) {
-    // RETURN at the top of a script (i.e. with no enclosing CALL) is a
-    // clean early-exit, not an error. BREAK / CONTINUE outside any loop
-    // are user errors though — propagate those.
+    // Top-level RETURN is a clean early-exit; BREAK/CONTINUE outside a loop
+    // are user errors, so propagate everything else.
     if (!(signal instanceof ReturnSignal)) throw signal;
   }
   return lastSelectResult;
 }
 
-/** Execute a dynamically-built SQL string. Optional INTO captures the
- *  result row's columns into named script variables (like `SET (a, b) =
- *  (SELECT …)`). Optional USING binds parameter values into the dynamic
- *  SQL — `?` positional or `AS <name>` for the `@name` form.
- *
- *  Side effects (DML / DDL) just run through DuckDB. SELECT-shaped
- *  dynamic SQL is read but its result rows aren't returned to the caller
- *  unless captured via INTO. */
+/** Execute a dynamically-built SQL string. INTO captures the result row into
+ *  named vars; USING binds values (`?` positional or `AS <name>` for `@name`).
+ *  SELECT results are not returned unless captured via INTO. */
 async function runExecuteImmediate(
   db: Db,
   project: string,
   scope: Scope,
   stmt: Extract<Stmt, { kind: 'EXECUTE_IMMEDIATE' }>,
 ): Promise<ScriptResult | undefined> {
-  // 1. Evaluate the SQL-text expression in the caller scope.
   const sqlText = await evalScalarExpr(db, project, scope, stmt.sqlExpr, 'VARCHAR');
   if (typeof sqlText !== 'string') {
     throw BqError.invalid('EXECUTE IMMEDIATE expression must evaluate to STRING.', 'query');
   }
 
-  // 2. Evaluate USING expressions against the caller scope. Each binds as
-  //    either a positional `?` (no name) or a named `@<name>` placeholder.
   const positionalUsing: unknown[] = [];
   const namedUsing = new Map<string, unknown>();
   for (const clause of stmt.usingClauses) {
@@ -213,8 +194,8 @@ async function runExecuteImmediate(
     else namedUsing.set(clause.name.toLowerCase(), val);
   }
 
-  // 3. Translate dynamic SQL — `@name` placeholders flow through translate()'s
-  //    paramOrder; positional `?` we substitute ourselves with `$N`.
+  // `@name` placeholders flow through translate()'s paramOrder; positional `?`
+  // we substitute ourselves with `$N`.
   const { sql: translatedSql, paramOrder } = translate(sqlText, { project });
   const { sql: withPositional, positionalCount } = replaceQuestionMarks(translatedSql, paramOrder);
   if (positionalCount !== positionalUsing.length) {
@@ -223,8 +204,7 @@ async function runExecuteImmediate(
       'query',
     );
   }
-  // Build the bind values: named placeholders go in paramOrder slots; the
-  // appended positional slots come after.
+  // Named placeholders fill paramOrder slots; positional slots come after.
   const values: unknown[] = [];
   for (const name of paramOrder) {
     const v = namedUsing.get(name.toLowerCase());
@@ -238,7 +218,6 @@ async function runExecuteImmediate(
   }
   for (const v of positionalUsing) values.push(v);
 
-  // 4. Execute and (optionally) capture results into the script-level vars.
   let result: Awaited<ReturnType<Db['queryWithSchema']>>;
   try {
     result = await db.queryWithSchema(withPositional, values);
@@ -271,9 +250,8 @@ async function runExecuteImmediate(
   return undefined;
 }
 
-/** Replace each top-level `?` with `$N` (continuing from the highest `$N`
- *  already present in the SQL). Skips `?` characters inside string literals
- *  and comments — we tokenize to find them. */
+/** Replace each `?` with `$N`, continuing past existing params. Tokenizes so
+ *  `?` inside string literals and comments is skipped. */
 function replaceQuestionMarks(
   sql: string,
   existingParamOrder: readonly string[],
@@ -294,20 +272,16 @@ function replaceQuestionMarks(
   return { sql: parts.join(''), positionalCount };
 }
 
-/** Invoke a stored procedure: lookup the routine, validate arg count, create
- *  a fresh scope with the args declared as locals, run the body, catch
- *  RETURN. The last row-producing statement in the body (typically a
- *  SELECT) surfaces back to the caller — matching real BQ's behavior,
- *  where `CALL p()` shows up in the script's result set whenever the
- *  procedure body's last statement is a SELECT. */
+/** Invoke a stored procedure in a fresh scope with args bound as locals. The
+ *  body's last row-producing statement surfaces to the caller — matching BQ,
+ *  where `CALL p()` appears in the result set when the body ends in a SELECT. */
 async function runCall(
   db: Db,
   project: string,
   callerScope: Scope,
   stmt: Extract<Stmt, { kind: 'CALL' }>,
 ): Promise<ScriptResult | undefined> {
-  // Parser leaves `project` empty when the user only wrote `dataset.proc`;
-  // resolve against the request's default project here.
+  // Parser leaves `project` empty for `dataset.proc`; default to the request's.
   const proj = stmt.project === '' ? project : stmt.project;
   const routine = await getRoutine(db, proj, stmt.datasetId, stmt.procedureId);
   if (routine === null) {
@@ -327,9 +301,7 @@ async function runCall(
       'query',
     );
   }
-  // Evaluate caller-side arg expressions in the CALLER's scope, then build
-  // a fresh procedure-local scope with the resulting values bound under
-  // each formal parameter name.
+  // Evaluate arg exprs in the CALLER's scope, then bind under each formal name.
   const evaluated: Array<{ name: string; type: BqType; value: unknown }> = [];
   for (let i = 0; i < args.length; i += 1) {
     const formal = args[i] as { name: string; dataType?: { typeKind?: string } };
@@ -343,8 +315,7 @@ async function runCall(
   const procScope = new Scope();
   for (const a of evaluated) procScope.declare(a.name, a.type, a.value);
 
-  // Parse and execute the procedure body in the new scope. The body text
-  // captured at CREATE PROCEDURE time is a `BEGIN … END` block.
+  // Body captured at CREATE PROCEDURE time is a `BEGIN … END` block.
   const bodyTokens = tokenize(routine.body);
   const program = parseStatements(routine.body, bodyTokens, 0, bodyTokens.length);
 
@@ -358,8 +329,7 @@ async function runCall(
   try {
     await runList(program);
   } catch (signal) {
-    if (!(signal instanceof ReturnSignal)) throw signal;
-    // RETURN exits the procedure cleanly.
+    if (!(signal instanceof ReturnSignal)) throw signal; // RETURN exits cleanly
   }
   return lastSelectResult;
 }
@@ -460,7 +430,7 @@ async function runStmt(
         if (v === undefined) throw BqError.invalid(`Variable "${name}" is not declared.`, 'query');
         values.push(await evalScalarExpr(db, project, scope, expr, bqTypeToDuckShort(v.bqType)));
       }
-      // Apply atomically so failures don't leave a half-applied state.
+      // Apply atomically so a failure can't leave a half-applied state.
       for (let i = 0; i < stmt.names.length; i += 1) {
         scope.set(stmt.names[i] as string, values[i]);
       }
@@ -548,15 +518,13 @@ async function runStmt(
     case 'RETURN':
       throw new ReturnSignal();
     case 'CALL': {
-      // runCall returns the body's last row-producing result (typically
-      // a SELECT) so the outer script's runList can surface it.
       return await runCall(db, project, scope, stmt);
     }
     case 'EXECUTE_IMMEDIATE': {
       return runExecuteImmediate(db, project, scope, stmt);
     }
     case 'SQL': {
-      // Distinguish SELECT from everything else: SELECTs surface results.
+      // Only SELECT-shaped statements surface results.
       const upper = leadingKeyword(stmt.sql);
       const { sql, values } = substituteVars(stmt.sql, scope);
       const translated = translate(sql, { project }).sql;
@@ -567,7 +535,6 @@ async function runStmt(
         );
         return { schema, rows: result.rows };
       }
-      // Non-SELECT: run for side effects.
       if (values.length === 0) await db.exec(translated);
       else await db.queryWithSchema(translated, values);
       return undefined;
@@ -611,36 +578,25 @@ async function evalScalarExpr(
 // ---------------------------------------------------------------------------
 
 /**
- * Walk the SQL tokens and replace any bare identifier matching a declared
- * variable with a `$N` placeholder, collecting the values in order. Skips
- * identifiers inside string literals (the tokenizer already separates
- * those), and ones immediately preceded by `.` (qualified column refs
- * like `t.x`).
+ * Replace each bare identifier matching a declared variable with a `$N`
+ * placeholder, collecting values in order. Skips identifiers preceded by `.`
+ * (qualified column refs like `t.x`).
  */
 function substituteVars(sql: string, scope: Scope): { sql: string; values: unknown[] } {
   const tokens = tokenize(sql);
   const parts: string[] = [];
   const values: unknown[] = [];
-  // Track paren depth, and at the current depth whether we're inside a
-  // SELECT projection list (between SELECT and the first FROM/WHERE/etc).
-  // Reset to non-SELECT when paren depth changes, since `(SELECT ...)` is
-  // its own context — for BL-066 we only alias at the outermost SELECT.
+  // Only alias at the outermost SELECT list: reset on paren-depth change since
+  // `(SELECT ...)` is its own context.
   let depth = 0;
   let inSelectList = false;
-  // Track positions where an identifier names a *column*, not a variable:
-  //   1. INSERT INTO tbl (col1, col2) — paren depth that opens after
-  //      INSERT [INTO] <table>. Identifiers inside are column names.
-  //   2. UPDATE tbl SET col = ... — `col` here is a column name. Detected
-  //      by "identifier followed by `=`" at depth=0 while seenUpdate set.
-  // Both close at `VALUES` / `SELECT` / `WHERE` (post-SET) respectively.
+  // Identifiers that name a *column*, not a variable, must not be substituted:
+  //   1. INSERT INTO tbl (col1, col2) — names inside the column-list paren.
+  //   2. UPDATE tbl SET col = ...     — identifier followed by `=` at depth 0.
   let insertColListDepth: number | null = null; // depth at which the column-list `(` opened
-  // INSERT state machine:
-  //   - `seenInsert` flips on at INSERT, off after VALUES / SELECT (or after
-  //     the column-list `)` closes).
-  //   - `seenValuesAfterInsert` flips on at VALUES; once true, the NEXT `(`
-  //     is the value-list paren, NOT a column list — so we don't enter
-  //     col-list mode for it. Handles the `INSERT INTO t VALUES (...)`
-  //     shape (no explicit column list).
+  // INSERT state machine: seenInsert spans INSERT until VALUES/SELECT (or the
+  // col-list `)`). seenValuesAfterInsert flips at VALUES so the NEXT `(` is
+  // treated as a value list, not a column list (handles `INSERT ... VALUES (...)`).
   let seenInsert = false;
   let seenValuesAfterInsert = false;
   let seenUpdateSet = false;
@@ -650,16 +606,14 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
     if (tok.kind === 'punctuation') {
       if (tok.value === '(') {
         depth += 1;
-        // First `(` after INSERT [INTO] <table>, BEFORE any VALUES,
-        // is the column list. After VALUES it's a value-list paren
-        // and we substitute freely inside it.
+        // First `(` after INSERT, before VALUES, is the column list.
         if (seenInsert && !seenValuesAfterInsert && insertColListDepth === null) {
           insertColListDepth = depth;
         }
       } else if (tok.value === ')') {
         if (insertColListDepth !== null && depth === insertColListDepth) {
           insertColListDepth = null;
-          seenInsert = false; // column list done; next paren is VALUES or SELECT.
+          seenInsert = false; // column list done
         }
         depth -= 1;
       }
@@ -689,10 +643,9 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
         seenUpdateSet = true;
         inSelectList = false;
       } else if (up === 'VALUES') {
-        // VALUES marks the end of the column list (if any) and the start
-        // of the value-list paren. Substitute freely from here.
+        // Ends any column list; substitute freely in the value list from here.
         seenValuesAfterInsert = true;
-        seenInsert = false; // no further column-list parens.
+        seenInsert = false;
         seenUpdateSet = false;
       } else if (up === 'WHERE' || up === 'FROM') {
         seenUpdateSet = false;
@@ -725,8 +678,7 @@ function substituteVars(sql: string, scope: Scope): { sql: string; values: unkno
       i += 1;
       continue;
     }
-    // UPDATE SET column: identifier immediately followed by `=` at
-    // depth=0 is a column name on the LHS of the assignment.
+    // UPDATE SET: identifier followed by `=` at depth 0 is the assignment LHS column.
     if (seenUpdateSet && depth === 0) {
       const nxt = nextNonWs(tokens, i + 1);
       if (nxt !== null) {
@@ -812,11 +764,8 @@ const TOP_LEVEL_NON_SELECT_KEYWORDS = new Set([
   'BEGIN',
 ]);
 
-/** DuckDB-Node binds JS values via the duckdb-node DuckDBValue type, which
- *  understands strings, numbers, bigints, booleans, Uint8Arrays. It does NOT
- *  understand JS Date objects for DATE/TIMESTAMP columns — they have to be
- *  passed as strings with an explicit `::DATE`/`::TIMESTAMPTZ` cast in the
- *  SQL (see `placeholderCast`). Convert here. */
+/** DuckDB-Node can't bind JS Date objects for DATE/TIMESTAMP columns — they
+ *  must be strings with an explicit cast in SQL (see `placeholderCast`). */
 function prepareBindValue(value: unknown, bqType: BqType): unknown {
   if (value instanceof Date) {
     if (bqType === 'DATE') return value.toISOString().slice(0, 10);
@@ -859,9 +808,8 @@ function isBareSelectListItem(
   prevIdx: number | null,
   nextIdx: number | null,
 ): boolean {
-  // Bare item iff preceded by SELECT or `,`, AND followed by `,` / `;` / a
-  // SELECT-list terminator (FROM / WHERE / …) / end-of-input. If the user
-  // already wrote `... AS <alias>` (or implicit alias), let theirs win.
+  // Bare item iff preceded by SELECT or `,` AND followed by `,` / `;` / a
+  // SELECT-list terminator / end. If the user wrote their own alias, let it win.
   if (prevIdx === null) return false;
   const prev = tokens[prevIdx] as Token;
   const okPrev =
@@ -910,9 +858,8 @@ function nextNonWs(tokens: readonly Token[], from: number): number | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a list of statements from `tokens[startIdx .. endIdx)`. A statement
- * boundary is a top-level `;`; structured statements (IF, BEGIN) consume
- * up to their matching `END IF;` or `END;` terminator.
+ * Parse statements from `tokens[startIdx .. endIdx)`. Boundary is a top-level
+ * `;`; structured statements (IF, BEGIN) run to their matching END terminator.
  */
 function parseStatements(
   sql: string,
@@ -925,7 +872,6 @@ function parseStatements(
   while (i < endIdx) {
     while (i < endIdx && isTrivia(tokens[i] as Token)) i += 1;
     if (i >= endIdx) break;
-    // Empty statement (lone `;`) — skip.
     if (isPunct(tokens[i], ';')) {
       i += 1;
       continue;
@@ -933,7 +879,6 @@ function parseStatements(
     const result = parseSingleStmt(sql, tokens, i, endIdx);
     out.push(result.stmt);
     i = result.next;
-    // Optional terminating `;` after a top-level statement.
     while (i < endIdx && isTrivia(tokens[i] as Token)) i += 1;
     if (isPunct(tokens[i], ';')) i += 1;
   }
@@ -979,8 +924,7 @@ function parseSingleStmt(
       }
     }
     if (kw === 'BEGIN') {
-      // `BEGIN TRANSACTION` and friends are passed through to DuckDB as
-      // plain SQL — only the bare `BEGIN <stmts> END` form is a block.
+      // `BEGIN TRANSACTION` passes through to DuckDB; only bare `BEGIN…END` is a block.
       const after = skipTrivia(tokens, startIdx + 1, endIdx);
       const peek = tokens[after];
       if (peek?.kind === 'identifier' && peek.value.toUpperCase() === 'TRANSACTION') {
@@ -1017,7 +961,6 @@ function parseDeclare(
   if (names.length === 0) {
     throw BqError.invalid('DECLARE expected at least one variable name.', 'query');
   }
-  // Type — consume until DEFAULT or `;` or end of statement.
   const typeStart = i;
   i = consumeUntilKeywordOrSemi(tokens, i, endIdx, ['DEFAULT']);
   const typeText = sliceTokenText(sql, tokens, typeStart, i).trim();
@@ -1295,8 +1238,7 @@ function parseExecuteImmediate(
   immediateIdx: number,
   endIdx: number,
 ): ParseOne {
-  // immediateIdx points at the `IMMEDIATE` token. The next non-WS token
-  // begins the SQL-text expression, which runs up to `INTO`, `USING`, or `;`.
+  // SQL-text expression runs from after IMMEDIATE up to INTO, USING, or `;`.
   let i = skipTrivia(tokens, immediateIdx + 1, endIdx);
   const sqlExprStart = i;
   i = consumeUntilKeywordOrSemi(tokens, i, endIdx, ['INTO', 'USING']);
@@ -1327,8 +1269,7 @@ function parseExecuteImmediate(
   if (isKeyword(tokens[i], 'USING')) {
     i = skipTrivia(tokens, i + 1, endIdx);
     while (i < endIdx) {
-      // Each clause: <expr> [AS <name>], separated by `,`. The expression
-      // runs until the next top-level `,` / `AS` / `;`.
+      // Each clause is <expr> [AS <name>]; expr runs to the next top-level `,`/`AS`/`;`.
       const exprStart = i;
       i = consumeUntilUsingBoundary(tokens, i, endIdx);
       const expr = sliceTokenText(sql, tokens, exprStart, i).trim();
@@ -1382,10 +1323,8 @@ function parseCall(
   startIdx: number,
   endIdx: number,
 ): ParseOne {
-  // CALL <name>(arg_expr1, arg_expr2, ...)
-  // Name resolution mirrors functions: dataset-qualified, backtick or
-  // dotted-bare. We default to the request's project when the user only
-  // wrote `dataset.proc`.
+  // CALL <name>(args...) — dataset-qualified, backtick or dotted-bare; project
+  // defaults to the request's for `dataset.proc`.
   let i = skipTrivia(tokens, startIdx + 1, endIdx);
   const nameTok = tokens[i];
   if (nameTok === undefined) {
@@ -1410,10 +1349,8 @@ function parseCall(
   };
 }
 
-/** Parse a `[`proj.`]dataset.proc` reference and return the resolved triple
- *  plus the token index just past the name. The project defaults to the
- *  empty string — the caller (queryEngine) supplies the request-scope
- *  project when we don't see a 3-part form. */
+/** Parse a `[proj.]dataset.proc` reference into its triple plus the token index
+ *  past the name. Project is empty for 2-part forms; the caller fills it in. */
 function parseCallTarget(
   tokens: readonly Token[],
   start: number,
@@ -1511,9 +1448,8 @@ function isKeyword(tok: Token | undefined, kw: string): boolean {
   return tok?.kind === 'identifier' && tok.value.toUpperCase() === kw;
 }
 
-/** Consume tokens up to (but not including) the next top-level `;`. Tracks
- *  paren depth and IF / BEGIN nesting so semicolons inside a sub-block
- *  don't end the outer statement. */
+/** Consume up to the next top-level `;`, tracking paren and IF/BEGIN nesting
+ *  so semicolons inside a sub-block don't end the outer statement. */
 function consumeUntilSemi(tokens: readonly Token[], from: number, end: number): number {
   let depth = 0;
   let blockDepth = 0;
@@ -1578,11 +1514,10 @@ function consumeUntilKeywordOrSemi(
   return end;
 }
 
-/** Find the end of an IF-branch body: stop just before ELSEIF / ELSE / END
- *  at the same nesting level. */
+/** End of an IF-branch body: stop before ELSEIF / ELSE / END at the same level. */
 function findIfBranchEnd(tokens: readonly Token[], from: number, end: number): number {
   let i = from;
-  let depth = 0; // Compound-stmt nesting inside the body (BEGIN/IF/LOOP/etc).
+  let depth = 0; // compound-stmt nesting inside the body
   while (i < end) {
     const t = tokens[i] as Token;
     if (t.kind === 'identifier') {
@@ -1608,19 +1543,17 @@ function findIfBranchEnd(tokens: readonly Token[], from: number, end: number): n
   return end;
 }
 
-/** Compound-statement openers we have to track for matched-END nesting. */
+/** Compound-statement openers tracked for matched-END nesting. */
 const COMPOUND_OPENERS = new Set(['BEGIN', 'IF', 'LOOP', 'WHILE', 'REPEAT', 'FOR']);
 
-/** Compound-statement terminators that come after `END`. For BEGIN, the
- *  terminator is just `END` with no follow-on word. */
+/** Words following `END`; BEGIN closes with a bare `END`. */
 const COMPOUND_END_WORDS = new Set(['IF', 'LOOP', 'WHILE', 'REPEAT', 'FOR']);
 
 function findBlockEnd(tokens: readonly Token[], from: number, end: number): number {
   return findCompoundEnd(tokens, from, end, undefined);
 }
 
-/** Walk to the closing `END` (optionally followed by a specific keyword
- *  like LOOP/WHILE/REPEAT/FOR/IF) at the same nesting depth as the start.
+/** Walk to the closing `END [expectedWord]` at the start's nesting depth.
  *  `expectedWord = undefined` matches a bare `END` (closing a BEGIN block). */
 function findCompoundEnd(
   tokens: readonly Token[],
@@ -1660,7 +1593,7 @@ function findCompoundEnd(
   return end;
 }
 
-/** Body-end finder for REPEAT — terminates at the matching UNTIL at depth 0. */
+/** REPEAT body end: the matching UNTIL at depth 0. */
 function findRepeatBodyEnd(tokens: readonly Token[], from: number, end: number): number {
   let i = from;
   let depth = 0;
@@ -1764,9 +1697,8 @@ function leadingKeyword(sql: string): string {
 // Type helpers
 // ---------------------------------------------------------------------------
 
-/** Some DECLARE types are written as `ARRAY<X>` or `STRUCT<...>`. For the
- *  initial scope check (normalizeBqType is strict) we strip generic args
- *  and use the base name. */
+/** Strip generic args from `ARRAY<X>` / `STRUCT<...>` to the base name, since
+ *  normalizeBqType is strict. */
 function stripLeadingType(text: string): string {
   const idx = text.search(/[\s(<]/);
   return idx === -1 ? text : text.slice(0, idx);
