@@ -21,9 +21,9 @@ COPY package.json package-lock.json .npmrc ./
 RUN npm ci --omit=dev --ignore-scripts
 
 # ---- Stage 1b: prebuild DuckDB extension cache ----
-# INSTALL + LOAD spatial once at build time so the runtime container
-# doesn't hit DuckDB's extension repo on first start. The cache lives
-# under $HOME/.duckdb/extensions/<version>/<platform>/.
+# INSTALL + LOAD spatial and crypto once at build time so the runtime
+# container doesn't hit DuckDB's extension repo on first start. The cache
+# lives under $HOME/.duckdb/extensions/<version>/<platform>/.
 FROM node:24-bookworm-slim AS extensions
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
@@ -34,6 +34,8 @@ RUN node --input-type=module --eval " \
     const c = await i.connect(); \
     await c.run('INSTALL spatial'); \
     await c.run('LOAD spatial'); \
+    await c.run('INSTALL crypto FROM community'); \
+    await c.run('LOAD crypto'); \
     "
 
 # ---- Stage 2: runtime ----
@@ -53,7 +55,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
 
-# Pre-baked DuckDB extension cache (spatial). Owned by `node` so the
+# Pre-baked DuckDB extension cache (spatial + crypto). Owned by `node` so the
 # runtime can read it without falling back to a network download.
 COPY --from=extensions --chown=node:node /root/.duckdb /home/node/.duckdb
 

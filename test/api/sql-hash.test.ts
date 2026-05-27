@@ -1,11 +1,10 @@
 /**
  * BL-047 — BQ hash & fingerprint functions.
  *
- * MD5 / SHA1 / SHA256 pass through to DuckDB (note: DuckDB returns hex
- * strings; BQ returns BYTES that would normally be TO_HEX'd to display).
- * SHA512 and FARM_FINGERPRINT stay in UNSUPPORTED_FUNCTIONS (DuckDB lacks
- * SHA512; FARM_FINGERPRINT specifically requires FarmHash, which DuckDB's
- * generic hash() doesn't match).
+ * MD5 / SHA1 / SHA256 wrap DuckDB's hex-returning builtins in unhex() so the
+ * result is BYTES like BQ. SHA512 uses the community crypto extension's
+ * crypto_hash('sha2-512', x). FARM_FINGERPRINT stays unsupported — it needs
+ * FarmHash specifically, which DuckDB's generic hash() doesn't match.
  */
 
 import { strict as assert } from 'node:assert';
@@ -76,7 +75,7 @@ test('MD5 returns BYTES (base64 on the wire), matching BQ', async () => {
   assert.equal(await scalar("SELECT MD5('abc') AS x"), 'kAFQmDzST7DWlj99KOF/cg==');
 });
 
-test("SHA512('abc') matches the known vector (Node-backed UDF)", async () => {
+test("SHA512('abc') matches the known vector (crypto extension)", async () => {
   assert.equal(
     await scalar("SELECT TO_HEX(SHA512('abc')) AS x"),
     'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f',

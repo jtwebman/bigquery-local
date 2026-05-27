@@ -56,7 +56,8 @@ export const stringHandlers: ReadonlyArray<[string, CallHandler]> = [
   ['MD5', (c) => rewriteWholeArg(c, (x) => `unhex(md5(${x}))`)],
   ['SHA1', (c) => rewriteWholeArg(c, (x) => `unhex(sha1(${x}))`)],
   ['SHA256', (c) => rewriteWholeArg(c, (x) => `unhex(sha256(${x}))`)],
-  // DuckDB has no sha512; the bq_sha512 UDF (Node crypto) returns BYTES.
-  ['SHA512', (c) => rewriteWholeArg(c, (x) => `bq_sha512(${x})`)],
+  // DuckDB has no native sha512; the community crypto extension's
+  // crypto_hash('sha2-512', x) returns BYTES (the raw digest), matching BQ.
+  ['SHA512', (c) => rewriteWholeArg(c, (x) => `crypto_hash('sha2-512', ${x})`)],
   ['CONCAT', concat],
 ];
