@@ -16,8 +16,8 @@ that).
 
 > Status: v0.6.0, published to
 > [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local) and
-> [npm](https://www.npmjs.com/package/bigquery-local). See `plan.md` and
-> `BACKLOG.md` for scope and roadmap.
+> [npm](https://www.npmjs.com/package/bigquery-local). See `BACKLOG.md` for
+> the roadmap.
 
 ## Run it
 

@@ -22,11 +22,8 @@ their full scope/acceptance blocks.
 
 **Estimates:**
 
-- v0 (Phases 1–7): **~40 focused hours**.
 - v0.x polish (Phase 8): ~30h.
 - v1.0.0 remaining (see milestone below): **~75–85 focused hours**.
-- Full BigQuery parity (everything): **~1,500 hours** before BQML and
-  federated; see `plan.md` for the cost breakdown.
 
 ---
 
@@ -697,7 +694,7 @@ Scope: separate API for scheduled transfers from various sources. **Stretch; may
 
 ## Notes for picking items up cold
 
-- New here? `README.md` covers what's built and how it works; `plan.md` is the full-BigQuery scope survey behind the roadmap. Architecture lives in the code.
+- New here? `README.md` covers what's built and how it works; architecture lives in the code.
 - Every backlog item lists its deps. Don't start one whose deps aren't ✅.
 - If you find an item underspecified for what you actually need to do, **update the item in this file** as part of the work, then proceed. Don't silently expand scope.
 - If you split an item into smaller pieces, give the new items IDs (`BL-XXX.1`, `BL-XXX.2`) and update deps elsewhere.
