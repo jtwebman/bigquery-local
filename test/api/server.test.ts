@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { after, before, test } from 'node:test';
+import { deflateSync, gzipSync } from 'node:zlib';
 
 import { createRouterServer as createServer } from '../../src/server.ts';
 import type { RouteDefinition, Server } from '../../src/types.ts';
@@ -119,6 +120,35 @@ test('parses JSON body and passes it to the handler', async () => {
   assert.equal(res.status, 200);
   const body = (await res.json()) as { name: string; n: number };
   assert.deepEqual(body, { name: 'foo', n: 42 });
+});
+
+test('decodes a gzip-encoded JSON body (Java client sends these)', async () => {
+  const res = await fetch(`${server.url}/echo-body`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+    body: gzipSync(Buffer.from(JSON.stringify({ name: 'gz', n: 7 }))),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { name: 'gz', n: 7 });
+});
+
+test('decodes a deflate-encoded JSON body', async () => {
+  const res = await fetch(`${server.url}/echo-body`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-encoding': 'deflate' },
+    body: deflateSync(Buffer.from(JSON.stringify({ ok: true }))),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+});
+
+test('returns 400 when a body claims gzip but is not', async () => {
+  const res = await fetch(`${server.url}/echo-body`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+    body: 'not actually gzip',
+  });
+  assert.equal(res.status, 400);
 });
 
 test('passes through raw string when content-type is not JSON', async () => {

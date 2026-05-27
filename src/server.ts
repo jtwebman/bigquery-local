@@ -19,6 +19,7 @@ import { createServer as createHttpServer } from 'node:http';
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { gunzipSync, inflateSync } from 'node:zlib';
 
 import { compileRoutes, matchRoute, parseQueryString } from './router.ts';
 import type { RouteRequest, RouteResponse, Server, ServerConfig } from './types.ts';
@@ -58,7 +59,7 @@ export function createRouterServer(config: ServerConfig = {}): Server {
 
     let body: unknown;
     try {
-      body = await readBody(req, headers['content-type'] ?? '');
+      body = await readBody(req, headers['content-type'] ?? '', headers['content-encoding'] ?? '');
     } catch (err) {
       // readBody only throws BqError (with reason: 'invalid').
       sendBqError(res, err as BqError);
@@ -150,13 +151,28 @@ export function createRouterServer(config: ServerConfig = {}): Server {
   };
 }
 
-async function readBody(req: IncomingMessage, contentType: string): Promise<unknown> {
+async function readBody(
+  req: IncomingMessage,
+  contentType: string,
+  contentEncoding: string,
+): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return null;
-  const text = Buffer.concat(chunks).toString('utf8');
+  // The Java BigQuery client gzips request bodies (and real BQ accepts it),
+  // so honor Content-Encoding before reading the body as text.
+  const raw = Buffer.concat(chunks);
+  const encoding = contentEncoding.toLowerCase().trim();
+  let decoded: Buffer;
+  try {
+    decoded =
+      encoding === 'gzip' ? gunzipSync(raw) : encoding === 'deflate' ? inflateSync(raw) : raw;
+  } catch {
+    throw BqError.invalid(`Could not decode ${encoding} request body.`);
+  }
+  const text = decoded.toString('utf8');
   const isJson = contentType.toLowerCase().includes('application/json');
   if (!isJson) return text;
   try {

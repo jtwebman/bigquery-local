@@ -130,3 +130,36 @@ jobs:
       - name: Run Go client tests
         working-directory: test/clients/go
         run: go test -v ./...
+
+  java-client:
+    name: Java client (${{ matrix.java }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 17 = older LTS still widely deployed. 25 = current LTS.
+        java: ['17', '25']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Setup Java ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ matrix.java }}
+          cache: 'maven'
+
+      - name: Run Java client tests
+        working-directory: test/clients/java
+        run: mvn -B test

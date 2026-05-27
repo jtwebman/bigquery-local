@@ -16,3 +16,6 @@ npm-debug.log*
 # Python client tests virtualenv
 test/clients/python/.venv/
 **/__pycache__/
+
+# Maven build output (Java client tests)
+test/clients/java/target/
