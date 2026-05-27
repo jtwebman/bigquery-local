@@ -347,3 +347,29 @@ function stringKindForPrefix(prefix: string): TokenKind {
   /* node:coverage ignore next */
   throw new TokenizeError(`Unknown string prefix "${prefix}"`, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Token-array walking helpers (shared by the translator and DDL parser)
+// ---------------------------------------------------------------------------
+
+export function isSkippable(tok: Token): boolean {
+  return tok.kind === 'whitespace' || tok.kind === 'line-comment' || tok.kind === 'block-comment';
+}
+
+/** Index of the first non-skippable token at or after `start`. */
+export function nextNonSkippable(tokens: readonly Token[], start: number): number {
+  let i = start;
+  while (i < tokens.length && isSkippable(tokens[i] as Token)) i += 1;
+  return i;
+}
+
+/** Concatenate the raw text of tokens in `[startIdx, endIdx)`. */
+export function sliceTokens(tokens: readonly Token[], startIdx: number, endIdx: number): string {
+  let out = '';
+  for (let j = startIdx; j < endIdx; j += 1) {
+    const t = tokens[j];
+    if (t === undefined) continue;
+    out += t.value;
+  }
+  return out;
+}

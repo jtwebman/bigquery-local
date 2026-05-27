@@ -44,8 +44,8 @@ import {
   parseProcedureDdl,
   parseSchemaDdl,
   parseViewDdl,
-  translate,
-} from './translate.ts';
+} from './ddl.ts';
+import { translate } from './translate.ts';
 
 // ---------------------------------------------------------------------------
 // Parsed query parameter
