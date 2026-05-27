@@ -1,26 +1,41 @@
 /**
  * Discovery document endpoint.
  *
- * `GET /discovery/v1/apis/bigquery/v2/rest` returns the bundled
- * `discovery.json` — a minimal but valid Google Discovery Document
- * describing this emulator. Used by some BigQuery clients for sanity
- * checks, and by container healthchecks (e.g.
- * `wget -qO- http://localhost:9050/discovery/v1/apis/bigquery/v2/rest`).
+ * Serves the bundled BigQuery v2 discovery document at the two paths clients
+ * fetch it from:
+ *   - `/discovery/v1/apis/bigquery/v2/rest` (the google-api-client path; also
+ *     used by container healthchecks)
+ *   - `/$discovery/rest?version=v2` (the path the `bq` CLI and other
+ *     discovery-driven tools request relative to `--api`)
  *
- * The document is committed in the repo; it is never fetched from
- * Google at runtime. Resources are intentionally empty at v0 and grow
- * as concrete endpoints land.
+ * `discovery.json` is the upstream Google document, committed verbatim, so the
+ * `bq` CLI can build its full API client. We never fetch it from Google at
+ * runtime. `rootUrl`/`baseUrl` are rewritten per request to point back at this
+ * emulator (the listening host/port, which is dynamic under `--port=0`), so
+ * clients send their requests here rather than to googleapis.com.
  */
 
-import type { RouteDefinition } from '../types.ts';
+import type { Handler, RouteDefinition } from '../types.ts';
 import discoveryDoc from './discovery.json' with { type: 'json' };
 
 export const DISCOVERY_PATH = '/discovery/v1/apis/bigquery/v2/rest';
+export const BQ_DISCOVERY_PATH = '/$discovery/rest';
+
+const handler: Handler = (req) => {
+  const host = req.headers['host'] ?? 'localhost';
+  const root = `http://${host}/`;
+  return {
+    status: 200,
+    body: {
+      ...discoveryDoc,
+      rootUrl: root,
+      baseUrl: `${root}bigquery/v2/`,
+      mtlsRootUrl: root,
+    },
+  };
+};
 
 export const discoveryRoutes: readonly RouteDefinition[] = [
-  {
-    method: 'GET',
-    path: DISCOVERY_PATH,
-    handler: () => ({ status: 200, body: discoveryDoc }),
-  },
+  { method: 'GET', path: DISCOVERY_PATH, handler },
+  { method: 'GET', path: BQ_DISCOVERY_PATH, handler },
 ];

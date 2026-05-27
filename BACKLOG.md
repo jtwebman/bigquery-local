@@ -633,6 +633,16 @@ independently, leaving an inconsistent mix of `{id, name}` and
 translation (look-back to sibling structs' field names). Workaround:
 write the data using `UNION ALL` of named-column SELECTs.
 
+### Unbackticked `dataset.table` references not project-qualified ⏳
+
+Real BQ accepts `SELECT * FROM ds.tbl` (no backticks); our translator
+only rewrites a `dataset.table` ref to the project-qualified DuckDB
+schema (`project__ds.tbl`) when it's backticked (`` `ds.tbl` ``).
+Unbackticked, DuckDB sees a literal `ds` schema that doesn't exist.
+Surfaced by the `bq` CLI (which passes user SQL verbatim). Fix needs the
+table-ref recognizer to also qualify unquoted `ident.ident` table
+references. Workaround: backtick table references.
+
 ## Upstream
 
 ### Report @duckdb/node-bindings scalar-UDF event-loop leak ⏳
@@ -674,6 +684,16 @@ the issue with the repro above + propose the PR.
 **Why it matters:** fixing it unlocks leak-free pure-JS scalar UDFs in
 general — we could drop the crypto-extension dependency for SHA512 and
 implement FARM_FINGERPRINT in pure JS (see below) without any native build.
+
+### dbt-bigquery emulator support (blocked upstream) ⏳
+
+A dbt conformance test (the headline audience for v1.0.0) is blocked:
+`dbt-bigquery` has no profiles.yml option for a custom API endpoint /
+anonymous credentials, so it can't be pointed at the emulator. Tracked
+upstream as [dbt-bigquery #358](https://github.com/dbt-labs/dbt-bigquery/issues/358).
+The only workaround today is a brittle monkeypatch into dbt's connection
+code — not worth maintaining. Revisit when #358 lands. (The `bq` CLI,
+which is also discovery-driven, is now covered — see `test/clients/bq`.)
 
 ### FARM_FINGERPRINT ⏳
 

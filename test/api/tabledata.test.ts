@@ -113,6 +113,24 @@ test('insertAll with empty rows array succeeds with no inserts', async () => {
   assert.equal(rows.length, 0);
 });
 
+test('insertAll tolerates explicit null option fields (bq CLI sends these)', async () => {
+  // The `bq` CLI serializes unset insertAll options as explicit null rather
+  // than omitting them; the emulator must treat null like absent.
+  const tableId = await freshTable([{ name: 'id', type: 'INT64', mode: 'REQUIRED' }]);
+  const { status, json } = await insertAll(tableId, {
+    rows: [{ json: { id: '7' } }],
+    templateSuffix: null,
+    skipInvalidRows: null,
+    ignoreUnknownValues: null,
+  });
+  assert.equal(status, 200);
+  assert.deepEqual(json, { kind: 'bigquery#tableDataInsertAllResponse' });
+  const rows = await db.query<{ id: bigint }>(
+    `SELECT id FROM "${PROJECT}__${DATASET}"."${tableId}"`,
+  );
+  assert.deepEqual(rows, [{ id: 7n }]);
+});
+
 test('insertAll round-trips all v0 types together', async () => {
   const tableId = await freshTable([
     { name: 's', type: 'STRING' },

@@ -129,8 +129,14 @@ function parseInsertAllBody(body: unknown): ParsedInsertAllBody {
     const json = asObject(jsonRaw, `rows[${i}].json`);
     return { insertId, json };
   });
+  // The `bq` CLI serializes an unset templateSuffix as explicit null; treat
+  // that like absent rather than rejecting it (same tolerance as elsewhere).
   const templateSuffixRaw = obj['templateSuffix'];
-  if (templateSuffixRaw !== undefined && typeof templateSuffixRaw !== 'string') {
+  if (
+    templateSuffixRaw !== undefined &&
+    templateSuffixRaw !== null &&
+    typeof templateSuffixRaw !== 'string'
+  ) {
     throw BqError.invalid('templateSuffix must be a string.', 'templateSuffix');
   }
   // Empty-string suffix means "no template suffix" — same target as base.
@@ -141,12 +147,12 @@ function parseInsertAllBody(body: unknown): ParsedInsertAllBody {
       : undefined;
   return {
     rows,
+    // The `bq` CLI sends these as explicit null when unset; treat null (like
+    // undefined) as the default rather than rejecting it.
     skipInvalidRows:
-      obj['skipInvalidRows'] === undefined
-        ? false
-        : asBoolean(obj['skipInvalidRows'], 'skipInvalidRows'),
+      obj['skipInvalidRows'] == null ? false : asBoolean(obj['skipInvalidRows'], 'skipInvalidRows'),
     ignoreUnknownValues:
-      obj['ignoreUnknownValues'] === undefined
+      obj['ignoreUnknownValues'] == null
         ? false
         : asBoolean(obj['ignoreUnknownValues'], 'ignoreUnknownValues'),
     templateSuffix,

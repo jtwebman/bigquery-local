@@ -26,6 +26,7 @@ import {
   listDatasets,
   upsertDataset,
 } from '../storage/meta.ts';
+import { ensureDatasetSchema } from './tables.ts';
 import type { RouteDefinition, RouteRequest, RouteResponse } from '../types.ts';
 import { BqError } from '../util/errors.ts';
 import { expectLabels } from '../util/labels.ts';
@@ -300,6 +301,11 @@ export function createDatasetRoutes(db: Db): readonly RouteDefinition[] {
           throw BqError.duplicate(`Dataset "${input.project}:${input.datasetId}" already exists.`);
         }
         const created = await upsertDataset(db, input);
+        // A dataset is a namespace ready for tables, so back it with a DuckDB
+        // schema right away. Without this, `CREATE TABLE AS SELECT` into a
+        // freshly-created (still empty) dataset fails — the schema is otherwise
+        // only created lazily on the first table insert / load / copy.
+        await ensureDatasetSchema(db, input.project, input.datasetId);
         return okResponse(created);
       },
     },

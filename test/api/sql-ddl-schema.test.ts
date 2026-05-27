@@ -172,3 +172,26 @@ test('persisted job has statementType=CREATE_SCHEMA', async () => {
   };
   assert.equal(job.statistics.query.statementType, 'CREATE_SCHEMA');
 });
+
+test('CREATE TABLE AS SELECT into a freshly-created (empty) dataset works', async () => {
+  // Regression: creating a dataset via REST must back it with a DuckDB schema
+  // immediately, so a CTAS into the still-empty dataset doesn't fail with
+  // "schema does not exist". (Surfaced by the bq CLI: mk -d then query CTAS.)
+  const create = await fetch(`${server.url}/projects/${PROJECT}/datasets`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ datasetReference: { datasetId: 'ctas_ds' } }),
+  });
+  assert.equal(create.status, 200);
+
+  const ctas = await postQuery('CREATE TABLE `ctas_ds.t` AS SELECT 100 AS amount');
+  assert.equal(ctas.status, 200);
+
+  const read = await postQuery('SELECT amount FROM `ctas_ds.t`');
+  assert.equal(read.status, 200);
+  const rows = (read.json as { rows: Array<{ f: Array<{ v: string }> }> }).rows;
+  assert.deepEqual(
+    rows.map((r) => r.f.map((c) => c.v)),
+    [['100']],
+  );
+});

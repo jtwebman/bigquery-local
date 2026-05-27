@@ -163,3 +163,28 @@ jobs:
       - name: Run Java client tests
         working-directory: test/clients/java
         run: mvn -B test
+
+  bq-client:
+    name: bq CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install Node deps
+        run: npm ci
+
+      # Installs the Google Cloud SDK, which bundles the `bq` CLI. No auth is
+      # configured: the test fakes a static access token the emulator ignores.
+      - name: Setup gcloud (provides bq)
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run bq CLI tests
+        run: bash test/clients/bq/run.sh
