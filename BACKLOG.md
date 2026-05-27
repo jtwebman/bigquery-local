@@ -33,11 +33,22 @@ The remaining v1.0.0 scope is the minimum set of features needed for
 the emulator to be the obvious choice over `goccy/bigquery-emulator`
 for **dbt + Node-client users**. Total estimate: ~75–85h.
 
-Positioning at 1.0.0: *bigquery-local has better SQL & scripting
-coverage (procedures, MERGE, QUALIFY, PIVOT, transactions, EXECUTE
-IMMEDIATE, etc.) and a comprehensive `INFORMATION_SCHEMA`; goccy has
-the gRPC Storage Read/Write APIs.* Both have equivalent REST surface
-once 1.0.0 lands.
+Positioning at 1.0.0 (vs `goccy/bigquery-emulator`): we lead on the
+**management / metadata surface** — copy jobs, table snapshots/clones,
+Routines & Models CRUD, a comprehensive `INFORMATION_SCHEMA`, plus
+partitioning/clustering metadata, cost estimation, and `useQueryCache` —
+all of which goccy lists as not-yet-implemented or goals. The REST CRUD,
+query, load/extract, streaming, and view surface is at parity.
+
+goccy leads where we have real gaps: the **gRPC Storage Read/Write APIs**
+(🚧 here), **raw SQL function/type completeness** (their googlesqlite engine
+reimplements GoogleSQL — ~570 functions, 16/18 types — vs our DuckDB +
+curated translation layer, which rejects a long tail with precise errors),
+and **JavaScript UDFs** (BL-070, deferred). Architectural difference:
+goccy reimplements GoogleSQL for fidelity; we lean on DuckDB and translate
+the diffs — faster to build, but the function tail and silent-divergence
+risk are ours to close (the bq-replay conformance suite + sql-coverage test
+are how we do it).
 
 **In v1.0.0 (by phase):**
 
