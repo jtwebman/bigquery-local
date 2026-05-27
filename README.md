@@ -184,6 +184,15 @@ enforce access control. The IAM and policy metadata endpoints may still land
 The function library is broad but not exhaustive. A function we have not
 mapped returns a clear "unsupported" error, not a wrong result.
 
+These functions are known gaps and return that error today (planned for a
+later version): `INITCAP`, `REGEXP_INSTR`, `CONTAINS_SUBSTR`,
+`CODE_POINTS_TO_STRING`, `CODE_POINTS_TO_BYTES`, `TO_CODE_POINTS`,
+`SAFE_CONVERT_BYTES_TO_STRING`, `SOUNDEX`, `RANGE_BUCKET`, `TO_BASE32`,
+`FROM_BASE32`, the `LAX_*` JSON accessors, `JSON_EXTRACT_ARRAY`,
+`JSON_REMOVE`, `JSON_SET`, `JSON_STRIP_NULLS`, `APPROX_TOP_COUNT`,
+`APPROX_TOP_SUM`, `APPROX_QUANTILES`, `HLL_COUNT.*`, `FARM_FINGERPRINT`,
+and `ST_GEOHASH`.
+
 ### Types
 
 | Type | Status | Stored as |

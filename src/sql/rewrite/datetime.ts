@@ -12,18 +12,21 @@ import {
   rewriteTimestampArith,
   rewriteTwoArg,
   skipWhitespace,
+  splitCallArgs,
 } from './helpers.ts';
 
-function currentTimestamp(c: RewriteCtx): number {
-  const { tokens, i, parenIdx, endIdx, out, funcName } = c;
-  const close = findMatchingClose(tokens, parenIdx, endIdx);
-  if (areArgsEmpty(tokens, parenIdx, close)) {
-    out.push('CURRENT_TIMESTAMP');
-    return close + 1;
-  }
-  // CURRENT_TIMESTAMP(...) with args — let DuckDB handle / fail naturally.
-  out.push(funcName);
-  return i + 1;
+// Emit `replacement` when called with no args, else pass through.
+function nullary(replacement: string): CallHandler {
+  return (c: RewriteCtx): number => {
+    const { tokens, i, parenIdx, endIdx, out, funcName } = c;
+    const close = findMatchingClose(tokens, parenIdx, endIdx);
+    if (areArgsEmpty(tokens, parenIdx, close)) {
+      out.push(replacement);
+      return close + 1;
+    }
+    out.push(funcName);
+    return i + 1;
+  };
 }
 
 // EXTRACT(<part> FROM <expr>): DAYOFWEEK is BQ Sun=1..Sat=7 vs DuckDB
@@ -64,12 +67,33 @@ function dateTrunc(c: RewriteCtx): number {
   return close + 1;
 }
 
+// `byArity` returns DuckDB SQL for a given translated arg list, or null to
+// pass through. (The `NAME '...'` typed-literal form isn't a call, so it
+// never reaches here.)
+function arityCtor(byArity: (args: string[]) => string | null): CallHandler {
+  return (c: RewriteCtx): number => {
+    const { tokens, i, parenIdx, endIdx, out, funcName } = c;
+    const close = findMatchingClose(tokens, parenIdx, endIdx);
+    const sql = byArity(splitCallArgs(c, close));
+    if (sql === null) {
+      out.push(funcName);
+      return i + 1;
+    }
+    out.push(sql);
+    return close + 1;
+  };
+}
+
 export const datetimeHandlers: ReadonlyArray<[string, CallHandler]> = [
-  ['CURRENT_TIMESTAMP', currentTimestamp],
+  ['CURRENT_TIMESTAMP', nullary('CURRENT_TIMESTAMP')],
+  ['CURRENT_DATETIME', nullary('current_localtimestamp()')],
+  ['CURRENT_TIME', nullary('CAST(get_current_time() AS TIME)')],
   ['TIMESTAMP_SUB', (c) => rewriteTimestampArith(c, '-')],
   ['TIMESTAMP_ADD', (c) => rewriteTimestampArith(c, '+')],
   ['DATE_ADD', (c) => rewriteTwoArg(c, (d, iv) => `CAST((${d} + ${iv}) AS DATE)`)],
   ['DATE_SUB', (c) => rewriteTwoArg(c, (d, iv) => `CAST((${d} - ${iv}) AS DATE)`)],
+  ['DATETIME_ADD', (c) => rewriteTwoArg(c, (d, iv) => `(${d} + ${iv})`)],
+  ['DATETIME_SUB', (c) => rewriteTwoArg(c, (d, iv) => `(${d} - ${iv})`)],
   ['EXTRACT', extract],
   ['TIMESTAMP_TRUNC', (c) => rewritePartArg2(c, 'date_trunc', '')],
   ['DATETIME_TRUNC', (c) => rewritePartArg2(c, 'date_trunc', '')],
@@ -88,7 +112,48 @@ export const datetimeHandlers: ReadonlyArray<[string, CallHandler]> = [
   ],
   ['UNIX_DATE', (c) => rewriteOneArg(c, (x) => `date_diff('day', DATE '1970-01-01', ${x})`)],
   ['UNIX_SECONDS', (c) => rewriteOneArg(c, (x) => `CAST(epoch(${x}) AS BIGINT)`)],
+  // make_timestamp takes microseconds; ::TIMESTAMPTZ so it wires as BQ TIMESTAMP.
+  [
+    'TIMESTAMP_SECONDS',
+    (c) => rewriteOneArg(c, (x) => `make_timestamp((${x}) * 1000000)::TIMESTAMPTZ`),
+  ],
+  [
+    'TIMESTAMP_MILLIS',
+    (c) => rewriteOneArg(c, (x) => `make_timestamp((${x}) * 1000)::TIMESTAMPTZ`),
+  ],
+  ['TIMESTAMP_MICROS', (c) => rewriteOneArg(c, (x) => `make_timestamp(${x})::TIMESTAMPTZ`)],
   ['DATE_DIFF', rewriteDiff],
   ['TIMESTAMP_DIFF', rewriteDiff],
   ['DATETIME_DIFF', rewriteDiff],
+  [
+    'DATE',
+    arityCtor((a) =>
+      a.length === 3
+        ? `make_date(${a.join(', ')})`
+        : a.length === 1
+          ? `CAST(${a[0]} AS DATE)`
+          : null,
+    ),
+  ],
+  [
+    'TIME',
+    arityCtor((a) =>
+      a.length === 3
+        ? `make_time(${a.join(', ')})`
+        : a.length === 1
+          ? `CAST(${a[0]} AS TIME)`
+          : null,
+    ),
+  ],
+  [
+    'DATETIME',
+    arityCtor((a) =>
+      a.length === 6
+        ? `make_timestamp(${a.join(', ')})`
+        : a.length === 1
+          ? `CAST(${a[0]} AS TIMESTAMP)`
+          : null,
+    ),
+  ],
+  ['TIMESTAMP', arityCtor((a) => (a.length === 1 ? `CAST(${a[0]} AS TIMESTAMPTZ)` : null))],
 ];

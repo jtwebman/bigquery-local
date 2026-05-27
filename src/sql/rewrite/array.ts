@@ -74,6 +74,9 @@ export const arrayHandlers: ReadonlyArray<[string, CallHandler]> = [
   ['SAFE_OFFSET', (c) => rewriteOneArg(c, (n) => `(${n} + 1)`)],
   // BQ arr[ORDINAL(n)] is 1-indexed — matches DuckDB directly.
   ['ORDINAL', (c) => rewriteOneArg(c, (n) => `(${n})`)],
+  // DuckDB lists are 1-indexed; -1 is the last element.
+  ['ARRAY_FIRST', (c) => rewriteOneArg(c, (x) => `list_extract(${x}, 1)`)],
+  ['ARRAY_LAST', (c) => rewriteOneArg(c, (x) => `list_extract(${x}, -1)`)],
   [
     'ARRAY_CONCAT_AGG',
     (c) => rewriteOneArg(c, (x) => `flatten(array_agg(${x}) FILTER (WHERE ${x} IS NOT NULL))`),

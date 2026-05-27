@@ -51,7 +51,9 @@ export function findMatchingClose(tokens: readonly Token[], openIdx: number, end
   throw BqError.invalid('Unbalanced parentheses in SQL.', 'sql');
 }
 
-/** Index of the first top-level `,` in `[start, closeIdx)`, or null. */
+/** Index of the first top-level `,` in `[start, closeIdx)`, or null. Commas
+ * inside any nested bracket — `()`, `[]` (array literals), `{}` (structs) —
+ * are not top-level. */
 export function findTopLevelComma(
   tokens: readonly Token[],
   start: number,
@@ -61,9 +63,14 @@ export function findTopLevelComma(
   for (let j = start; j < closeIdx; j += 1) {
     const t = tokens[j];
     if (t === undefined) continue;
-    if (t.kind === 'punctuation' && t.value === '(') depth += 1;
-    else if (t.kind === 'punctuation' && t.value === ')') depth -= 1;
-    else if (t.kind === 'punctuation' && t.value === ',' && depth === 0) {
+    if (t.kind === 'punctuation' && (t.value === '(' || t.value === '[' || t.value === '{')) {
+      depth += 1;
+    } else if (
+      t.kind === 'punctuation' &&
+      (t.value === ')' || t.value === ']' || t.value === '}')
+    ) {
+      depth -= 1;
+    } else if (t.kind === 'punctuation' && t.value === ',' && depth === 0) {
       return j;
     }
   }

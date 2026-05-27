@@ -44,6 +44,12 @@ function concat(c: RewriteCtx): number {
   return close + 1;
 }
 
+function genUuid(c: RewriteCtx): number {
+  const close = findMatchingClose(c.tokens, c.parenIdx, c.endIdx);
+  c.out.push('CAST(uuid() AS VARCHAR)');
+  return close + 1;
+}
+
 export const stringHandlers: ReadonlyArray<[string, CallHandler]> = [
   // BQ NORMALIZE_AND_CASEFOLD = lower(nfc_normalize(...)).
   ['NORMALIZE_AND_CASEFOLD', (c) => wrapCall(c, 'lower(nfc_normalize')],
@@ -60,4 +66,6 @@ export const stringHandlers: ReadonlyArray<[string, CallHandler]> = [
   // crypto_hash('sha2-512', x) returns BYTES (the raw digest), matching BQ.
   ['SHA512', (c) => rewriteWholeArg(c, (x) => `crypto_hash('sha2-512', ${x})`)],
   ['CONCAT', concat],
+  // BQ GENERATE_UUID() returns a STRING; DuckDB uuid() returns a UUID value.
+  ['GENERATE_UUID', genUuid],
 ];

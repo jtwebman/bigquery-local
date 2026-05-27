@@ -358,7 +358,7 @@ test('queries: unsupported BQ function surfaces unsupportedFeature 400', async (
   const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query: 'SELECT GENERATE_UUID()' }),
+    body: JSON.stringify({ query: "SELECT FARM_FINGERPRINT('x')" }),
   });
   assert.equal(res.status, 400);
   const err = (await res.json()) as GoogleErrorBody;

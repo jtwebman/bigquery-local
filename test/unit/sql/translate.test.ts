@@ -209,7 +209,7 @@ test('translate: bareword reference to an unsupported function also throws', () 
   // Even without parens (so DuckDB would otherwise treat it as a column ref),
   // we surface a friendly "feature not supported" error.
   assert.throws(
-    () => translate('SELECT GENERATE_UUID FROM t', { project: 'p' }),
+    () => translate('SELECT FARM_FINGERPRINT FROM t', { project: 'p' }),
     (err: unknown) => err instanceof BqError && err.reason === 'unsupportedFeature',
   );
 });
@@ -255,11 +255,9 @@ test('translate: APPROX_QUANTILES still throws unsupportedFeature (deferred)', (
   );
 });
 
-test('translate: GENERATE_UUID throws unsupportedFeature', () => {
-  assert.throws(
-    () => translate('SELECT GENERATE_UUID()', { project: 'p' }),
-    (err: unknown) => err instanceof BqError && err.reason === 'unsupportedFeature',
-  );
+test('translate: GENERATE_UUID() rewrites to uuid()', () => {
+  const { sql } = translate('SELECT GENERATE_UUID()', { project: 'p' });
+  assert.match(sql, /CAST\(uuid\(\) AS VARCHAR\)/);
 });
 
 // ---------------------------------------------------------------------------

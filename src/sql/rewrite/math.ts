@@ -1,5 +1,11 @@
 import type { CallHandler, RewriteCtx } from './context.ts';
-import { findMatchingClose, rewriteTwoArg, rewriteWholeArg, splitCallArgs } from './helpers.ts';
+import {
+  findMatchingClose,
+  rewriteOneArg,
+  rewriteTwoArg,
+  rewriteWholeArg,
+  splitCallArgs,
+} from './helpers.ts';
 
 // BQ GREATEST/LEAST return NULL if ANY arg is NULL; DuckDB ignores NULLs.
 function greatestLeast(c: RewriteCtx, fn: 'GREATEST' | 'LEAST'): number {
@@ -26,4 +32,7 @@ export const mathHandlers: ReadonlyArray<[string, CallHandler]> = [
     'IEEE_DIVIDE',
     (c) => rewriteTwoArg(c, (a, b) => `(CAST(${a} AS DOUBLE) / CAST(${b} AS DOUBLE))`),
   ],
+  // BQ NUMERIC/BIGNUMERIC map to DECIMAL(38,9) (see types.ts).
+  ['PARSE_NUMERIC', (c) => rewriteOneArg(c, (x) => `CAST(${x} AS DECIMAL(38, 9))`)],
+  ['PARSE_BIGNUMERIC', (c) => rewriteOneArg(c, (x) => `CAST(${x} AS DECIMAL(38, 9))`)],
 ];
