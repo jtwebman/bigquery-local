@@ -308,14 +308,6 @@ Publishing triggers `.github/workflows/publish.yml`, which:
 - builds and publishes the npm package `bigquery-local@X.Y.Z` with
   `--provenance`.
 
-One-time setup:
-
-- GitHub repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
-- npm Trusted Publisher: on npmjs.com, add a GitHub Actions publisher for
-  repo `jtwebman/bigquery-local` and workflow `publish.yml`. No `NPM_TOKEN`
-  needed; the workflow uses GitHub's OIDC token, which also enables
-  provenance.
-
 ## License
 
 MIT
