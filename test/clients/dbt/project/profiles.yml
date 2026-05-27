@@ -1,0 +1,10 @@
+emu:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth
+      project: dbt-emu
+      dataset: analytics
+      threads: 1
+      location: US

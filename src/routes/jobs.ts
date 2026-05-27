@@ -19,6 +19,7 @@ import { type ExtractJobConfig, runExtractJob } from '../load/extract.ts';
 import { type LoadJobConfig, runLoadJob } from '../load/load.ts';
 import type { Db } from '../storage/db.ts';
 import { cancelJob, deleteJob, getJob, listJobs, upsertJob } from '../storage/meta.ts';
+import { parseTableDdl } from '../sql/ddl.ts';
 import type { JobMeta, JobState } from '../storage/meta.ts';
 import {
   type FieldWire,
@@ -29,6 +30,7 @@ import {
   fieldToWire,
   parseQueryParameters,
 } from '../sql/queryEngine.ts';
+import { ANON_RESULTS_DATASET } from './tables.ts';
 import type { BqField, BqMode } from '../storage/types.ts';
 import { normalizeBqType } from '../storage/types.ts';
 import type { RouteDefinition, RouteResponse } from '../types.ts';
@@ -43,6 +45,12 @@ interface JobReferenceWire {
   readonly projectId: string;
   readonly jobId: string;
   readonly location: string;
+}
+
+interface TableReferenceWire {
+  readonly projectId: string;
+  readonly datasetId: string;
+  readonly tableId: string;
 }
 
 interface JobStatusWire {
@@ -78,7 +86,10 @@ interface JobResourceWire {
   readonly id: string;
   readonly jobReference: JobReferenceWire;
   readonly configuration: {
-    readonly query: { readonly query: string };
+    readonly query: {
+      readonly query: string;
+      readonly destinationTable?: TableReferenceWire;
+    };
     readonly labels?: Readonly<Record<string, string>>;
   };
   readonly status: JobStatusWire;
@@ -114,6 +125,30 @@ function estimateBytesPerRow(fields: readonly BqField[]): number {
   return total === 0 ? 1 : total;
 }
 
+/**
+ * The destination table a query job exposes as `query_job.destination`. dbt
+ * (and the Python client) read this after every query. For CTAS it's the
+ * created table; for SELECT it's the anonymous results table the query engine
+ * registers under `ANON_RESULTS_DATASET`. DDL/DML/SCRIPT jobs have none.
+ */
+function buildDestinationTable(
+  meta: JobMeta,
+  statementType: string,
+): TableReferenceWire | undefined {
+  if (statementType === 'SELECT') {
+    return { projectId: meta.project, datasetId: ANON_RESULTS_DATASET, tableId: meta.jobId };
+  }
+  if (statementType === 'CREATE_TABLE_AS_SELECT' && meta.query !== undefined) {
+    try {
+      const target = parseTableDdl(meta.query, meta.project);
+      return { projectId: target.project, datasetId: target.datasetId, tableId: target.tableId };
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 function jobMetaToResource(meta: JobMeta): JobResourceWire {
   const schemaFields =
     (meta.resultSchema as { fields?: readonly BqField[] } | undefined)?.fields ?? [];
@@ -143,6 +178,7 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
             : undefined
       : undefined;
   const location = meta.location ?? 'US';
+  const destinationTable = buildDestinationTable(meta, statementType);
   return {
     kind: 'bigquery#job',
     id: `${meta.project}:${location}.${meta.jobId}`,
@@ -152,7 +188,10 @@ function jobMetaToResource(meta: JobMeta): JobResourceWire {
       location,
     },
     configuration: {
-      query: { query: meta.query ?? '' },
+      query: {
+        query: meta.query ?? '',
+        ...(destinationTable !== undefined && { destinationTable }),
+      },
       ...(meta.labels !== undefined && { labels: meta.labels }),
     },
     status: {

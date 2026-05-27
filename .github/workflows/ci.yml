@@ -188,3 +188,33 @@ jobs:
 
       - name: Run bq CLI tests
         run: bash test/clients/bq/run.sh
+
+  dbt-client:
+    name: dbt
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: test/clients/dbt/requirements.txt
+
+      - name: Install dbt-bigquery
+        run: pip install -r test/clients/dbt/requirements.txt
+
+      - name: Run dbt conformance tests
+        run: bash test/clients/dbt/run.sh

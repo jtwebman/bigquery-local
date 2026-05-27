@@ -9,12 +9,11 @@ A local emulator for the Google BigQuery REST API, backed by
 [DuckDB](https://duckdb.org/). Point any BigQuery client at it for tests, CI,
 and local development. No code changes needed.
 
-It works with `@google-cloud/bigquery`, the Python and Go clients, the `bq`
-CLI, and JDBC/ODBC drivers. The image is multi-arch (amd64 and arm64), and
-`PATCH` on datasets and tables actually changes state (some emulators skip
-that).
+It works with `@google-cloud/bigquery`, the Python, Go, and Java clients, and
+the `bq` CLI. The image is multi-arch (amd64 and arm64), and `PATCH` on
+datasets and tables actually changes state (some emulators skip that).
 
-> Status: v0.6.0, published to
+> Status: v0.7.0, published to
 > [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local) and
 > [npm](https://www.npmjs.com/package/bigquery-local). See `BACKLOG.md` for
 > the roadmap.
@@ -254,6 +253,11 @@ The container binds the gRPC port (default 9060). Every RPC returns
 `UNIMPLEMENTED` (gRPC status 12). That is the response a gRPC client expects
 for an unsupported call, so a client like `@google-cloud/bigquery-storage`
 gets a clean error instead of a hung connection.
+
+Because the Storage Read/Write APIs are not implemented, clients that depend
+on them are not supported: the Spark and Beam connectors, and the JDBC/ODBC
+drivers. Use the REST clients (`@google-cloud/bigquery`, Python, Go, Java) or
+the `bq` CLI instead.
 
 ## Storage
 

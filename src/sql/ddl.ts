@@ -21,6 +21,8 @@ export type StatementType =
   | 'DROP_MATERIALIZED_VIEW'
   | 'CREATE_SCHEMA'
   | 'DROP_SCHEMA'
+  | 'CREATE_TABLE_AS_SELECT'
+  | 'DROP_TABLE'
   | 'CREATE_FUNCTION'
   | 'DROP_FUNCTION'
   | 'CREATE_TABLE_FUNCTION'
@@ -94,6 +96,12 @@ export function detectStatementType(sql: string): StatementType {
       ) {
         return 'CREATE_TABLE_FUNCTION';
       }
+      // `CREATE [OR REPLACE] TABLE … AS <query>` gets a dedicated handler
+      // (clause stripping + metadata registration). Bare `CREATE TABLE (cols)`
+      // keeps flowing through the generic translate path.
+      if (findNextKeyword(tokens, kindIdx + 1, ['AS']) !== null) {
+        return 'CREATE_TABLE_AS_SELECT';
+      }
     }
   }
   if (head === 'DROP') {
@@ -124,6 +132,7 @@ export function detectStatementType(sql: string): StatementType {
       ) {
         return 'DROP_TABLE_FUNCTION';
       }
+      return 'DROP_TABLE';
     }
   }
   if (head === 'WITH') {
@@ -160,6 +169,8 @@ export interface ViewDdlTarget {
   readonly viewId: string;
   /** Raw SELECT text after `AS`, or undefined for DROP VIEW. */
   readonly viewQuery?: string;
+  /** True for `CREATE OR REPLACE VIEW`. */
+  readonly orReplace?: boolean;
 }
 
 export function parseViewDdl(sql: string, defaultProject: string): ViewDdlTarget {
@@ -181,6 +192,8 @@ export function parseViewDdl(sql: string, defaultProject: string): ViewDdlTarget
     throw BqError.invalid('Expected VIEW keyword after CREATE / DROP.', 'query');
   }
   const materialized = materializedKw !== null && materializedKw < viewKw;
+  const replaceKw = findNextKeyword(tokens, i + 1, ['REPLACE']);
+  const orReplace = head === 'CREATE' && replaceKw !== null && replaceKw < viewKw;
   // Move past VIEW, then optional IF [NOT] EXISTS.
   let j = nextNonSkippable(tokens, viewKw + 1);
   if (tokens[j]?.kind === 'identifier' && tokens[j]?.value.toUpperCase() === 'IF') {
@@ -212,14 +225,45 @@ export function parseViewDdl(sql: string, defaultProject: string): ViewDdlTarget
     throw BqError.invalid('CREATE VIEW requires an AS <query> body.', 'query');
   }
   const bodyStart = tokens[asIdx]?.end ?? sql.length;
-  const viewQuery = sql.slice(bodyStart).trim();
+  // Strip a trailing `;` (dbt appends one) so the body can be re-wrapped.
+  const viewQuery = sql.slice(bodyStart).trim().replace(/;\s*$/, '');
   return {
     kind: materialized ? 'CREATE_MATERIALIZED_VIEW' : 'CREATE_VIEW',
     project,
     datasetId,
     viewId,
     viewQuery,
+    orReplace,
   };
+}
+
+/**
+ * Collect a dot-separated name into its parts. Each segment is a bare
+ * identifier or a backtick-identifier; a single backtick token may itself
+ * carry the dots (`proj.ds.tbl`), and BQ/dbt also emit per-segment backticks
+ * (`proj`.`ds`.`tbl`). Both forms (and mixes) are accepted.
+ */
+function collectDottedName(tokens: readonly Token[], start: number): string[] {
+  const parts: string[] = [];
+  const pushSegment = (segment: Token | undefined): boolean => {
+    if (segment?.kind === 'backtick-identifier') {
+      for (const p of segment.value.slice(1, -1).split('.')) parts.push(p);
+      return true;
+    }
+    if (segment?.kind === 'identifier') {
+      parts.push(segment.value);
+      return true;
+    }
+    return false;
+  };
+  if (!pushSegment(tokens[start])) return parts;
+  let i = nextNonSkippable(tokens, start + 1);
+  while (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === '.') {
+    const next = nextNonSkippable(tokens, i + 1);
+    if (!pushSegment(tokens[next])) break;
+    i = nextNonSkippable(tokens, next + 1);
+  }
+  return parts;
 }
 
 function parseTableTarget(
@@ -227,64 +271,202 @@ function parseTableTarget(
   start: number,
   defaultProject: string,
 ): { project: string; datasetId: string; viewId: string } {
-  const tok = tokens[start];
-  if (tok === undefined) {
-    throw BqError.invalid('Expected a table reference.', 'query');
+  const parts = collectDottedName(tokens, start);
+  if (parts.length === 3) {
+    return {
+      project: parts[0] as string,
+      datasetId: parts[1] as string,
+      viewId: parts[2] as string,
+    };
   }
-  // Backtick form: `project.dataset.view` or `dataset.view`.
-  if (tok.kind === 'backtick-identifier') {
-    const inner = tok.value.slice(1, -1);
-    const parts = inner.split('.');
-    if (parts.length === 3) {
-      return {
-        project: parts[0] as string,
-        datasetId: parts[1] as string,
-        viewId: parts[2] as string,
-      };
-    }
-    if (parts.length === 2) {
-      return {
-        project: defaultProject,
-        datasetId: parts[0] as string,
-        viewId: parts[1] as string,
-      };
-    }
+  if (parts.length === 2) {
+    return { project: defaultProject, datasetId: parts[0] as string, viewId: parts[1] as string };
+  }
+  if (parts.length === 0) {
     throw BqError.invalid(
-      `Unsupported view reference \`${inner}\` — expected dataset.view or project.dataset.view.`,
+      `Unexpected token "${tokens[start]?.value ?? ''}" where a table name was expected.`,
       'query',
     );
   }
-  // Bare-identifier form: IDENT . IDENT [. IDENT].
-  if (tok.kind === 'identifier') {
-    const parts: string[] = [tok.value];
-    let i = nextNonSkippable(tokens, start + 1);
-    while (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === '.') {
-      const next = nextNonSkippable(tokens, i + 1);
-      const id = tokens[next];
-      if (id?.kind !== 'identifier') break;
-      parts.push(id.value);
-      i = nextNonSkippable(tokens, next + 1);
-    }
-    if (parts.length === 3) {
-      return {
-        project: parts[0] as string,
-        datasetId: parts[1] as string,
-        viewId: parts[2] as string,
-      };
-    }
-    if (parts.length === 2) {
-      return {
-        project: defaultProject,
-        datasetId: parts[0] as string,
-        viewId: parts[1] as string,
-      };
-    }
-    throw BqError.invalid(
-      `View reference must include a dataset (got "${parts.join('.')}").`,
-      'query',
-    );
+  throw BqError.invalid(
+    `Table reference must include a dataset (got "${parts.join('.')}").`,
+    'query',
+  );
+}
+
+/**
+ * Resolves `CREATE [OR REPLACE] TABLE … AS <query>` / `DROP TABLE` into a
+ * structured target. The trailing BQ-only clauses (`PARTITION BY`,
+ * `CLUSTER BY`, `OPTIONS(...)`) are captured as raw text for the queryEngine
+ * to handle (strip-and-warn for OPTIONS; map to partitioning/clustering
+ * metadata for PARTITION/CLUSTER). dbt emits all of these.
+ */
+export interface TableDdlTarget {
+  readonly kind: 'CREATE_TABLE_AS_SELECT' | 'DROP_TABLE';
+  readonly project: string;
+  readonly datasetId: string;
+  readonly tableId: string;
+  readonly orReplace: boolean;
+  readonly ifNotExists: boolean;
+  readonly ifExists: boolean;
+  /** Raw `PARTITION BY` expression text, if present. */
+  readonly partitionBy?: string;
+  /** `CLUSTER BY` column names, if present. */
+  readonly clusterBy?: readonly string[];
+  /** Raw inner text of `OPTIONS(...)`, if present (empty string when `OPTIONS()`). */
+  readonly optionsText?: string;
+  /** Raw BQ SQL after `AS` (CREATE only). */
+  readonly asQuery?: string;
+}
+
+export function parseTableDdl(sql: string, defaultProject: string): TableDdlTarget {
+  const tokens = tokenize(sql);
+  let i = 0;
+  while (i < tokens.length && isSkippable(tokens[i] as Token)) i += 1;
+  const first = tokens[i];
+  if (first === undefined || first.kind !== 'identifier') {
+    throw BqError.invalid('Expected a CREATE TABLE or DROP TABLE statement.', 'query');
   }
-  throw BqError.invalid(`Unexpected token "${tok.value}" where a view name was expected.`, 'query');
+  const head = first.value.toUpperCase();
+  if (head !== 'CREATE' && head !== 'DROP') {
+    throw BqError.invalid('Expected a CREATE TABLE or DROP TABLE statement.', 'query');
+  }
+  const tableKw = findNextKeyword(tokens, i + 1, ['TABLE']);
+  if (tableKw === null) {
+    throw BqError.invalid('Expected TABLE keyword after CREATE / DROP.', 'query');
+  }
+  const replaceKw = findNextKeyword(tokens, i + 1, ['REPLACE']);
+  const orReplace = head === 'CREATE' && replaceKw !== null && replaceKw < tableKw;
+
+  let cursor = nextNonSkippable(tokens, tableKw + 1);
+  let ifNotExists = false;
+  let ifExists = false;
+  if (isIdentKeyword(tokens[cursor], 'IF')) {
+    cursor = nextNonSkippable(tokens, cursor + 1);
+    if (isIdentKeyword(tokens[cursor], 'NOT')) {
+      ifNotExists = true;
+      cursor = nextNonSkippable(tokens, cursor + 1);
+    } else {
+      ifExists = true;
+    }
+    if (isIdentKeyword(tokens[cursor], 'EXISTS')) {
+      cursor = nextNonSkippable(tokens, cursor + 1);
+    }
+  }
+
+  const { project, datasetId, viewId: tableId } = parseTableTarget(tokens, cursor, defaultProject);
+
+  if (head === 'DROP') {
+    return {
+      kind: 'DROP_TABLE',
+      project,
+      datasetId,
+      tableId,
+      orReplace: false,
+      ifNotExists: false,
+      ifExists,
+    };
+  }
+
+  cursor = advancePastTarget(tokens, cursor);
+
+  // Optional column-schema list `(...)`. We don't model column DDL here (bare
+  // CREATE TABLE flows elsewhere), but tolerate it so the clause scan lands
+  // past it for the CTAS-with-schema form.
+  if (tokens[cursor]?.kind === 'punctuation' && tokens[cursor]?.value === '(') {
+    const close = findMatchingParenClose(tokens, cursor);
+    cursor = nextNonSkippable(tokens, close + 1);
+  }
+
+  let partitionBy: string | undefined;
+  let clusterBy: readonly string[] | undefined;
+  let optionsText: string | undefined;
+  let asQuery: string | undefined;
+
+  while (cursor < tokens.length) {
+    const tok = tokens[cursor];
+    if (tok === undefined) break;
+    if (isIdentKeyword(tok, 'PARTITION')) {
+      cursor = nextNonSkippable(tokens, cursor + 1);
+      if (!isIdentKeyword(tokens[cursor], 'BY')) {
+        throw BqError.invalid('Expected BY after PARTITION.', 'query');
+      }
+      const exprStart = nextNonSkippable(tokens, cursor + 1);
+      const end = scanToClauseKeyword(tokens, exprStart, ['CLUSTER', 'OPTIONS', 'AS']);
+      partitionBy = sliceTokens(tokens, exprStart, end).trim();
+      cursor = end;
+    } else if (isIdentKeyword(tok, 'CLUSTER')) {
+      cursor = nextNonSkippable(tokens, cursor + 1);
+      if (!isIdentKeyword(tokens[cursor], 'BY')) {
+        throw BqError.invalid('Expected BY after CLUSTER.', 'query');
+      }
+      const colStart = nextNonSkippable(tokens, cursor + 1);
+      const end = scanToClauseKeyword(tokens, colStart, ['OPTIONS', 'AS']);
+      clusterBy = parseClusterColumns(tokens, colStart, end);
+      cursor = end;
+    } else if (isIdentKeyword(tok, 'OPTIONS')) {
+      const open = nextNonSkippable(tokens, cursor + 1);
+      if (tokens[open]?.kind !== 'punctuation' || tokens[open]?.value !== '(') {
+        throw BqError.invalid('Expected ( after OPTIONS.', 'query');
+      }
+      const close = findMatchingParenClose(tokens, open);
+      optionsText = sliceTokens(tokens, open + 1, close).trim();
+      cursor = nextNonSkippable(tokens, close + 1);
+    } else if (isIdentKeyword(tok, 'AS')) {
+      // Everything after AS is the query body. dbt appends a trailing `;` and
+      // wraps the body in its own parens — strip the terminator so the body
+      // can be safely re-wrapped.
+      asQuery = sql.slice(tok.end).trim().replace(/;\s*$/, '');
+      break;
+    } else {
+      break;
+    }
+  }
+
+  return {
+    kind: 'CREATE_TABLE_AS_SELECT',
+    project,
+    datasetId,
+    tableId,
+    orReplace,
+    ifNotExists,
+    ifExists: false,
+    ...(partitionBy !== undefined && { partitionBy }),
+    ...(clusterBy !== undefined && { clusterBy }),
+    ...(optionsText !== undefined && { optionsText }),
+    ...(asQuery !== undefined && { asQuery }),
+  };
+}
+
+/** First top-level (paren-depth 0) identifier in `words`, or `tokens.length`. */
+function scanToClauseKeyword(
+  tokens: readonly Token[],
+  start: number,
+  words: readonly string[],
+): number {
+  let depth = 0;
+  for (let i = start; i < tokens.length; i += 1) {
+    const tok = tokens[i] as Token;
+    if (tok.kind === 'punctuation') {
+      if (tok.value === '(') depth += 1;
+      else if (tok.value === ')') depth -= 1;
+    }
+    if (depth === 0 && tok.kind === 'identifier' && words.includes(tok.value.toUpperCase())) {
+      return i;
+    }
+  }
+  return tokens.length;
+}
+
+/** Column names from a `CLUSTER BY a, b, c` list (commas ignored). */
+function parseClusterColumns(tokens: readonly Token[], start: number, end: number): string[] {
+  const cols: string[] = [];
+  for (let i = start; i < end; i += 1) {
+    const tok = tokens[i] as Token;
+    if (tok.kind === 'identifier') cols.push(tok.value);
+    else if (tok.kind === 'backtick-identifier') cols.push(tok.value.slice(1, -1));
+  }
+  return cols;
 }
 
 // Resolves CREATE/DROP SCHEMA DDL into a (project, datasetId) target.
@@ -355,47 +537,21 @@ function parseSchemaName(
   start: number,
   defaultProject: string,
 ): { project: string; datasetId: string } {
-  const tok = tokens[start];
-  if (tok === undefined) {
-    throw BqError.invalid('Expected a schema name.', 'query');
+  const parts = collectDottedName(tokens, start);
+  if (parts.length === 2) {
+    return { project: parts[0] as string, datasetId: parts[1] as string };
   }
-  if (tok.kind === 'backtick-identifier') {
-    const inner = tok.value.slice(1, -1);
-    const parts = inner.split('.');
-    if (parts.length === 2) {
-      return { project: parts[0] as string, datasetId: parts[1] as string };
-    }
-    if (parts.length === 1) {
-      return { project: defaultProject, datasetId: parts[0] as string };
-    }
-    throw BqError.invalid(
-      `Unsupported schema reference \`${inner}\` — expected dataset or project.dataset.`,
-      'query',
-    );
+  if (parts.length === 1) {
+    return { project: defaultProject, datasetId: parts[0] as string };
   }
-  if (tok.kind === 'identifier') {
-    const parts: string[] = [tok.value];
-    let i = nextNonSkippable(tokens, start + 1);
-    while (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === '.') {
-      const next = nextNonSkippable(tokens, i + 1);
-      const id = tokens[next];
-      if (id?.kind !== 'identifier') break;
-      parts.push(id.value);
-      i = nextNonSkippable(tokens, next + 1);
-    }
-    if (parts.length === 2) {
-      return { project: parts[0] as string, datasetId: parts[1] as string };
-    }
-    if (parts.length === 1) {
-      return { project: defaultProject, datasetId: parts[0] as string };
-    }
+  if (parts.length === 0) {
     throw BqError.invalid(
-      `Schema reference "${parts.join('.')}" must be a dataset or project.dataset.`,
+      `Unexpected token "${tokens[start]?.value ?? ''}" where a schema name was expected.`,
       'query',
     );
   }
   throw BqError.invalid(
-    `Unexpected token "${tok.value}" where a schema name was expected.`,
+    `Schema reference "${parts.join('.')}" must be a dataset or project.dataset.`,
     'query',
   );
 }
@@ -953,12 +1109,11 @@ function parseFunctionName(
 }
 
 function advancePastTarget(tokens: readonly Token[], start: number): number {
-  const tok = tokens[start];
-  if (tok?.kind === 'backtick-identifier') return nextNonSkippable(tokens, start + 1);
   let i = nextNonSkippable(tokens, start + 1);
   while (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === '.') {
     const next = nextNonSkippable(tokens, i + 1);
-    if (tokens[next]?.kind !== 'identifier') break;
+    const kind = tokens[next]?.kind;
+    if (kind !== 'identifier' && kind !== 'backtick-identifier') break;
     i = nextNonSkippable(tokens, next + 1);
   }
   return i;

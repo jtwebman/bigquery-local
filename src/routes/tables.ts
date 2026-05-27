@@ -40,6 +40,7 @@ import {
   type TableMetaInput,
   deleteTable,
   getDataset,
+  getJob,
   getTable,
   listTables,
   upsertTable,
@@ -435,6 +436,36 @@ export function quoteIdent(name: string): string {
  * never contain `__` after the first character).
  *
  * Exported so test helpers can query the underlying table directly. */
+/** Reserved dataset name for per-query anonymous result tables BigQuery
+ * exposes as `query_job.destination`. The table GET handler synthesizes a
+ * response for this dataset from the job; nothing is persisted, so anonymous
+ * results never leak into listings / INFORMATION_SCHEMA. */
+export const ANON_RESULTS_DATASET = '_bqlocal_anon';
+
+/** Synthesize a table GET response for an anonymous query-result table (the
+ * `tableId` is the job id). Clients call this on `query_job.destination` and
+ * read `numRows`. */
+async function anonResultTableResponse(
+  db: Db,
+  project: string,
+  jobId: string,
+): Promise<RouteResponse> {
+  const job = await getJob(db, project, jobId);
+  if (job === null) {
+    throw BqError.notFound(`Table "${project}:${ANON_RESULTS_DATASET}.${jobId}" not found.`);
+  }
+  return {
+    status: 200,
+    body: {
+      kind: 'bigquery#table',
+      tableReference: { projectId: project, datasetId: ANON_RESULTS_DATASET, tableId: jobId },
+      type: 'TABLE',
+      numRows: String(job.resultTotalRows ?? 0),
+      ...(job.resultSchema !== undefined && { schema: job.resultSchema }),
+    },
+  };
+}
+
 export function datasetSchemaName(project: string, datasetId: string): string {
   return `${project}__${datasetId}`;
 }
@@ -678,6 +709,11 @@ export function createTableRoutes(db: Db): readonly RouteDefinition[] {
         const project = req.params['p'] as string;
         const datasetId = req.params['d'] as string;
         const tableId = req.params['t'] as string;
+        // Anonymous query-result tables aren't persisted; synthesize the GET
+        // response from the job (clients read `query_job.destination`).
+        if (datasetId === ANON_RESULTS_DATASET) {
+          return anonResultTableResponse(db, project, tableId);
+        }
         const meta = await getTable(db, project, datasetId, tableId);
         if (meta === null) {
           throw BqError.notFound(`Table "${project}:${datasetId}.${tableId}" not found.`);

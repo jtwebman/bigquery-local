@@ -31,6 +31,7 @@ import {
   normalizeBqType,
 } from '../storage/types.ts';
 import { BqError } from '../util/errors.ts';
+import { qualifyMergeInsertValues } from './rewrite/merge.ts';
 import { type ScriptResult, executeBqScript } from './script.ts';
 import { tokenize } from './tokenize.ts';
 import {
@@ -38,11 +39,13 @@ import {
   type ProcedureDdlTarget,
   type SchemaDdlTarget,
   type StatementType,
+  type TableDdlTarget,
   type ViewDdlTarget,
   detectStatementType,
   parseFunctionDdl,
   parseProcedureDdl,
   parseSchemaDdl,
+  parseTableDdl,
   parseViewDdl,
 } from './ddl.ts';
 import { translate } from './translate.ts';
@@ -457,7 +460,11 @@ export async function executeQuery(
   }
 
   const expanded = await expandWildcardTables(query, db, project);
-  const translated = translate(expanded, { project });
+  // BQ resolves unqualified MERGE INSERT-VALUES columns to the source; DuckDB
+  // needs them explicitly source-qualified (dbt's incremental MERGE relies on
+  // the BQ behavior).
+  const preprocessed = statementType === 'MERGE' ? qualifyMergeInsertValues(expanded) : expanded;
+  const translated = translate(preprocessed, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 
@@ -469,6 +476,9 @@ export async function executeQuery(
   }
   if (statementType === 'CREATE_SCHEMA' || statementType === 'DROP_SCHEMA') {
     return executeSchemaDdl(db, project, query, statementType, optionsWithJobId);
+  }
+  if (statementType === 'CREATE_TABLE_AS_SELECT' || statementType === 'DROP_TABLE') {
+    return executeTableDdl(db, project, query, statementType, optionsWithJobId);
   }
   if (statementType === 'SCRIPT') {
     // `CALL BQ.REFRESH_MATERIALIZED_VIEW('ds.mv')` is the only BQ built-in
@@ -600,15 +610,31 @@ async function executeViewDdl(
     throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
   }
   await ensureDatasetSchema(db, target.project, target.datasetId);
-  try {
-    await db.exec(translatedSql);
-  } catch (err) {
-    throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
-  }
 
   if (statementType === 'CREATE_VIEW') {
+    // Rebuild from the parsed body rather than running the whole translated
+    // statement: that drops any BQ `OPTIONS(...)` clause (dbt emits one on
+    // every view) and lets us honor OR REPLACE explicitly.
+    if (target.viewQuery === undefined) {
+      throw BqError.invalid('CREATE VIEW requires an AS <query> body.', 'query');
+    }
+    const qualified = `${quoteIdent(
+      datasetSchemaName(target.project, target.datasetId),
+    )}.${quoteIdent(target.viewId)}`;
+    const body = translate(target.viewQuery, { project: target.project }).sql;
+    const orReplaceSql = target.orReplace ? 'OR REPLACE ' : '';
+    try {
+      await db.exec(`CREATE ${orReplaceSql}VIEW ${qualified} AS (${body})`);
+    } catch (err) {
+      throw BqError.invalid(err instanceof Error ? err.message : 'CREATE VIEW failed.', 'query');
+    }
     await registerViewMetadata(db, target);
   } else {
+    try {
+      await db.exec(translatedSql);
+    } catch (err) {
+      throw BqError.invalid(err instanceof Error ? err.message : 'DROP VIEW failed.', 'query');
+    }
     await deleteTable(db, target.project, target.datasetId, target.viewId);
   }
 
@@ -626,6 +652,179 @@ async function executeViewDdl(
     resultTotalRows: 0,
   });
 
+  return {
+    jobId,
+    statementType,
+    schema: [],
+    wireRows: [],
+    startedMs: now,
+    endedMs: now,
+    totalRows: 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// DDL: TABLE (CREATE … AS SELECT / DROP)
+// ---------------------------------------------------------------------------
+
+/**
+ * `CREATE [OR REPLACE] TABLE … AS <query>` and `DROP TABLE`. dbt and other
+ * tools emit BQ-only clauses our SQL engine doesn't take verbatim:
+ *   - `OPTIONS(...)` — stripped; a warning is logged when non-empty (we don't
+ *     round-trip description/labels into metadata).
+ *   - `PARTITION BY` / `CLUSTER BY` — mapped into timePartitioning / clustering
+ *     metadata, and the stored rows are `ORDER BY`'d on those columns so
+ *     DuckDB's min/max zonemaps give the same pruning characteristic.
+ * The created table is registered in `_bq` metadata (schema introspected via
+ * DESCRIBE) so REST GET / list / INFORMATION_SCHEMA — and dbt's relation
+ * cache — can see it.
+ */
+async function executeTableDdl(
+  db: Db,
+  project: string,
+  originalQuery: string,
+  statementType: 'CREATE_TABLE_AS_SELECT' | 'DROP_TABLE',
+  options: { readonly jobId?: string },
+): Promise<QueryExecution> {
+  const target = parseTableDdl(originalQuery, project);
+  const qualified = `${quoteIdent(datasetSchemaName(target.project, target.datasetId))}.${quoteIdent(
+    target.tableId,
+  )}`;
+  const jobId = options.jobId ?? randomUUID();
+
+  if (target.kind === 'DROP_TABLE') {
+    const existing = await getTable(db, target.project, target.datasetId, target.tableId);
+    if (existing === null) {
+      if (!target.ifExists) {
+        throw BqError.notFound(
+          `Table "${target.project}:${target.datasetId}.${target.tableId}" not found.`,
+        );
+      }
+    } else {
+      await db.exec(`DROP TABLE IF EXISTS ${qualified}`);
+      await deleteTable(db, target.project, target.datasetId, target.tableId);
+    }
+    return finishTableDdl(db, project, jobId, statementType, originalQuery);
+  }
+
+  if (target.asQuery === undefined) {
+    throw BqError.invalid('CREATE TABLE … AS requires a query body.', 'query');
+  }
+  const dataset = await getDataset(db, target.project, target.datasetId);
+  if (dataset === null) {
+    throw BqError.notFound(`Dataset "${target.project}:${target.datasetId}" not found.`);
+  }
+  await ensureDatasetSchema(db, target.project, target.datasetId);
+
+  const existing = await getTable(db, target.project, target.datasetId, target.tableId);
+  if (existing !== null && !target.orReplace) {
+    if (target.ifNotExists) {
+      return finishTableDdl(db, project, jobId, statementType, originalQuery);
+    }
+    throw BqError.duplicate(
+      `Table "${target.project}:${target.datasetId}.${target.tableId}" already exists.`,
+    );
+  }
+
+  if (target.optionsText !== undefined && target.optionsText !== '') {
+    warnIgnoredClause(target, `OPTIONS(${target.optionsText})`);
+  }
+
+  let partitioning: { readonly type: string; readonly field: string } | undefined;
+  if (target.partitionBy !== undefined) {
+    const mapped = mapPartitionBy(target.partitionBy);
+    if (mapped === null) {
+      warnIgnoredClause(target, `PARTITION BY ${target.partitionBy}`);
+    } else {
+      partitioning = mapped;
+    }
+  }
+  const clustering =
+    target.clusterBy !== undefined && target.clusterBy.length > 0
+      ? { fields: [...target.clusterBy] }
+      : undefined;
+
+  // Physically order the stored rows on the partition + cluster columns so
+  // DuckDB's zonemaps prune the same way BQ's partitioning/clustering would.
+  const orderCols: string[] = [];
+  if (partitioning !== undefined) orderCols.push(partitioning.field);
+  for (const col of target.clusterBy ?? []) {
+    if (!orderCols.includes(col)) orderCols.push(col);
+  }
+
+  const body = translate(target.asQuery, { project: target.project }).sql;
+  const orReplaceSql = target.orReplace ? 'OR REPLACE ' : '';
+  const orderSql =
+    orderCols.length > 0 ? ` ORDER BY ${orderCols.map((c) => quoteIdent(c)).join(', ')}` : '';
+  try {
+    await db.exec(`CREATE ${orReplaceSql}TABLE ${qualified} AS SELECT * FROM (${body})${orderSql}`);
+  } catch (err) {
+    throw BqError.invalid(err instanceof Error ? err.message : 'CREATE TABLE AS failed.', 'query');
+  }
+
+  const described = await db.query<Record<string, unknown>>(`DESCRIBE ${qualified}`);
+  const fields = described.map((r) =>
+    duckTypeToBq(String(r['column_type']), String(r['column_name'])),
+  );
+  await upsertTable(db, {
+    project: target.project,
+    datasetId: target.datasetId,
+    tableId: target.tableId,
+    type: 'TABLE',
+    schema: { fields },
+    ...(partitioning !== undefined && { partitioning }),
+    ...(clustering !== undefined && { clustering }),
+  });
+
+  return finishTableDdl(db, project, jobId, statementType, originalQuery);
+}
+
+function warnIgnoredClause(target: TableDdlTarget, clause: string): void {
+  console.warn(
+    `bigquery-local: ignoring unsupported clause on \`${target.project}.${target.datasetId}.${target.tableId}\`: ${clause}`,
+  );
+}
+
+/** Map common dbt `PARTITION BY` forms to timePartitioning metadata, or null. */
+function mapPartitionBy(expr: string): { type: string; field: string } | null {
+  const e = expr.trim();
+  const ident = '`?([A-Za-z_][A-Za-z0-9_]*)`?';
+  let m = new RegExp(`^${ident}$`).exec(e);
+  if (m) return { type: 'DAY', field: m[1] as string };
+  m = new RegExp(`^DATE\\(\\s*${ident}\\s*\\)$`, 'i').exec(e);
+  if (m) return { type: 'DAY', field: m[1] as string };
+  m = new RegExp(
+    `^(?:TIMESTAMP|DATETIME|DATE)_TRUNC\\(\\s*${ident}\\s*,\\s*([A-Za-z]+)\\s*\\)$`,
+    'i',
+  ).exec(e);
+  if (m) {
+    const unit = (m[2] as string).toUpperCase();
+    if (unit === 'DAY' || unit === 'HOUR' || unit === 'MONTH' || unit === 'YEAR') {
+      return { type: unit, field: m[1] as string };
+    }
+  }
+  return null;
+}
+
+async function finishTableDdl(
+  db: Db,
+  project: string,
+  jobId: string,
+  statementType: 'CREATE_TABLE_AS_SELECT' | 'DROP_TABLE',
+  originalQuery: string,
+): Promise<QueryExecution> {
+  const now = Date.now();
+  await upsertJob(db, {
+    project,
+    jobId,
+    state: 'DONE',
+    statementType,
+    query: originalQuery,
+    startedMs: now,
+    endedMs: now,
+    resultSchema: { fields: [] },
+    resultTotalRows: 0,
+  });
   return {
     jobId,
     statementType,
@@ -1373,7 +1572,11 @@ export async function executeQueryDryRun(
 ): Promise<DryRunResult> {
   const statementType = detectStatementType(query);
   const expanded = await expandWildcardTables(query, db, project);
-  const translated = translate(expanded, { project });
+  // BQ resolves unqualified MERGE INSERT-VALUES columns to the source; DuckDB
+  // needs them explicitly source-qualified (dbt's incremental MERGE relies on
+  // the BQ behavior).
+  const preprocessed = statementType === 'MERGE' ? qualifyMergeInsertValues(expanded) : expanded;
+  const translated = translate(preprocessed, { project });
   const values = mapParameters(translated.paramOrder, parameters);
   const sqlWithCasts = augmentPlaceholderCasts(translated.sql, translated.paramOrder, parameters);
 

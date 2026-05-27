@@ -445,10 +445,15 @@ function translateRange(
     }
 
     switch (tok.kind) {
-      case 'backtick-identifier':
-        out.push(rewriteBacktick(tok, project));
-        i += 1;
+      case 'backtick-identifier': {
+        // Collapse a dotted run of backtick identifiers — `proj`.`ds`.`tbl`
+        // (separate tokens, as BQ/dbt emit) as well as a single `proj.ds.tbl`
+        // token — into one qualified table reference.
+        const collected = collectBacktickParts(tokens, i, endIdx);
+        out.push(qualifyBacktickParts(collected.parts, project));
+        i = collected.nextIdx;
         break;
+      }
       case 'parameter':
         out.push(rewriteParameter(tok, paramOrder));
         i += 1;
@@ -700,12 +705,42 @@ function sqlString(s: string): string {
 // Backticks → DuckDB quoted identifiers
 // ---------------------------------------------------------------------------
 
-function rewriteBacktick(tok: Token, currentProject: string): string {
+/** Collect a dotted run of backtick identifiers starting at `i` into its name
+ * parts. A single backtick token may carry dots internally (`proj.ds.tbl`),
+ * and consecutive backtick tokens joined by `.` (`proj`.`ds`.`tbl`) are merged
+ * into the same run. Returns the parts and the index just past the run. */
+function collectBacktickParts(
+  tokens: readonly Token[],
+  i: number,
+  endIdx: number,
+): { parts: string[]; nextIdx: number } {
+  const parts: string[] = [];
+  const pushInner = (tok: Token): void => {
+    for (const p of tok.value.slice(1, -1).split('.')) {
+      if (p !== '') parts.push(p);
+    }
+  };
+  pushInner(tokens[i] as Token);
+  let nextIdx = i + 1;
+  while (true) {
+    const dotIdx = skipWhitespace(tokens, nextIdx, endIdx);
+    if (dotIdx === null) break;
+    const dot = tokens[dotIdx];
+    if (dot?.kind !== 'punctuation' || dot.value !== '.') break;
+    const segIdx = skipWhitespace(tokens, dotIdx + 1, endIdx);
+    if (segIdx === null) break;
+    const seg = tokens[segIdx];
+    if (seg?.kind !== 'backtick-identifier') break;
+    pushInner(seg);
+    nextIdx = segIdx + 1;
+  }
+  return { parts, nextIdx };
+}
+
+function qualifyBacktickParts(parts: readonly string[], currentProject: string): string {
   // `proj.dataset.table` → "<proj>__<dataset>"."<table>"
   // `dataset.table`      → "<currentProject>__<dataset>"."<table>"
   // `name`               → "name"   (column refs, aliases — unchanged)
-  const inner = tok.value.slice(1, -1); // strip backticks
-  const parts = inner.split('.').filter((p) => p !== '');
   const q = (s: string): string => `"${s.replace(/"/g, '""')}"`;
   if (parts.length === 3) {
     const [proj, ds, tbl] = parts as [string, string, string];

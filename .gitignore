@@ -19,3 +19,9 @@ test/clients/python/.venv/
 
 # Maven build output (Java client tests)
 test/clients/java/target/
+
+# dbt client test artifacts
+test/clients/dbt/project/target/
+test/clients/dbt/project/logs/
+test/clients/dbt/project/dbt_packages/
+test/clients/dbt/project/.user.yml

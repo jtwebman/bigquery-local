@@ -1,0 +1,6 @@
+name: emu_demo
+version: '1.0.0'
+profile: emu
+models:
+  emu_demo:
+    +materialized: table

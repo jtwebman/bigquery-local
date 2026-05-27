@@ -643,6 +643,31 @@ Surfaced by the `bq` CLI (which passes user SQL verbatim). Fix needs the
 table-ref recognizer to also qualify unquoted `ident.ident` table
 references. Workaround: backtick table references.
 
+## dbt readiness
+
+`dbt-bigquery` runs against the emulator via the monkeypatch shim in
+`test/clients/dbt` (connection) + the translator support below (DDL). A real
+project — `table` / `view` / `incremental` (MERGE) models + `dbt test` — runs
+green; exercised in CI by the `dbt` job.
+
+### BL-160 — `OPTIONS(...)` clause on CREATE TABLE / VIEW ✅ — strip + warn-when-non-empty
+
+### BL-161 — 3-part `project.dataset.table` name resolution ✅ — per-segment + single-token backticks; targets, schema names, and FROM refs
+
+### BL-162 — `PARTITION BY` / `CLUSTER BY` on CREATE TABLE AS ✅ — captured into timePartitioning/clustering metadata + ORDER-BY-on-write for the pruning characteristic
+
+### BL-163 — dbt workflow gaps blocked by other features ⏳ · Deps: see below
+
+Not DDL-translation issues — these depend on features deferred elsewhere:
+- **Seeds** (load local CSV) need the resumable/multipart upload endpoint
+  (BL-092). Until then `dbt seed` fails.
+- **Grants** (`+grants` config) need IAM/access (Phase 17, deferred by
+  design — emulators don't enforce access). dbt must run with grants off.
+- **Python models** need Dataproc/Spark — out of scope entirely.
+- **Custom-macro function tail**: dbt packages can call GoogleSQL functions
+  DuckDB lacks; these surface as precise `unsupportedFeature` errors and are
+  closed case-by-case (sql-coverage test).
+
 ## Upstream
 
 ### Report @duckdb/node-bindings scalar-UDF event-loop leak ⏳
@@ -685,15 +710,15 @@ the issue with the repro above + propose the PR.
 general — we could drop the crypto-extension dependency for SHA512 and
 implement FARM_FINGERPRINT in pure JS (see below) without any native build.
 
-### dbt-bigquery emulator support (blocked upstream) ⏳
+### dbt-bigquery custom endpoint (upstream gap, worked around) ⏳
 
-A dbt conformance test (the headline audience for v1.0.0) is blocked:
 `dbt-bigquery` has no profiles.yml option for a custom API endpoint /
-anonymous credentials, so it can't be pointed at the emulator. Tracked
+anonymous credentials, so it can't natively point at an emulator. Tracked
 upstream as [dbt-bigquery #358](https://github.com/dbt-labs/dbt-bigquery/issues/358).
-The only workaround today is a brittle monkeypatch into dbt's connection
-code — not worth maintaining. Revisit when #358 lands. (The `bq` CLI,
-which is also discovery-driven, is now covered — see `test/clients/bq`.)
+We work around it with a `sitecustomize.py` monkeypatch (`test/clients/dbt`)
+that redirects the BigQuery client when `BIGQUERY_EMULATOR_HOST` is set; a real
+project runs green in CI. Drop the shim if/when #358 lands so dbt can be
+pointed at the emulator by config alone.
 
 ### FARM_FINGERPRINT ⏳
 
