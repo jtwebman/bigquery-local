@@ -390,6 +390,38 @@ test('Extract from a missing table returns 404', async () => {
   assert.equal(status, 404);
 });
 
+test('Extract with empty destinationUris returns 400 invalid', async () => {
+  const { status, body } = await postJob({
+    configuration: {
+      extract: {
+        sourceTable: { projectId: PROJECT, datasetId: DATASET, tableId: 'orders_parquet' },
+        destinationUris: [],
+        destinationFormat: 'CSV',
+      },
+    },
+  });
+  assert.equal(status, 400);
+  const err = body as unknown as { error?: { errors?: Array<{ reason: string }> } };
+  assert.equal(err.error?.errors?.[0]?.reason, 'invalid');
+});
+
+test('Extract with multiple destinationUris returns 400 unsupportedFeature', async () => {
+  // BQ supports sharded extracts via a single URI with `*`; we don't allow
+  // multiple URIs at all.
+  const { status, body } = await postJob({
+    configuration: {
+      extract: {
+        sourceTable: { projectId: PROJECT, datasetId: DATASET, tableId: 'orders_parquet' },
+        destinationUris: ['gs://bq-extract/a.csv', 'gs://bq-extract/b.csv'],
+        destinationFormat: 'CSV',
+      },
+    },
+  });
+  assert.equal(status, 400);
+  const err = body as unknown as { error?: { errors?: Array<{ reason: string }> } };
+  assert.equal(err.error?.errors?.[0]?.reason, 'unsupportedFeature');
+});
+
 test('Extract with unsupported format returns 400 unsupportedFeature', async () => {
   const { status, body } = await postJob({
     configuration: {

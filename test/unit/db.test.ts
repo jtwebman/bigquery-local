@@ -157,3 +157,163 @@ test('persists to disk when a file path is given', async () => {
     await rm(`${tmpPath}.wal`, { force: true });
   }
 });
+
+// -----------------------------------------------------------------------
+// Db.registerScalarFunction — exercises the parseDuckType branches and
+// the onClose hook. JS UDFs ride on top of this in src/sql/jsUdf.ts but
+// the surface itself is general; pin its behavior independently.
+// -----------------------------------------------------------------------
+
+test('registerScalarFunction wires every supported DuckDB type via parseDuckType', async () => {
+  const db = await createDb();
+  try {
+    // Each case below stresses a different branch of parseDuckType().
+    // The callback is a no-op identity that returns the input — it only
+    // needs to be invoked once for the type to be exercised.
+    db.registerScalarFunction({
+      name: 'echo_bigint',
+      argTypes: ['BIGINT'],
+      returnType: 'BIGINT',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_integer',
+      argTypes: ['INTEGER'],
+      returnType: 'INTEGER',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_double',
+      argTypes: ['DOUBLE'],
+      returnType: 'DOUBLE',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_float',
+      argTypes: ['FLOAT'],
+      returnType: 'FLOAT',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_bool',
+      argTypes: ['BOOLEAN'],
+      returnType: 'BOOL',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_string',
+      argTypes: ['STRING'],
+      returnType: 'VARCHAR',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_json',
+      argTypes: ['JSON'],
+      returnType: 'JSON',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_bytes',
+      argTypes: ['BYTES'],
+      returnType: 'BLOB',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_date',
+      argTypes: ['DATE'],
+      returnType: 'DATE',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_time',
+      argTypes: ['TIME'],
+      returnType: 'TIME',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_ts',
+      argTypes: ['TIMESTAMP'],
+      returnType: 'DATETIME',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_tstz',
+      argTypes: ['TIMESTAMPTZ'],
+      returnType: 'TIMESTAMP WITH TIME ZONE',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_dec',
+      argTypes: ['DECIMAL(38, 9)'],
+      returnType: 'DECIMAL(38, 9)',
+      callback: ([v]) => v,
+    });
+    db.registerScalarFunction({
+      name: 'echo_list',
+      argTypes: ['BIGINT[]'],
+      returnType: 'BIGINT[]',
+      callback: ([v]) => v,
+    });
+
+    // Tiny invocation of one of them — verifies the callback actually
+    // fires through the DuckDB scalar-function API (the bigger goal is
+    // type-mapping coverage, which is realized just by registering).
+    const rows = await db.query<{ x: bigint }>('SELECT echo_bigint(42) AS x');
+    assert.equal(rows[0]?.x, 42n);
+  } finally {
+    await db.close();
+  }
+});
+
+test('registerScalarFunction rejects an unsupported DuckDB type', async () => {
+  const db = await createDb();
+  try {
+    assert.throws(
+      () =>
+        db.registerScalarFunction({
+          name: 'bad',
+          argTypes: ['UUID'],
+          returnType: 'BIGINT',
+          callback: () => 0n,
+        }),
+      /Unsupported DuckDB type/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test('registerScalarFunction wraps callback exceptions with row + name context', async () => {
+  const db = await createDb();
+  try {
+    db.registerScalarFunction({
+      name: 'thrower',
+      argTypes: ['BIGINT'],
+      returnType: 'BIGINT',
+      callback: () => {
+        throw new Error('inner boom');
+      },
+    });
+    await assert.rejects(db.query('SELECT thrower(1) AS x'), /thrower.*inner boom/);
+  } finally {
+    await db.close();
+  }
+});
+
+test('onClose hooks run in reverse order; a thrown hook does not strand close()', async () => {
+  const db = await createDb();
+  const order: number[] = [];
+  db.onClose(() => {
+    order.push(1);
+  });
+  db.onClose(() => {
+    throw new Error('hook 2 boom');
+  });
+  db.onClose(() => {
+    order.push(3);
+  });
+  await db.close();
+  // Last-registered runs first; the failing hook is swallowed; the
+  // first-registered still runs.
+  assert.deepEqual(order, [3, 1]);
+});

@@ -210,6 +210,149 @@ test('Sandbox: memory-hog UDF hits the 128 MB cap', async () => {
   assert.match(body.error?.message ?? '', /memory|allocation|isolate/i);
 });
 
+// -----------------------------------------------------------------------
+// Type-marshaling coverage — each BQ type the UDF runtime supports gets
+// at least one round-trip test so the duckToJsValue / jsValueToDuck /
+// bqTypeToDuckTypeText branches all execute.
+// -----------------------------------------------------------------------
+
+test('JS UDF: BOOL arg + return', async () => {
+  await query(`
+    CREATE TEMP FUNCTION js_not(x BOOL)
+    RETURNS BOOL
+    LANGUAGE js
+    AS """ return !x; """
+  `);
+  assert.equal(await scalar('SELECT js_not(TRUE) AS x'), 'false');
+  assert.equal(await scalar('SELECT js_not(FALSE) AS x'), 'true');
+});
+
+test('JS UDF: INT64 return from a string value parses into BigInt', async () => {
+  // Exercises the `BigInt(String(value))` branch in jsValueToDuck: a UDF
+  // that returns its INT64 result as a JS string (e.g. for values past
+  // 2^53 the user might string-format on purpose).
+  await query(`
+    CREATE TEMP FUNCTION js_int_as_string(n INT64)
+    RETURNS INT64
+    LANGUAGE js
+    AS """ return String(n + 1); """
+  `);
+  assert.equal(await scalar('SELECT js_int_as_string(41) AS x'), '42');
+});
+
+test('JS UDF: OPTIONS(library=[...]) reports an error on HTTP non-200 response', async () => {
+  const http = await import('node:http');
+  const libServer = http.createServer((_req, res) => {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found');
+  });
+  await new Promise<void>((resolve) => libServer.listen(0, '127.0.0.1', resolve));
+  const addr = libServer.address();
+  const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+  try {
+    const body = await query(`
+      CREATE TEMP FUNCTION js_404_lib(x INT64)
+      RETURNS INT64
+      LANGUAGE js
+      OPTIONS(library = ["http://127.0.0.1:${port}/missing.js"])
+      AS """ return x; """
+    `);
+    assert.ok(body.error !== undefined, 'expected an error response');
+    assert.match(body.error?.message ?? '', /HTTP 404|Failed to fetch/i);
+  } finally {
+    await new Promise<void>((resolve) => libServer.close(() => resolve()));
+  }
+});
+
+test('JS UDF: unsupported argument type rejects at CREATE FUNCTION', async () => {
+  const body = await query(`
+    CREATE TEMP FUNCTION js_takes_array(xs ARRAY<INT64>)
+    RETURNS INT64
+    LANGUAGE js
+    AS """ return xs.length; """
+  `);
+  assert.ok(body.error !== undefined, 'expected an error response');
+  assert.match(body.error?.message ?? '', /not yet supported/i);
+});
+
+test('JS UDF: unsupported return type rejects at CREATE FUNCTION', async () => {
+  const body = await query(`
+    CREATE TEMP FUNCTION js_returns_date(x INT64)
+    RETURNS DATE
+    LANGUAGE js
+    AS """ return new Date(); """
+  `);
+  assert.ok(body.error !== undefined, 'expected an error response');
+  assert.match(body.error?.message ?? '', /not yet supported/i);
+});
+
+test('JS UDF: OPTIONS(library=[...]) reports an error when the URL is unreachable', async () => {
+  // Pick a port that's almost certainly closed. The fetch should fail and
+  // surface as a BQ error rather than crashing the emulator.
+  const body = await query(`
+    CREATE TEMP FUNCTION js_bad_lib(x INT64)
+    RETURNS INT64
+    LANGUAGE js
+    OPTIONS(library = ["http://127.0.0.1:1/does-not-exist.js"])
+    AS """ return x; """
+  `);
+  assert.ok(body.error !== undefined, 'expected an error response');
+  assert.match(body.error?.message ?? '', /Failed to fetch UDF library/i);
+});
+
+test('JS UDF: OPTIONS(library=[...]) reports an error when the library exceeds the size cap', async () => {
+  const http = await import('node:http');
+  // Serve a payload larger than the 5 MB cap.
+  const big = Buffer.alloc(6 * 1024 * 1024, 0x20);
+  const libServer = http.createServer((_req, res) => {
+    res.writeHead(200, {
+      'content-type': 'application/javascript',
+      'content-length': String(big.length),
+    });
+    res.end(big);
+  });
+  await new Promise<void>((resolve) => libServer.listen(0, '127.0.0.1', resolve));
+  const addr = libServer.address();
+  const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+  try {
+    const body = await query(`
+      CREATE TEMP FUNCTION js_too_big_lib(x INT64)
+      RETURNS INT64
+      LANGUAGE js
+      OPTIONS(library = ["http://127.0.0.1:${port}/big.js"])
+      AS """ return x; """
+    `);
+    assert.ok(body.error !== undefined, 'expected an error response');
+    assert.match(body.error?.message ?? '', /byte limit/i);
+  } finally {
+    await new Promise<void>((resolve) => libServer.close(() => resolve()));
+  }
+});
+
+test('JS UDF: OPTIONS(library=[...]) reports an error when the library throws during load', async () => {
+  const http = await import('node:http');
+  const libServer = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/javascript' });
+    res.end('throw new Error("boom");');
+  });
+  await new Promise<void>((resolve) => libServer.listen(0, '127.0.0.1', resolve));
+  const addr = libServer.address();
+  const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+  try {
+    const body = await query(`
+      CREATE TEMP FUNCTION js_throwing_lib(x INT64)
+      RETURNS INT64
+      LANGUAGE js
+      OPTIONS(library = ["http://127.0.0.1:${port}/throwing.js"])
+      AS """ return x; """
+    `);
+    assert.ok(body.error !== undefined, 'expected an error response');
+    assert.match(body.error?.message ?? '', /threw during load|boom/i);
+  } finally {
+    await new Promise<void>((resolve) => libServer.close(() => resolve()));
+  }
+});
+
 test('JS UDF: OPTIONS(library=[...]) fetches and injects the library into the isolate', async () => {
   // Spin up a tiny local HTTP server that returns a JS library defining
   // `globalThis.bqLibAdd`. The UDF body then calls it — proving the library

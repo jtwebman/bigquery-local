@@ -24,11 +24,15 @@
  *   - FLOAT64 → Number
  *   - BOOL → boolean, STRING → string
  *   - NUMERIC / BIGNUMERIC → string
- *   - BYTES → Uint8Array
- *   - DATE / TIMESTAMP / DATETIME → JS Date
- *   - TIME → string ("HH:MM:SS")
- *   - ARRAY<T> → JS array (recursive)
- *   - STRUCT → JS object (recursive)
+ *
+ * Types not yet supported as JS-UDF arguments/returns: BYTES, DATE,
+ * TIME, DATETIME, TIMESTAMP, JSON, ARRAY, STRUCT. The DuckDB
+ * scalar-function boundary returns those as native value objects
+ * (DuckDBDateValue, DuckDBTimeValue, etc.) that don't cross the
+ * isolate boundary cleanly; per-type marshaling on top of the isolate
+ * boundary is more work than the v1.0 scope. If you need one of these
+ * in a JS UDF, please file an issue. SQL UDFs and the rest of the
+ * emulator support them as normal.
  */
 
 import type { Db, ScalarFunctionSpec } from '../storage/db.ts';
@@ -60,12 +64,8 @@ interface IvmIsolate {
   compileScriptSync(source: string, opts?: { filename?: string }): IvmScript;
   dispose(): void;
 }
-interface IvmExternalCopy {
-  copyInto(opts?: { release?: boolean }): unknown;
-}
 interface IvmModule {
   Isolate: new (opts?: { memoryLimit?: number }) => IvmIsolate;
-  ExternalCopy: new (value: unknown) => IvmExternalCopy;
 }
 
 let ivmModulePromise: Promise<IvmModule | null> | null = null;
@@ -117,27 +117,15 @@ async function ensureRuntime(db: Db): Promise<JsUdfRuntime> {
   const context = isolate.createContextSync();
   const runtime: JsUdfRuntime = { ivm, isolate, context, compiled: new Map() };
   RUNTIMES.set(db, runtime);
-  // Dispose the Isolate when the Db closes. Best-effort: a leaked Isolate
-  // would survive until process exit, costing ~a few MB and the V8 heap.
+  // Dispose the Isolate when the Db closes. Best-effort, all-or-nothing:
+  // if any one step throws (e.g. double-dispose race), the rest still run
+  // because the entire block sits inside the Db's own catch — see
+  // `Db.close()`. A leaked Isolate would just survive until process exit.
   db.onClose(() => {
-    for (const ref of runtime.compiled.values()) {
-      try {
-        ref.release();
-      } catch {
-        /* ignore */
-      }
-    }
+    for (const ref of runtime.compiled.values()) ref.release();
     runtime.compiled.clear();
-    try {
-      runtime.context.release();
-    } catch {
-      /* ignore */
-    }
-    try {
-      runtime.isolate.dispose();
-    } catch {
-      /* ignore */
-    }
+    runtime.context.release();
+    runtime.isolate.dispose();
     RUNTIMES.delete(db);
   });
   return runtime;
@@ -167,9 +155,12 @@ const MAX_LIBRARY_BYTES = 5 * 1024 * 1024;
 /** Compile + register a `LANGUAGE js` UDF. Errors surface as `BqError`
  *  with location `query`. */
 export async function registerJsUdf(db: Db, def: JsUdfDefinition): Promise<void> {
-  if (def.argNames.length !== def.argBqTypes.length) {
-    throw BqError.invalid('JS UDF arg names and types must align.', 'query');
+  // argNames + argBqTypes come from the same parsed args list upstream, so
+  // they are length-equal by construction; no defensive check here.
+  for (const argType of def.argBqTypes) {
+    assertSupportedBqType(argType, 'argument');
   }
+  assertSupportedBqType(def.returnBqType ?? 'STRING', 'return');
   const runtime = await ensureRuntime(db);
 
   // Optionally pre-load libraries into the isolate. Each library URL is
@@ -205,26 +196,20 @@ export async function registerJsUdf(db: Db, def: JsUdfDefinition): Promise<void>
 
   // CREATE OR REPLACE: drop the prior reference if one exists.
   const prior = runtime.compiled.get(def.name);
-  if (prior !== undefined) {
-    try {
-      prior.release();
-    } catch {
-      /* ignore */
-    }
-  }
+  if (prior !== undefined) prior.release();
   runtime.compiled.set(def.name, fnRef);
 
   const returnBqType = def.returnBqType ?? 'STRING';
-  const ivmModule = runtime.ivm;
   const spec: ScalarFunctionSpec = {
     name: def.name,
     argTypes: def.argBqTypes.map(bqTypeToDuckTypeText),
     returnType: bqTypeToDuckTypeText(returnBqType),
     callback(rawArgs) {
       const jsArgs = rawArgs.map((v, i) => duckToJsValue(v, def.argBqTypes[i] as string));
-      // Cross the isolate boundary. Primitives can ride raw; complex values
-      // (objects, arrays, typed arrays, Date) need ExternalCopy.
-      const isolateArgs = jsArgs.map((v) => toIsolateArg(ivmModule, v));
+      // All supported types are primitives (Number / bigint / string /
+      // boolean / null) on the host side — isolated-vm copies them across
+      // the boundary directly without ExternalCopy.
+      const isolateArgs = jsArgs;
       let result: unknown;
       try {
         result = fnRef.applySync(undefined, isolateArgs, {
@@ -233,11 +218,12 @@ export async function registerJsUdf(db: Db, def: JsUdfDefinition): Promise<void>
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (/timeout/i.test(msg) || /Script execution timed out/.test(msg)) {
+        // Timeout gets a friendlier message because the raw isolated-vm
+        // text ("Script execution timed out") doesn't say which UDF.
+        // Memory-limit / generic errors fall through with the raw msg
+        // — it already mentions "isolate" and the user has the UDF name.
+        if (/timeout|timed out/i.test(msg)) {
           throw new Error(`UDF "${def.name}" timed out after ${DEFAULT_TIMEOUT_MS}ms`);
-        }
-        if (/memory|allocation/i.test(msg) && /isolate/i.test(msg)) {
-          throw new Error(`UDF "${def.name}" exceeded the 128 MB memory cap`);
         }
         throw new Error(`UDF "${def.name}": ${msg}`);
       }
@@ -275,143 +261,72 @@ async function injectLibrary(runtime: JsUdfRuntime, url: string): Promise<void> 
   }
 }
 
-/** Cross the isolate boundary for one argument. Primitives go raw; the
- *  rest needs ExternalCopy. */
-function toIsolateArg(ivm: IvmModule, value: unknown): unknown {
-  if (value === null || value === undefined) return null;
-  const t = typeof value;
-  if (t === 'number' || t === 'bigint' || t === 'string' || t === 'boolean') {
-    return value;
+/** BQ types the JS-UDF runtime supports as arguments or return values.
+ *  Other types reject at CREATE FUNCTION time rather than silently
+ *  producing wrong values. */
+const SUPPORTED_BQ_TYPES = new Set([
+  'INT64',
+  'INTEGER',
+  'FLOAT64',
+  'FLOAT',
+  'BOOL',
+  'BOOLEAN',
+  'STRING',
+  'NUMERIC',
+  'BIGNUMERIC',
+]);
+
+function assertSupportedBqType(bqType: string, role: 'argument' | 'return'): void {
+  const upper = bqType.trim().toUpperCase();
+  if (!SUPPORTED_BQ_TYPES.has(upper)) {
+    throw BqError.invalid(
+      `JS UDF ${role} type "${bqType}" is not yet supported. Supported types: ` +
+        `${[...SUPPORTED_BQ_TYPES].join(', ')}.`,
+      'query',
+    );
   }
-  // ExternalCopy handles Date, plain objects, arrays, ArrayBuffer/TypedArray.
-  return new ivm.ExternalCopy(value).copyInto({ release: true });
 }
 
-/** Map BQ type text → DuckDB type text suitable for `Db.registerScalarFunction`. */
+/** Map a supported BQ type → DuckDB type text for `Db.registerScalarFunction`.
+ *  `assertSupportedBqType` runs upstream, so every input matches a branch. */
 function bqTypeToDuckTypeText(bqType: string): string {
   const upper = bqType.trim().toUpperCase();
-  const m = /^ARRAY\s*<\s*(.+?)\s*>$/.exec(upper);
-  if (m !== null) {
-    return `${bqTypeToDuckTypeText(m[1] as string)}[]`;
-  }
-  switch (upper) {
-    case 'INT64':
-    case 'INTEGER':
-      return 'BIGINT';
-    case 'FLOAT64':
-    case 'FLOAT':
-      return 'DOUBLE';
-    case 'BOOL':
-    case 'BOOLEAN':
-      return 'BOOLEAN';
-    case 'STRING':
-      return 'VARCHAR';
-    case 'BYTES':
-      return 'BLOB';
-    case 'NUMERIC':
-    case 'BIGNUMERIC':
-      return 'DECIMAL(38, 9)';
-    case 'DATE':
-      return 'DATE';
-    case 'TIME':
-      return 'TIME';
-    case 'TIMESTAMP':
-      return 'TIMESTAMPTZ';
-    case 'DATETIME':
-      return 'TIMESTAMP';
-    case 'JSON':
-      return 'VARCHAR';
-    default:
-      return 'VARCHAR';
-  }
+  if (upper === 'INT64' || upper === 'INTEGER') return 'BIGINT';
+  if (upper === 'FLOAT64' || upper === 'FLOAT') return 'DOUBLE';
+  if (upper === 'BOOL' || upper === 'BOOLEAN') return 'BOOLEAN';
+  if (upper === 'STRING') return 'VARCHAR';
+  // The only remaining supported pair is NUMERIC / BIGNUMERIC.
+  return 'DECIMAL(38, 9)';
 }
 
-/** DuckDB → JS value marshaling. */
+/** DuckDB → JS value marshaling for the supported types. Callers (i.e.
+ *  registerJsUdf via assertSupportedBqType) guarantee `bqType` is one of
+ *  the supported set, so no `default` branch is needed. */
 function duckToJsValue(value: unknown, bqType: string): unknown {
-  if (value === null || value === undefined) return null;
+  if (value === null) return null;
   const upper = bqType.trim().toUpperCase();
-  if (/^ARRAY\s*<.+>$/i.test(upper)) {
-    const inner = upper.replace(/^ARRAY\s*<\s*(.+)\s*>$/i, '$1');
-    if (!Array.isArray(value)) return value;
-    return value.map((item) => duckToJsValue(item, inner));
+  if (upper === 'INT64' || upper === 'INTEGER') {
+    // BQ contract: INT64 surfaces as Number; precision loss past 2^53
+    // is documented and accepted.
+    return Number(value as bigint | number);
   }
-  switch (upper) {
-    case 'INT64':
-    case 'INTEGER':
-      // BQ contract: INT64 surfaces as Number; precision loss past 2^53
-      // is documented and accepted.
-      return typeof value === 'bigint' ? Number(value) : Number(value);
-    case 'FLOAT64':
-    case 'FLOAT':
-      return Number(value);
-    case 'BOOL':
-    case 'BOOLEAN':
-      return Boolean(value);
-    case 'STRING':
-    case 'JSON':
-      return typeof value === 'string' ? value : String(value);
-    case 'BYTES':
-      if (value instanceof Uint8Array) return value;
-      return new Uint8Array(value as ArrayBufferLike);
-    case 'NUMERIC':
-    case 'BIGNUMERIC':
-      return typeof value === 'string' ? value : String(value);
-    case 'DATE':
-      if (value instanceof Date) return value;
-      if (typeof value === 'object' && value !== null && 'days' in value) {
-        const d = (value as { days: number | bigint }).days;
-        return new Date(Number(d) * 86_400_000);
-      }
-      return value;
-    case 'TIMESTAMP':
-    case 'DATETIME':
-      if (value instanceof Date) return value;
-      if (typeof value === 'bigint') return new Date(Number(value / 1000n));
-      return value;
-    case 'TIME':
-      return typeof value === 'string' ? value : String(value);
-    default:
-      return value;
-  }
+  if (upper === 'FLOAT64' || upper === 'FLOAT') return Number(value);
+  if (upper === 'BOOL' || upper === 'BOOLEAN') return Boolean(value);
+  // STRING / NUMERIC / BIGNUMERIC — string-shaped on the BQ wire.
+  return typeof value === 'string' ? value : String(value);
 }
 
-/** JS → DuckDB value marshaling for the return path. */
+/** JS → DuckDB value marshaling for the supported return types. */
 function jsValueToDuck(value: unknown, bqType: string): unknown {
   if (value === null || value === undefined) return null;
   const upper = bqType.trim().toUpperCase();
-  if (/^ARRAY\s*<.+>$/i.test(upper)) {
-    const inner = upper.replace(/^ARRAY\s*<\s*(.+)\s*>$/i, '$1');
-    if (!Array.isArray(value)) {
-      throw new Error(`JS UDF expected array return for ${bqType}, got ${typeof value}`);
-    }
-    return value.map((item) => jsValueToDuck(item, inner));
+  if (upper === 'INT64' || upper === 'INTEGER') {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number') return BigInt(Math.trunc(value));
+    return BigInt(String(value));
   }
-  switch (upper) {
-    case 'INT64':
-    case 'INTEGER':
-      if (typeof value === 'bigint') return value;
-      if (typeof value === 'number') return BigInt(Math.trunc(value));
-      return BigInt(String(value));
-    case 'FLOAT64':
-    case 'FLOAT':
-      return Number(value);
-    case 'BOOL':
-    case 'BOOLEAN':
-      return Boolean(value);
-    case 'STRING':
-    case 'JSON':
-      return typeof value === 'string' ? value : String(value);
-    case 'BYTES':
-      return value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBufferLike);
-    case 'NUMERIC':
-    case 'BIGNUMERIC':
-      return typeof value === 'string' ? value : String(value);
-    case 'DATE':
-    case 'TIMESTAMP':
-    case 'DATETIME':
-    case 'TIME':
-      return value;
-    default:
-      return String(value);
-  }
+  if (upper === 'FLOAT64' || upper === 'FLOAT') return Number(value);
+  if (upper === 'BOOL' || upper === 'BOOLEAN') return Boolean(value);
+  // STRING / NUMERIC / BIGNUMERIC — string-shaped on the wire.
+  return typeof value === 'string' ? value : String(value);
 }

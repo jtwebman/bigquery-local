@@ -67,6 +67,29 @@ test('discovery doc rootUrl/baseUrl point back at the requesting host', async ()
   assert.equal(doc['baseUrl'], `http://${host}/bigquery/v2/`);
 });
 
+test('discovery doc falls back to localhost when no Host header is sent', async () => {
+  // HTTP/1.1 mandates a Host header, but some test/runtime clients omit
+  // it. The handler `req.headers['host'] ?? 'localhost'` fallback keeps
+  // the discovery URLs well-formed in that case.
+  const url = new URL(`${server.url}${BQ_DISCOVERY_PATH}?version=v2`);
+  // Build a raw HTTP/1.0 request (no Host header required at /1.0) via
+  // net.Socket so we bypass undici/fetch's mandatory-Host enforcement.
+  const net = await import('node:net');
+  const sock = net.createConnection({ host: url.hostname, port: Number(url.port) });
+  sock.write(`GET ${url.pathname}${url.search} HTTP/1.0\r\n\r\n`);
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve, reject) => {
+    sock.on('data', (c) => chunks.push(c as Buffer));
+    sock.on('end', () => resolve());
+    sock.on('error', (e) => reject(e));
+  });
+  const raw = Buffer.concat(chunks).toString('utf8');
+  const bodyStart = raw.indexOf('\r\n\r\n');
+  const doc = JSON.parse(raw.slice(bodyStart + 4)) as Record<string, string>;
+  assert.equal(doc['rootUrl'], 'http://localhost/');
+  assert.equal(doc['baseUrl'], 'http://localhost/bigquery/v2/');
+});
+
 test('discovery doc declares the resources a discovery-driven client needs', async () => {
   const res = await fetch(`${server.url}${DISCOVERY_PATH}`);
   const doc = (await res.json()) as { resources: Record<string, unknown> };
