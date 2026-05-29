@@ -14,7 +14,8 @@
       "!node_modules",
       "!**/*.duckdb",
       "!**/.venv",
-      "!**/__pycache__"
+      "!**/__pycache__",
+      "!src/grpc-gen"
     ]
   },
   "formatter": {

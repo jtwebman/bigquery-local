@@ -1,0 +1,18 @@
+{
+  "description": "REPEATED STRUCT — Avro array-of-record.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    {
+      "name": "items",
+      "type": "STRUCT",
+      "mode": "REPEATED",
+      "fields": [
+        { "name": "sku", "type": "STRING", "mode": "REQUIRED" },
+        { "name": "qty", "type": "INT64", "mode": "REQUIRED" }
+      ]
+    }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, [STRUCT('A1' AS sku, 1 AS qty), STRUCT('B2' AS sku, 2 AS qty)]), (2, [STRUCT('C3' AS sku, 5 AS qty)]), (3, [])",
+  "localInsertSql": "INSERT INTO $TABLE VALUES (1, [{'sku': 'A1', 'qty': 1}, {'sku': 'B2', 'qty': 2}]), (2, [{'sku': 'C3', 'qty': 5}]), (3, [])",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

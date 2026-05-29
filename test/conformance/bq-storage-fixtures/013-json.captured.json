@@ -1,0 +1,24 @@
+{
+  "createReadSession": {
+    "avroSchema": "{\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"blob\",\"type\":[\"null\",{\"sqlType\":\"JSON\",\"type\":\"string\"}]}],\"name\":\"__root__\",\"type\":\"record\"}",
+    "hasArrowSchema": false,
+    "dataFormat": "AVRO",
+    "estimatedRowCount": "3",
+    "hasStreams": true,
+    "table": "projects/<PROJECT>/datasets/bq_storage_replay/tables/t_013_json",
+    "readOptions": {
+      "selectedFields": [],
+      "rowRestriction": ""
+    }
+  },
+  "readRows": [
+    {
+      "rowCount": "0",
+      "uncompressedByteSize": "41",
+      "serializedBinaryRowsBase64": "BAIIbnVsbAYAAgI6eyJhIjoxLCJiIjpbdHJ1ZSxmYWxzZSxudWxsXX0=",
+      "serializedRecordBatchBase64": "",
+      "hasAvroSchema": true,
+      "hasArrowSchema": false
+    }
+  ]
+}

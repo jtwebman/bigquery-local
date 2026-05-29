@@ -149,3 +149,44 @@ test('IEEE_DIVIDE follows IEEE 754 (Inf and NaN, not error)', async () => {
   // Either Infinity string or null is acceptable depending on DuckDB version.
   assert.ok(v === 'Infinity' || v === null, `expected "Infinity" or null, got ${String(v)}`);
 });
+
+// BIGNUMERIC is backed by DECIMAL(38, 9). Arithmetic, aggregates, casts, and
+// comparisons all work natively for values that fit in that range; values
+// outside it reject at insert time.
+test('BIGNUMERIC literal arithmetic works', async () => {
+  assert.equal(await scalar("SELECT BIGNUMERIC '1.5' + BIGNUMERIC '2.25' AS x"), '3.75');
+  assert.equal(await scalar("SELECT BIGNUMERIC '10' - BIGNUMERIC '3' AS x"), '7.0');
+  assert.equal(await scalar("SELECT BIGNUMERIC '6.25' * BIGNUMERIC '4' AS x"), '25.0');
+});
+test('BIGNUMERIC aggregations (SUM/AVG/MIN/MAX) work', async () => {
+  // DuckDB returns AVG over DECIMAL as DOUBLE, which wires as FLOAT64 — matches
+  // BQ's behavior of widening AVG result types for fractional precision.
+  const sql = `
+    SELECT
+      SUM(v) AS s,
+      AVG(v) AS a,
+      MIN(v) AS lo,
+      MAX(v) AS hi
+    FROM (
+      SELECT BIGNUMERIC '1.5' AS v UNION ALL
+      SELECT BIGNUMERIC '2.5' UNION ALL
+      SELECT BIGNUMERIC '3.0'
+    )`;
+  const body = await query(sql);
+  const row = body.rows[0]?.f.map((c) => unwrapV(c.v));
+  assert.equal(row?.[0], '7.0');
+  assert.match(String(row?.[1]), /^2\.333333333/);
+  assert.equal(row?.[2], '1.5');
+  assert.equal(row?.[3], '3.0');
+});
+test('BIGNUMERIC casts to/from NUMERIC and FLOAT64', async () => {
+  assert.equal(await scalar("SELECT CAST(BIGNUMERIC '1.5' AS NUMERIC) AS x"), '1.5');
+  assert.equal(await scalar("SELECT CAST(NUMERIC '1.5' AS BIGNUMERIC) AS x"), '1.5');
+  // BQ wires FLOAT64 as a decimal string.
+  assert.equal(await scalar("SELECT CAST(BIGNUMERIC '1.5' AS FLOAT64) AS x"), '1.5');
+});
+test('BIGNUMERIC comparisons order correctly', async () => {
+  assert.equal(await scalar("SELECT BIGNUMERIC '1.5' < BIGNUMERIC '2.0' AS x"), 'true');
+  assert.equal(await scalar("SELECT BIGNUMERIC '1.5' = BIGNUMERIC '1.5' AS x"), 'true');
+  assert.equal(await scalar("SELECT BIGNUMERIC '2.0' > BIGNUMERIC '1.5' AS x"), 'true');
+});

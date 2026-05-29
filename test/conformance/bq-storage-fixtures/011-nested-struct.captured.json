@@ -1,0 +1,24 @@
+{
+  "createReadSession": {
+    "avroSchema": "{\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"addr\",\"type\":[\"null\",{\"fields\":[{\"name\":\"street\",\"type\":\"string\"},{\"name\":\"zip\",\"type\":[\"null\",\"string\"]}],\"name\":\"__s_0\",\"type\":\"record\"}]}],\"name\":\"__root__\",\"type\":\"record\"}",
+    "hasArrowSchema": false,
+    "dataFormat": "AVRO",
+    "estimatedRowCount": "3",
+    "hasStreams": true,
+    "table": "projects/<PROJECT>/datasets/bq_storage_replay/tables/t_011_nested_struct",
+    "readOptions": {
+      "selectedFields": [],
+      "rowRestriction": ""
+    }
+  },
+  "readRows": [
+    {
+      "rowCount": "0",
+      "uncompressedByteSize": "24",
+      "serializedBinaryRowsBase64": "BAIIMiBTdAACAggxIFN0AgowMTIzNAYA",
+      "serializedRecordBatchBase64": "",
+      "hasAvroSchema": true,
+      "hasArrowSchema": false
+    }
+  ]
+}

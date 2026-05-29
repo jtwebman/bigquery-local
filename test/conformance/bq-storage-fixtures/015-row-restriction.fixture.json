@@ -1,0 +1,12 @@
+{
+  "description": "row_restriction filters which rows are streamed.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "category", "type": "STRING" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, 'A'), (2, 'B'), (3, 'A'), (4, 'C')",
+  "createReadSession": {
+    "dataFormat": "AVRO",
+    "rowRestriction": "category = 'A'"
+  }
+}

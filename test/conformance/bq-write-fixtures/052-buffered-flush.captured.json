@@ -1,0 +1,37 @@
+{
+  "operations": [
+    {
+      "op": "createWriteStream",
+      "type": "BUFFERED",
+      "hasCreateTime": true,
+      "maskedName": "projects/<PROJECT>/datasets/bq_write_replay/tables/t_052_buffered_flush/streams/<STREAM_ID>"
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": "0",
+      "hasWriteStream": true
+    },
+    {
+      "op": "flushRows",
+      "offset": "2"
+    },
+    {
+      "op": "selectTable",
+      "rows": [
+        {
+          "id": 1,
+          "label": "buffered-a"
+        },
+        {
+          "id": 2,
+          "label": "buffered-b"
+        },
+        {
+          "id": 3,
+          "label": "buffered-c"
+        }
+      ]
+    }
+  ]
+}

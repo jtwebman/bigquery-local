@@ -40,10 +40,13 @@ emu_log="$(mktemp)"
 emu_pid=$!
 
 url=""
+grpc_url=""
 for _ in $(seq 1 100); do
-  line="$(grep -o 'listening on http://[^ ]*' "$emu_log" 2>/dev/null || true)"
-  if [[ -n "$line" ]]; then
-    url="${line#listening on }"
+  http_line="$(grep -o 'listening on http://[^ ]*' "$emu_log" 2>/dev/null || true)"
+  grpc_line="$(grep -o 'gRPC on [^ ]*' "$emu_log" 2>/dev/null || true)"
+  if [[ -n "$http_line" && -n "$grpc_line" ]]; then
+    url="${http_line#listening on }"
+    grpc_url="${grpc_line#gRPC on }"
     break
   fi
   if ! kill -0 "$emu_pid" 2>/dev/null; then
@@ -59,7 +62,11 @@ if [[ -z "$url" ]]; then
   exit 1
 fi
 export BIGQUERY_EMULATOR_HOST="$url"
-echo "emulator listening at $url"
+# Pass the gRPC URL too so the sitecustomize shim can route
+# dbt-bigquery's Storage Read fast-path through the emulator. Without
+# this, the storage client falls back to real Google.
+export BIGQUERY_EMULATOR_GRPC_HOST="$grpc_url"
+echo "emulator listening at HTTP=$url gRPC=$grpc_url"
 
 dbt_cmd() {
   echo "+ dbt $*"

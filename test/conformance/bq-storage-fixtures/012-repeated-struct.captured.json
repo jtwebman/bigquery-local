@@ -1,0 +1,24 @@
+{
+  "createReadSession": {
+    "avroSchema": "{\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"items\",\"type\":{\"items\":{\"fields\":[{\"name\":\"sku\",\"type\":\"string\"},{\"name\":\"qty\",\"type\":\"long\"}],\"name\":\"__s_0\",\"type\":\"record\"},\"type\":\"array\"}}],\"name\":\"__root__\",\"type\":\"record\"}",
+    "hasArrowSchema": false,
+    "dataFormat": "AVRO",
+    "estimatedRowCount": "3",
+    "hasStreams": true,
+    "table": "projects/<PROJECT>/datasets/bq_storage_replay/tables/t_012_repeated_struct",
+    "readOptions": {
+      "selectedFields": [],
+      "rowRestriction": ""
+    }
+  },
+  "readRows": [
+    {
+      "rowCount": "0",
+      "uncompressedByteSize": "20",
+      "serializedBinaryRowsBase64": "AgQEQTECBEIyBAAGAAQCBEMzCgA=",
+      "serializedRecordBatchBase64": "",
+      "hasAvroSchema": true,
+      "hasArrowSchema": false
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "createReadSession": {
+    "avroSchema": "{\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"name\",\"type\":[\"null\",\"string\"]}],\"name\":\"__root__\",\"type\":\"record\"}",
+    "hasArrowSchema": false,
+    "dataFormat": "AVRO",
+    "estimatedRowCount": "23",
+    "hasStreams": true,
+    "table": "projects/<PROJECT>/datasets/bq_storage_replay/tables/t_030_multi_stream",
+    "readOptions": {
+      "selectedFields": [],
+      "rowRestriction": ""
+    }
+  },
+  "readRows": [
+    {
+      "rowCount": "0",
+      "uncompressedByteSize": "198",
+      "serializedBinaryRowsBase64": "GAIMcm93LTEyBgIKcm93LTMOAgpyb3ctNwwCCnJvdy02HAIMcm93LTE0AgIKcm93LTEkAgxyb3ctMTgqAgxyb3ctMjESAgpyb3ctOSICDHJvdy0xNxQCDHJvdy0xMCgCDHJvdy0yMCwCDHJvdy0yMgQCCnJvdy0yGgIMcm93LTEzEAIKcm93LTgIAgpyb3ctNAoCCnJvdy01HgIMcm93LTE1FgIMcm93LTExJgIMcm93LTE5LgIMcm93LTIzIAIMcm93LTE2",
+      "serializedRecordBatchBase64": "",
+      "hasAvroSchema": true,
+      "hasArrowSchema": false
+    }
+  ]
+}

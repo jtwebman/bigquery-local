@@ -145,8 +145,14 @@ function baseDuckType(field: BqField): string {
     case 'NUMERIC':
       return 'DECIMAL(38, 9)';
     case 'BIGNUMERIC':
-      // DuckDB DECIMAL caps at 38 precision; VARCHAR round-trips the full range.
-      return 'VARCHAR';
+      // DuckDB DECIMAL caps at precision 38, less than BQ's 76 — but enough
+      // for any test data that fits in 29 integer digits + 9 decimal places.
+      // Schema readback (INFORMATION_SCHEMA, tables.get) still reports
+      // BIGNUMERIC, and wire encoders (Avro precision=77/scale=38, Arrow
+      // Decimal256(76,38)) pad the unscaled int from scale 9 → 38 on the way
+      // out, so byte-for-byte BQ fidelity holds for any value that fits.
+      // Values exceeding DECIMAL(38, 9) range are rejected at insert time.
+      return 'DECIMAL(38, 9)';
     case 'TIMESTAMP':
       return 'TIMESTAMP WITH TIME ZONE';
     case 'DATETIME':
@@ -185,7 +191,6 @@ function baseInsertExpr(ordinal: number, field: BqField): string {
   const p = `$${ordinal}`;
   switch (field.type) {
     case 'STRING':
-    case 'BIGNUMERIC':
       return p;
     case 'GEOGRAPHY':
       return `ST_GeomFromText(${p}::VARCHAR)`;
@@ -200,6 +205,7 @@ function baseInsertExpr(ordinal: number, field: BqField): string {
     case 'BOOL':
       return p;
     case 'NUMERIC':
+    case 'BIGNUMERIC':
       return `${p}::DECIMAL(38, 9)`;
     case 'TIMESTAMP':
       return `${p}::TIMESTAMPTZ`;
@@ -244,7 +250,7 @@ export function bqSelectExpression(column: string, field: BqField): string {
   if (field.type === 'GEOGRAPHY') return `replace(ST_AsText(${ident}), ' (', '(')`;
   // DuckDB returns DECIMAL via JS number (loses precision past ~15 digits);
   // cast to VARCHAR so the full string survives.
-  if (field.type === 'NUMERIC') return `${ident}::VARCHAR`;
+  if (field.type === 'NUMERIC' || field.type === 'BIGNUMERIC') return `${ident}::VARCHAR`;
   return ident;
 }
 
@@ -392,7 +398,6 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
   }
   switch (field.type) {
     case 'STRING':
-    case 'BIGNUMERIC':
     case 'GEOGRAPHY':
       return typeof value === 'string' ? value : String(value);
     case 'BYTES':
@@ -409,8 +414,9 @@ export function duckValueToBq(value: unknown, field: BqField): unknown {
       // client libs depend on this.
       return value ? 'true' : 'false';
     case 'NUMERIC':
-      // SELECT casts NUMERIC → VARCHAR for full precision; trailing `.0` keeps
-      // integer results decimal (matches BQ).
+    case 'BIGNUMERIC':
+      // SELECT casts NUMERIC/BIGNUMERIC → VARCHAR for full precision; trailing
+      // `.0` keeps integer results decimal (matches BQ).
       return trimDecimal(typeof value === 'string' ? value : String(value));
     case 'TIMESTAMP':
       // BQ default (useInt64Timestamp, on by default in @google-cloud/bigquery)

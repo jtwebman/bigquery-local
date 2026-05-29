@@ -1,0 +1,10 @@
+{
+  "description": "Multi-stream session — 23 rows partitioned across 4 streams. The harness verifies the decoded row set is identical, not that the per-stream slicing matches.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "name", "type": "STRING" }
+  ],
+  "insertSql": "INSERT INTO $TABLE SELECT id, FORMAT('row-%d', id) AS name FROM UNNEST(GENERATE_ARRAY(1, 23)) AS id",
+  "localInsertSql": "INSERT INTO $TABLE SELECT i AS id, 'row-' || i::VARCHAR AS name FROM generate_series(1, 23) AS t(i)",
+  "createReadSession": { "dataFormat": "AVRO", "maxStreamCount": 4 }
+}

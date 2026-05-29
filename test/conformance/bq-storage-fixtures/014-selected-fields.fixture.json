@@ -1,0 +1,13 @@
+{
+  "description": "selected_fields restricts the Avro schema to the chosen columns.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "name", "type": "STRING" },
+    { "name": "score", "type": "FLOAT64" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, 'alice', 0.5), (2, 'bob', 0.75)",
+  "createReadSession": {
+    "dataFormat": "AVRO",
+    "selectedFields": ["id", "score"]
+  }
+}

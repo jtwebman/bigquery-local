@@ -1,0 +1,23 @@
+{
+  "description": "BL-126: ALTER TABLE adds a column between two AppendRows; second response includes updated_schema. Note: this fixture exercises the response shape; our local harness uses fresh bidi calls per append so an `updatedSchema` doesn't fire across separate calls. Real BQ may detect the change anyway via the meta etag.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "note", "type": "STRING" }
+  ],
+  "operations": [
+    { "op": "createWriteStream", "type": "COMMITTED" },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "offset": 0,
+      "rows": [{ "id": 1, "note": "before-alter" }]
+    },
+    { "op": "alterTable", "sql": "ALTER TABLE $TABLE ADD COLUMN extra STRING" },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "offset": 1,
+      "rows": [{ "id": 2, "note": "after-alter" }]
+    }
+  ]
+}

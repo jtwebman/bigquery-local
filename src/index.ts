@@ -26,7 +26,7 @@ import { createRoutineRoutes } from './routes/routines.ts';
 import { createTabledataRoutes } from './routes/tabledata.ts';
 import { createTableRoutes } from './routes/tables.ts';
 import { createRouterServer } from './server.ts';
-import { createDb } from './storage/db.ts';
+import { type Db, createDb } from './storage/db.ts';
 import { ensureMetaSchema } from './storage/meta.ts';
 import type { Server } from './types.ts';
 
@@ -35,6 +35,9 @@ export type { BqErrorBody, BqErrorEntry, BqErrorReason } from './util/errors.ts'
 export type { Server } from './types.ts';
 export { GRPC_STATUS_UNIMPLEMENTED, createGrpcServer } from './grpc.ts';
 export type { GrpcServer, GrpcServerConfig } from './grpc.ts';
+export { createDb } from './storage/db.ts';
+export type { Db, DbConfig } from './storage/db.ts';
+export { ensureMetaSchema } from './storage/meta.ts';
 // Note: `emulatorGoogleAuth` / `EmulatorAuthClient` are intentionally not
 // re-exported here. They live at the `bigquery-local/auth` subpath so the
 // core entry stays free of any `google-auth-library` import — see ./client.ts.
@@ -42,10 +45,17 @@ export type { GrpcServer, GrpcServerConfig } from './grpc.ts';
 export interface ServerConfig {
   /**
    * DuckDB file path, or `:memory:` (the default) for a transient
-   * in-memory database. The returned server owns this database — its
-   * `close()` method closes both the HTTP listener and the DB.
+   * in-memory database. Ignored when `db` is provided. When the server
+   * creates the db itself, `close()` also closes the db.
    */
   readonly database?: string;
+  /**
+   * Use this existing DuckDB instance instead of creating one. Useful
+   * for sharing a single db between the HTTP server and the gRPC
+   * server (`createGrpcServer({ db })`). The caller owns the db's
+   * lifecycle — `server.close()` will not close it.
+   */
+  readonly db?: Db;
 }
 
 /**
@@ -54,8 +64,11 @@ export interface ServerConfig {
  * then point a BigQuery client at `server.url`.
  */
 export async function createServer(config: ServerConfig = {}): Promise<Server> {
-  const db = await createDb({ path: config.database ?? ':memory:' });
-  await ensureMetaSchema(db);
+  const ownsDb = config.db === undefined;
+  const db = config.db ?? (await createDb({ path: config.database ?? ':memory:' }));
+  if (ownsDb) {
+    await ensureMetaSchema(db);
+  }
 
   const inner = createRouterServer({
     routes: [
@@ -75,7 +88,9 @@ export async function createServer(config: ServerConfig = {}): Promise<Server> {
     listen: (port?: number) => inner.listen(port),
     async close(): Promise<void> {
       await inner.close();
-      await db.close();
+      if (ownsDb) {
+        await db.close();
+      }
     },
     get url(): string {
       return inner.url;

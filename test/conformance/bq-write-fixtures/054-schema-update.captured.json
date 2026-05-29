@@ -1,0 +1,25 @@
+{
+  "operations": [
+    {
+      "op": "createWriteStream",
+      "type": "COMMITTED",
+      "hasCreateTime": true,
+      "maskedName": "projects/<PROJECT>/datasets/bq_write_replay/tables/t_054_schema_update/streams/<STREAM_ID>"
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": "0",
+      "hasWriteStream": true
+    },
+    {
+      "op": "alterTable"
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": "1",
+      "hasWriteStream": true
+    }
+  ]
+}

@@ -20,7 +20,7 @@ import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import pkg from '../package.json' with { type: 'json' };
-import { createGrpcServer, createServer } from './index.ts';
+import { createDb, createGrpcServer, createServer, ensureMetaSchema } from './index.ts';
 import { loadSeedFromFile } from './seed.ts';
 
 const VERSION = pkg.version;
@@ -142,15 +142,19 @@ async function main(): Promise<void> {
   }
   const { options } = parsed;
 
-  const server = await createServer({ database: options.database });
+  // Shared DuckDB instance: the HTTP server's tables/datasets/jobs and the
+  // gRPC server's BigQueryRead service have to see the same data.
+  const db = await createDb({ path: options.database });
+  await ensureMetaSchema(db);
+  const server = await createServer({ db });
   await server.listen(options.port);
-  const grpcServer = createGrpcServer();
+  const grpcServer = createGrpcServer({ db });
   await grpcServer.listen(options.grpcPort);
   // `projects` is informational — comma-joined for the human-readable banner.
   process.stdout.write(
     `bigquery-local ${VERSION} listening on ${server.url} (projects=${options.projects.join(',')}, database=${options.database})\n`,
   );
-  process.stdout.write(`bigquery-local ${VERSION} gRPC on ${grpcServer.url} (UNIMPLEMENTED)\n`);
+  process.stdout.write(`bigquery-local ${VERSION} gRPC on ${grpcServer.url}\n`);
 
   // Seed file: load once after the server is up. Seed errors are fatal —
   // booting half-seeded is worse than not booting at all (clients would see
@@ -166,6 +170,7 @@ async function main(): Promise<void> {
         `bigquery-local seed load failed: ${err instanceof Error ? err.message : 'unknown error'}\n`,
       );
       await Promise.all([server.close(), grpcServer.close()]);
+      await db.close();
       process.exit(1);
     }
   }
@@ -178,6 +183,7 @@ async function main(): Promise<void> {
     void (async () => {
       try {
         await Promise.all([server.close(), grpcServer.close()]);
+        await db.close();
         process.exit(0);
       } catch (err) {
         /* node:coverage ignore next 3 */

@@ -1,0 +1,9 @@
+{
+  "description": "REQUIRED INT64 + NULLABLE STRING — simplest possible round-trip.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "name", "type": "STRING" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, 'alice'), (2, 'bob'), (3, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

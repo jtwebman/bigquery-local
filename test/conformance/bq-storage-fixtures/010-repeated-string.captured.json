@@ -1,0 +1,24 @@
+{
+  "createReadSession": {
+    "avroSchema": "{\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"tags\",\"type\":{\"items\":\"string\",\"type\":\"array\"}}],\"name\":\"__root__\",\"type\":\"record\"}",
+    "hasArrowSchema": false,
+    "dataFormat": "AVRO",
+    "estimatedRowCount": "4",
+    "hasStreams": true,
+    "table": "projects/<PROJECT>/datasets/bq_storage_replay/tables/t_010_repeated_string",
+    "readOptions": {
+      "selectedFields": [],
+      "rowRestriction": ""
+    }
+  },
+  "readRows": [
+    {
+      "rowCount": "0",
+      "uncompressedByteSize": "21",
+      "serializedBinaryRowsBase64": "BAIIc29sbwAGAAIGAmECYgJjAAgA",
+      "serializedRecordBatchBase64": "",
+      "hasAvroSchema": true,
+      "hasArrowSchema": false
+    }
+  ]
+}

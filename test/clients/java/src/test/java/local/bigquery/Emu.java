@@ -35,6 +35,7 @@ import java.util.regex.Pattern;
  */
 final class Emu {
   private static String url;
+  private static String grpcUrl;
   private static Process process;
   private static HttpServer gcs;
   private static final Map<String, byte[]> gcsBytes = new ConcurrentHashMap<>();
@@ -47,6 +48,14 @@ final class Emu {
       start();
     }
     return url;
+  }
+
+  /** gRPC endpoint (`host:port`, no scheme) for Storage Read/Write clients. */
+  static synchronized String grpcUrl() {
+    if (grpcUrl == null) {
+      start();
+    }
+    return grpcUrl;
   }
 
   private static void start() {
@@ -69,8 +78,9 @@ final class Emu {
           new BufferedReader(
               new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
       Pattern listening = Pattern.compile("listening on (\\S+)");
+      Pattern grpcLine = Pattern.compile("gRPC on (\\S+)");
       long deadline = System.currentTimeMillis() + 30_000;
-      while (System.currentTimeMillis() < deadline) {
+      while (System.currentTimeMillis() < deadline && (url == null || grpcUrl == null)) {
         String line = reader.readLine();
         if (line == null) {
           if (!process.isAlive()) {
@@ -78,14 +88,21 @@ final class Emu {
           }
           continue;
         }
-        Matcher m = listening.matcher(line);
-        if (m.find()) {
-          url = m.group(1);
-          break;
+        if (url == null) {
+          Matcher m = listening.matcher(line);
+          if (m.find()) {
+            url = m.group(1);
+          }
+        }
+        if (grpcUrl == null) {
+          Matcher m = grpcLine.matcher(line);
+          if (m.find()) {
+            grpcUrl = m.group(1);
+          }
         }
       }
-      if (url == null) {
-        throw new IllegalStateException("emulator did not print a listening URL within timeout");
+      if (url == null || grpcUrl == null) {
+        throw new IllegalStateException("emulator did not print HTTP+gRPC URLs within timeout");
       }
       Thread drain =
           new Thread(

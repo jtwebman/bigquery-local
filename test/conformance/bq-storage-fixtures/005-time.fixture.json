@@ -1,0 +1,9 @@
+{
+  "description": "TIME logical-type → Avro long (micros since midnight).",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "t", "type": "TIME" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, TIME '00:00:00'), (2, TIME '12:34:56.789012'), (3, TIME '23:59:59.999999'), (4, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

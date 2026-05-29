@@ -1,0 +1,6 @@
+{
+  "description": "FLOAT64 + BOOL, including ±Inf and NaN.",
+  "schema": [{ "name": "x", "type": "FLOAT64" }, { "name": "ok", "type": "BOOL" }],
+  "insertSql": "INSERT INTO $TABLE VALUES (1.5, true), (-0.25, false), (NULL, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

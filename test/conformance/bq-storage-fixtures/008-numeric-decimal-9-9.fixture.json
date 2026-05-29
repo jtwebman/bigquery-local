@@ -1,0 +1,10 @@
+{
+  "description": "NUMERIC (BQ NUMERIC ≡ decimal(38,9)) — covers positive, negative, fractional, zero, NULL.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "amt", "type": "NUMERIC" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, CAST('0' AS NUMERIC)), (2, CAST('12.5' AS NUMERIC)), (3, CAST('-99.999999999' AS NUMERIC)), (4, CAST('99999999999999999999999999999.999999999' AS NUMERIC)), (5, NULL)",
+  "localInsertSql": "INSERT INTO $TABLE VALUES (1, CAST('0' AS DECIMAL(38,9))), (2, CAST('12.5' AS DECIMAL(38,9))), (3, CAST('-99.999999999' AS DECIMAL(38,9))), (4, CAST('99999999999999999999999999999.999999999' AS DECIMAL(38,9))), (5, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

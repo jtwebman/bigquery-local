@@ -1,0 +1,47 @@
+{
+  "operations": [
+    {
+      "op": "createWriteStream",
+      "type": "COMMITTED",
+      "hasCreateTime": true,
+      "maskedName": "projects/<PROJECT>/datasets/bq_write_replay/tables/t_053_offset_validation/streams/<STREAM_ID>"
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": "0",
+      "hasWriteStream": true
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": "1",
+      "hasWriteStream": true
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": null,
+      "hasWriteStream": true
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": null,
+      "hasWriteStream": true
+    },
+    {
+      "op": "selectTable",
+      "rows": [
+        {
+          "id": 1,
+          "note": "first"
+        },
+        {
+          "id": 2,
+          "note": "second"
+        }
+      ]
+    }
+  ]
+}

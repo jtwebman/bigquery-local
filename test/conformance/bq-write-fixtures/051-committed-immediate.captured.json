@@ -1,0 +1,29 @@
+{
+  "operations": [
+    {
+      "op": "createWriteStream",
+      "type": "COMMITTED",
+      "hasCreateTime": true,
+      "maskedName": "projects/<PROJECT>/datasets/bq_write_replay/tables/t_051_committed_immediate/streams/<STREAM_ID>"
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": "0",
+      "hasWriteStream": true
+    },
+    {
+      "op": "selectTable",
+      "rows": [
+        {
+          "id": 100,
+          "value": 1.5
+        },
+        {
+          "id": 101,
+          "value": 2.5
+        }
+      ]
+    }
+  ]
+}

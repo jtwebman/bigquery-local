@@ -1,0 +1,9 @@
+{
+  "description": "JSON column — comes through as Avro string.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "blob", "type": "JSON" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, JSON '{\"a\":1,\"b\":[true,false,null]}'), (2, JSON 'null'), (3, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

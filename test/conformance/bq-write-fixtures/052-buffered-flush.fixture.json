@@ -1,0 +1,21 @@
+{
+  "description": "BUFFERED stream: rows invisible until FlushRows promotes them.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "label", "type": "STRING" }
+  ],
+  "operations": [
+    { "op": "createWriteStream", "type": "BUFFERED" },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "rows": [
+        { "id": 1, "label": "buffered-a" },
+        { "id": 2, "label": "buffered-b" },
+        { "id": 3, "label": "buffered-c" }
+      ]
+    },
+    { "op": "flushRows", "stream": "$0", "offset": 2 },
+    { "op": "selectTable", "sql": "SELECT id, label FROM $TABLE ORDER BY id" }
+  ]
+}

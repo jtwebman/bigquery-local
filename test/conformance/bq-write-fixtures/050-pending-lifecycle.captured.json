@@ -1,0 +1,38 @@
+{
+  "operations": [
+    {
+      "op": "createWriteStream",
+      "type": "PENDING",
+      "hasCreateTime": true,
+      "maskedName": "projects/<PROJECT>/datasets/bq_write_replay/tables/t_050_pending_lifecycle/streams/<STREAM_ID>"
+    },
+    {
+      "op": "appendRows",
+      "errorCode": null,
+      "appendResultOffset": "0",
+      "hasWriteStream": true
+    },
+    {
+      "op": "finalizeWriteStream",
+      "rowCount": "2"
+    },
+    {
+      "op": "batchCommitWriteStreams",
+      "hasCommitTime": true,
+      "streamErrorCount": 0
+    },
+    {
+      "op": "selectTable",
+      "rows": [
+        {
+          "id": 1,
+          "note": "alpha"
+        },
+        {
+          "id": 2,
+          "note": "beta"
+        }
+      ]
+    }
+  ]
+}

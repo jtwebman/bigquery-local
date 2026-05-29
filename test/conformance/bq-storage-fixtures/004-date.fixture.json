@@ -1,0 +1,9 @@
+{
+  "description": "DATE logical-type → Avro int (days since epoch).",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "d", "type": "DATE" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, DATE '1970-01-01'), (2, DATE '1990-04-15'), (3, DATE '2099-12-31'), (4, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

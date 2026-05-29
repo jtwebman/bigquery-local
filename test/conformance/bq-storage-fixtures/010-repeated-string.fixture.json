@@ -1,0 +1,9 @@
+{
+  "description": "REPEATED STRING — Avro array of strings.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "tags", "type": "STRING", "mode": "REPEATED" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, ['a', 'b', 'c']), (2, ['solo']), (3, []), (4, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

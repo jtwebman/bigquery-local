@@ -43,6 +43,8 @@
     "test": "node --conditions=src --test --test-reporter=spec",
     "test:coverage": "node --conditions=src --test --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=90 --test-coverage-functions=90",
     "bq-replay:capture": "node --conditions=src scripts/bq-replay-capture.mts",
+    "bq-storage-replay:capture": "node --conditions=src scripts/bq-storage-replay-capture.mts",
+    "bq-write-replay:capture": "node --conditions=src scripts/bq-write-replay-capture.mts",
     "build": "tsc -p tsconfig.build.json",
     "prepare": "node scripts/install-hooks.mjs",
     "prepublishOnly": "npm run build"
@@ -70,8 +72,12 @@
   "homepage": "https://github.com/jtwebman/bigquery-local#readme",
   "dependencies": {
     "@duckdb/node-api": "1.5.2-r.1",
+    "@grpc/grpc-js": "1.14.4",
+    "apache-arrow": "21.1.0",
+    "avsc": "5.7.9",
     "csv-batch": "2.0.6",
-    "js-yaml": "4.1.1"
+    "js-yaml": "4.1.1",
+    "protobufjs": "7.6.1"
   },
   "peerDependencies": {
     "google-auth-library": ">=10"
@@ -84,6 +90,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.15",
     "@google-cloud/bigquery": "8.3.1",
+    "@google-cloud/bigquery-storage": "5.1.1",
     "@types/js-yaml": "4.0.9",
     "@types/node": "25.8.0",
     "google-auth-library": "10.6.2",

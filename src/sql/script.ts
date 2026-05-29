@@ -1717,9 +1717,11 @@ function bqTypeShortDuck(t: BqType): string {
     case 'BYTES':
       return 'BLOB';
     case 'NUMERIC':
-      return 'DECIMAL(38, 9)';
     case 'BIGNUMERIC':
-      return 'VARCHAR';
+      // BIGNUMERIC backed by DECIMAL(38, 9) — DuckDB caps precision at 38,
+      // less than BQ's 76, but ample for testing. Schema readback still
+      // reports BIGNUMERIC; wire encoders scale-up to 38 on the way out.
+      return 'DECIMAL(38, 9)';
     case 'TIMESTAMP':
       return 'TIMESTAMP WITH TIME ZONE';
     case 'DATETIME':

@@ -1,0 +1,18 @@
+{
+  "description": "PENDING stream: CreateWriteStream → AppendRows → Finalize → BatchCommit. Rows visible only after commit.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "note", "type": "STRING" }
+  ],
+  "operations": [
+    { "op": "createWriteStream", "type": "PENDING" },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "rows": [{ "id": 1, "note": "alpha" }, { "id": 2, "note": "beta" }]
+    },
+    { "op": "finalizeWriteStream", "stream": "$0" },
+    { "op": "batchCommitWriteStreams", "streams": ["$0"] },
+    { "op": "selectTable", "sql": "SELECT id, note FROM $TABLE ORDER BY id" }
+  ]
+}

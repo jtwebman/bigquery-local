@@ -1,0 +1,25 @@
+{
+  "createReadSession": {
+    "avroSchema": "",
+    "hasArrowSchema": true,
+    "dataFormat": "ARROW",
+    "estimatedRowCount": "3",
+    "hasStreams": true,
+    "table": "projects/<PROJECT>/datasets/bq_storage_replay/tables/t_020_arrow_scalars",
+    "readOptions": {
+      "selectedFields": [],
+      "rowRestriction": ""
+    }
+  },
+  "readRows": [
+    {
+      "rowCount": "0",
+      "uncompressedByteSize": "264",
+      "serializedBinaryRowsBase64": "",
+      "serializedRecordBatchBase64": "/////8gAAAAUAAAAAAAAAAwAFgAGAAUACAAMAAwAAAAAAwQAGAAAADgAAAAAAAAAAAAKABgADAAEAAgACgAAAGwAAAAQAAAAAwAAAAAAAAAAAAAABQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABgAAAAAAAAAGAAAAAAAAAABAAAAAAAAACAAAAAAAAAAEAAAAAAAAAAwAAAAAAAAAAgAAAAAAAAAAAAAAAIAAAADAAAAAAAAAAAAAAAAAAAAAwAAAAAAAAABAAAAAAAAAAIAAAAAAAAAAwAAAAAAAAABAAAAAAAAAAUAAAAAAAAAAAAAAAMAAAADAAAACAAAAGJvYmFsaWNl",
+      "hasAvroSchema": false,
+      "hasArrowSchema": true
+    }
+  ],
+  "_arrowSchemaBase64": "/////7gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAIAAABUAAAAFAAAABAAFAAIAAYABwAMAAAAEAAQAAAAAAABBRAAAAAcAAAABAAAAAAAAAAEAAAAbmFtZQAAAAAEAAQABAAAABAAFAAIAAAABwAMAAAAEAAQAAAAAAAAAhAAAAAcAAAABAAAAAAAAAACAAAAaWQAAAgADAAIAAcACAAAAAAAAAFAAAAA"
+}

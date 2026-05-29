@@ -35,8 +35,9 @@ import (
 )
 
 var (
-	emulatorURL string
-	gcsStub     *gcsStubServer
+	emulatorURL  string
+	emulatorGRPC string // host:port, no scheme — for Storage Read/Write clients
+	gcsStub      *gcsStubServer
 )
 
 // ----------------------------------------------------------------------------
@@ -178,10 +179,10 @@ func repoRoot() (string, error) {
 	return filepath.Abs(filepath.Join(filepath.Dir(file), "..", "..", ".."))
 }
 
-func startEmulator(gcsURL string) (string, *exec.Cmd, error) {
+func startEmulator(gcsURL string) (string, string, *exec.Cmd, error) {
 	root, err := repoRoot()
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	cmd := exec.Command(
 		"node", "--conditions=src", "src/cli.ts",
@@ -191,32 +192,43 @@ func startEmulator(gcsURL string) (string, *exec.Cmd, error) {
 	cmd.Env = append(os.Environ(), "STORAGE_EMULATOR_HOST="+gcsURL)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	cmd.Stderr = cmd.Stdout // mirror stderr → stdout so we see startup errors
+	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	pattern := regexp.MustCompile(`listening on (http://[^\s]+)`)
+	httpPat := regexp.MustCompile(`listening on (http://[^\s]+)`)
+	grpcPat := regexp.MustCompile(`gRPC on ([^\s]+)`)
 	scanner := bufio.NewScanner(stdout)
 	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	var httpURL, grpcURL string
+	for time.Now().Before(deadline) && (httpURL == "" || grpcURL == "") {
 		if !scanner.Scan() {
 			break
 		}
 		line := scanner.Text()
-		if m := pattern.FindStringSubmatch(line); m != nil {
-			// Drain remaining stdout in the background so the pipe
-			// doesn't fill up and block the emulator.
-			go func() {
-				for scanner.Scan() {
-				}
-			}()
-			return m[1], cmd, nil
+		if httpURL == "" {
+			if m := httpPat.FindStringSubmatch(line); m != nil {
+				httpURL = m[1]
+			}
+		}
+		if grpcURL == "" {
+			if m := grpcPat.FindStringSubmatch(line); m != nil {
+				grpcURL = m[1]
+			}
 		}
 	}
-	_ = cmd.Process.Kill()
-	return "", nil, fmt.Errorf("emulator did not print listening URL within timeout")
+	if httpURL == "" || grpcURL == "" {
+		_ = cmd.Process.Kill()
+		return "", "", nil, fmt.Errorf("emulator did not print HTTP+gRPC URLs within timeout")
+	}
+	// Drain remaining stdout in the background so the pipe doesn't fill.
+	go func() {
+		for scanner.Scan() {
+		}
+	}()
+	return httpURL, grpcURL, cmd, nil
 }
 
 // ----------------------------------------------------------------------------
@@ -230,13 +242,14 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	gcsStub = stub
-	url, cmd, err := startEmulator(stub.url)
+	url, grpcURL, cmd, err := startEmulator(stub.url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "starting emulator: %v\n", err)
 		stub.shutdown(context.Background())
 		os.Exit(1)
 	}
 	emulatorURL = url
+	emulatorGRPC = grpcURL
 	code := m.Run()
 	_ = cmd.Process.Kill()
 	_, _ = cmd.Process.Wait()

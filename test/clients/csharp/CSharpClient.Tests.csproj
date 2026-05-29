@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Runs the official Google.Cloud.BigQuery.* clients against the
+    bigquery-local emulator. Validates both the REST (HTTP) client and
+    the gRPC Storage Read/Write clients (after Phase 19 / BL-117..127).
+
+    Prereqs:
+      - .NET SDK 8.0+
+      - Node available on PATH (the emulator binary is launched as a
+        subprocess via `node src/cli.ts`)
+
+    Run from repo root:
+      cd test/clients/csharp
+      dotnet test
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Cloud.BigQuery.V2" Version="3.10.0" />
+    <PackageReference Include="Google.Cloud.BigQuery.Storage.V1" Version="3.18.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.71.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

@@ -176,25 +176,41 @@ def gcs_stub() -> Iterator[GcsStub]:
 # ---------------------------------------------------------------------------
 
 
-def _wait_for_url(proc: subprocess.Popen[str], timeout_s: float = 30.0) -> str:
-    pattern = re.compile(r"listening on (http://[^\s]+)")
+@dataclass
+class EmulatorEndpoints:
+    http: str
+    grpc: str  # host:port form (no scheme — gRPC clients want bare authority)
+
+
+def _wait_for_urls(proc: subprocess.Popen[str], timeout_s: float = 30.0) -> EmulatorEndpoints:
+    http_pattern = re.compile(r"listening on (http://[^\s]+)")
+    grpc_pattern = re.compile(r"gRPC on ([^\s]+)")
     deadline = time.monotonic() + timeout_s
+    http: str | None = None
+    grpc: str | None = None
     assert proc.stdout is not None
-    while time.monotonic() < deadline:
+    while time.monotonic() < deadline and (http is None or grpc is None):
         line = proc.stdout.readline()
         if not line:
             if proc.poll() is not None:
                 raise RuntimeError("emulator exited before listening")
             time.sleep(0.05)
             continue
-        match = pattern.search(line)
-        if match is not None:
-            return match.group(1)
-    raise TimeoutError("emulator did not print a listening URL within timeout")
+        if http is None:
+            m = http_pattern.search(line)
+            if m is not None:
+                http = m.group(1)
+        if grpc is None:
+            m = grpc_pattern.search(line)
+            if m is not None:
+                grpc = m.group(1)
+    if http is None or grpc is None:
+        raise TimeoutError("emulator did not print both URLs within timeout")
+    return EmulatorEndpoints(http=http, grpc=grpc)
 
 
 @pytest.fixture(scope="session")
-def emulator(gcs_stub: GcsStub) -> Iterator[str]:
+def emulator_endpoints(gcs_stub: GcsStub) -> Iterator[EmulatorEndpoints]:
     rest_port = _free_port()
     grpc_port = _free_port()
     cmd = [
@@ -205,9 +221,6 @@ def emulator(gcs_stub: GcsStub) -> Iterator[str]:
         f"--grpc-port={grpc_port}",
         "--database=:memory:",
     ]
-    # Inherit the parent environment but point the load/extract paths
-    # at the local GCS stub. This is the same env var Node + Python +
-    # Go clients all honor.
     env = {**os.environ, "STORAGE_EMULATOR_HOST": gcs_stub.url}
     proc = subprocess.Popen(
         cmd,
@@ -219,8 +232,8 @@ def emulator(gcs_stub: GcsStub) -> Iterator[str]:
         env=env,
     )
     try:
-        url = _wait_for_url(proc)
-        yield url
+        endpoints = _wait_for_urls(proc)
+        yield endpoints
     finally:
         proc.terminate()
         try:
@@ -228,6 +241,12 @@ def emulator(gcs_stub: GcsStub) -> Iterator[str]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+
+@pytest.fixture(scope="session")
+def emulator(emulator_endpoints: EmulatorEndpoints) -> str:
+    """Back-compat: existing tests only need the HTTP endpoint."""
+    return emulator_endpoints.http
 
 
 # ---------------------------------------------------------------------------

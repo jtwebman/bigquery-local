@@ -1,0 +1,16 @@
+{
+  "description": "COMMITTED stream: rows visible immediately on AppendRows (no finalize/commit needed).",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "value", "type": "FLOAT64" }
+  ],
+  "operations": [
+    { "op": "createWriteStream", "type": "COMMITTED" },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "rows": [{ "id": 100, "value": 1.5 }, { "id": 101, "value": 2.5 }]
+    },
+    { "op": "selectTable", "sql": "SELECT id, value FROM $TABLE ORDER BY id" }
+  ]
+}

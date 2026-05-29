@@ -1,0 +1,30 @@
+{
+  "description": "Two COMMITTED streams on the same table, interleaved AppendRows calls. Verifies per-stream offset tracking and that both streams write to the same table.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "source", "type": "STRING" }
+  ],
+  "operations": [
+    { "op": "createWriteStream", "type": "COMMITTED" },
+    { "op": "createWriteStream", "type": "COMMITTED" },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "offset": 0,
+      "rows": [{ "id": 1, "source": "stream-A-1" }]
+    },
+    {
+      "op": "appendRows",
+      "stream": "$1",
+      "offset": 0,
+      "rows": [{ "id": 100, "source": "stream-B-1" }]
+    },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "offset": 1,
+      "rows": [{ "id": 2, "source": "stream-A-2" }]
+    },
+    { "op": "selectTable", "sql": "SELECT id, source FROM $TABLE ORDER BY id" }
+  ]
+}

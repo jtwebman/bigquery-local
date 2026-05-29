@@ -39,7 +39,7 @@ test('bqTypeToDuck maps each scalar BQ type to DuckDB', () => {
     ['FLOAT64', 'DOUBLE'],
     ['BOOL', 'BOOLEAN'],
     ['NUMERIC', 'DECIMAL(38, 9)'],
-    ['BIGNUMERIC', 'VARCHAR'],
+    ['BIGNUMERIC', 'DECIMAL(38, 9)'],
     ['TIMESTAMP', 'TIMESTAMP WITH TIME ZONE'],
     ['DATETIME', 'TIMESTAMP'],
     ['DATE', 'DATE'],
@@ -155,12 +155,21 @@ test('round-trip: NUMERIC (small)', async () => {
 });
 
 test('round-trip: BIGNUMERIC', async () => {
+  // BIGNUMERIC is backed by DECIMAL(38, 9), so values must fit in 29 integer
+  // digits + 9 decimal places. Values outside this range error at insert time.
   assert.equal(
-    await roundTrip(
+    await roundTrip({ name: 'v', type: 'BIGNUMERIC' }, '12345678901234567890.123456789'),
+    '12345678901234567890.123456789',
+  );
+});
+
+test('round-trip: BIGNUMERIC overflow rejects at insert', async () => {
+  await assert.rejects(
+    roundTrip(
       { name: 'v', type: 'BIGNUMERIC' },
       '99999999999999999999999999999999999999.123456789',
     ),
-    '99999999999999999999999999999999999999.123456789',
+    /DECIMAL/i,
   );
 });
 
@@ -563,10 +572,12 @@ test('duckValueToBq: RANGE rejects non-object value', () => {
   );
 });
 
-test('duckValueToBq: BIGNUMERIC long decimal string passes through verbatim', () => {
+test('duckValueToBq: BIGNUMERIC integer-valued strings get .0 suffix', () => {
+  // Now backed by DECIMAL(38, 9); same trimDecimal behavior as NUMERIC so
+  // integer-valued results stay decimal-shaped on the BQ wire.
   const field: BqField = { name: 'n', type: 'BIGNUMERIC' };
-  const big = '578960446186580977117854925043439539266';
-  assert.equal(duckValueToBq(big, field), big);
+  assert.equal(duckValueToBq('12345678901234567890', field), '12345678901234567890.0');
+  assert.equal(duckValueToBq('123.45', field), '123.45');
 });
 
 test('duckValueToBq: STRUCT wraps as {"f": [{"v": ...}, ...]} recursively', () => {

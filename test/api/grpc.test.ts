@@ -1,22 +1,21 @@
 /**
  * gRPC port acceptance test.
  *
- * Boots `createGrpcServer()` on an ephemeral port and uses Node's built-in
- * `http2` client (no grpc dep) to play the role of a gRPC client. Asserts
- * that the server returns a trailers-only response with
- * `grpc-status: 12 (UNIMPLEMENTED)` — exactly what a real gRPC client
- * library expects for a synchronous error.
+ * Boots `createGrpcServer()` on an ephemeral port and uses a real
+ * `@grpc/grpc-js` client to play the role of a BigQuery Storage caller.
+ * Asserts every RPC path resolves to a `Status.UNIMPLEMENTED` error —
+ * the canonical response for unregistered methods on a grpc-js Server.
  *
- * This is the protocol-level acceptance for BL-019. A higher-level test
- * with the official `@google-cloud/bigquery-storage` client would pull
- * in `grpc-js`, `protobufjs`, and `google-auth-library` for one
- * assertion; the same correctness is established here directly.
+ * This is the protocol-level acceptance for BL-116 (the Phase 18/19
+ * scaffold). When real handlers land they'll be registered via
+ * `server.addService(...)`; until then every path falls through to
+ * grpc-js's built-in UNIMPLEMENTED behavior.
  */
 
 import { strict as assert } from 'node:assert';
-import { connect, constants as h2 } from 'node:http2';
 import { after, before, test } from 'node:test';
 
+import * as grpc from '@grpc/grpc-js';
 import { GRPC_STATUS_UNIMPLEMENTED, type GrpcServer, createGrpcServer } from 'bigquery-local';
 
 let server: GrpcServer;
@@ -30,47 +29,41 @@ after(async () => {
   await server.close();
 });
 
-interface GrpcResponse {
-  readonly headers: Record<string, string>;
-  readonly body: Buffer;
+function passthroughSerialize(value: Buffer): Buffer {
+  return value;
+}
+function passthroughDeserialize(value: Buffer): Buffer {
+  return value;
 }
 
-async function sendRpc(
-  path: string,
-  options: { readonly contentType?: string } = {},
-): Promise<GrpcResponse> {
-  const client = connect(`http://${server.url}`);
+interface RpcResult {
+  readonly code: number;
+  readonly details: string;
+}
+
+/**
+ * Make a unary RPC to an arbitrary path with an empty body, using
+ * pass-through (buffer) serializers so we don't need a real proto.
+ */
+async function callUnary(path: string): Promise<RpcResult> {
+  const client = new grpc.Client(server.url, grpc.credentials.createInsecure());
   try {
-    return await new Promise<GrpcResponse>((resolve, reject) => {
-      const req = client.request({
-        [h2.HTTP2_HEADER_METHOD]: 'POST',
-        [h2.HTTP2_HEADER_PATH]: path,
-        [h2.HTTP2_HEADER_SCHEME]: 'http',
-        [h2.HTTP2_HEADER_AUTHORITY]: server.url,
-        'content-type': options.contentType ?? 'application/grpc',
-        te: 'trailers',
-      });
-
-      let responseHeaders: Record<string, string> = {};
-      const chunks: Buffer[] = [];
-
-      req.on('response', (headers) => {
-        const out: Record<string, string> = {};
-        for (const [k, v] of Object.entries(headers)) {
-          if (v === undefined) continue;
-          out[k] = Array.isArray(v) ? v.join(',') : String(v);
-        }
-        responseHeaders = out;
-      });
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
-      req.on('end', () => resolve({ headers: responseHeaders, body: Buffer.concat(chunks) }));
-      req.on('error', reject);
-
-      // gRPC: 5-byte prefix (1 compression flag + 4-byte big-endian length)
-      // followed by an (in our case, empty) protobuf payload. The contents
-      // don't matter because we expect a trailers-only error response.
-      const frame = Buffer.alloc(5);
-      req.end(frame);
+    return await new Promise<RpcResult>((resolve) => {
+      client.makeUnaryRequest(
+        path,
+        passthroughSerialize,
+        passthroughDeserialize,
+        Buffer.alloc(0),
+        (err, _response) => {
+          /* node:coverage ignore next 4 */
+          if (err === null) {
+            resolve({ code: 0, details: 'unexpected success' });
+            return;
+          }
+          const gErr = err as grpc.ServiceError;
+          resolve({ code: gErr.code, details: gErr.details });
+        },
+      );
     });
   } finally {
     client.close();
@@ -79,45 +72,23 @@ async function sendRpc(
 
 test('GRPC_STATUS_UNIMPLEMENTED equals 12 (canonical gRPC code)', () => {
   assert.equal(GRPC_STATUS_UNIMPLEMENTED, 12);
+  assert.equal(grpc.status.UNIMPLEMENTED, GRPC_STATUS_UNIMPLEMENTED);
 });
 
-test('every RPC path receives a trailers-only UNIMPLEMENTED response', async () => {
-  const res = await sendRpc('/google.cloud.bigquery.storage.v1.BigQueryRead/CreateReadSession');
-  assert.equal(res.headers[':status'], '200');
-  assert.equal(res.headers['content-type'], 'application/grpc');
-  assert.equal(res.headers['grpc-status'], '12');
-  assert.match(res.headers['grpc-message'] ?? '', /bigquery-local/);
-  assert.equal(res.body.length, 0);
+test('Storage Read RPCs return UNIMPLEMENTED', async () => {
+  const res = await callUnary('/google.cloud.bigquery.storage.v1.BigQueryRead/CreateReadSession');
+  assert.equal(res.code, GRPC_STATUS_UNIMPLEMENTED);
+  assert.match(res.details, /does not implement/);
 });
 
-test('a different RPC path also gets UNIMPLEMENTED', async () => {
-  const res = await sendRpc('/google.cloud.bigquery.storage.v1.BigQueryWrite/AppendRows');
-  assert.equal(res.headers['grpc-status'], '12');
+test('Storage Write RPCs return UNIMPLEMENTED', async () => {
+  const res = await callUnary('/google.cloud.bigquery.storage.v1.BigQueryWrite/AppendRows');
+  assert.equal(res.code, GRPC_STATUS_UNIMPLEMENTED);
 });
 
-test('custom grpc-message can be configured', async () => {
-  const customServer = createGrpcServer({ message: 'custom error text' });
-  await customServer.listen(0);
-  try {
-    const client = connect(`http://${customServer.url}`);
-    const headers = await new Promise<Record<string, string>>((resolve, reject) => {
-      const req = client.request({ ':method': 'POST', ':path': '/Service/Method' });
-      req.on('response', (h) => {
-        const out: Record<string, string> = {};
-        for (const [k, v] of Object.entries(h)) {
-          if (v === undefined) continue;
-          out[k] = Array.isArray(v) ? v.join(',') : String(v);
-        }
-        resolve(out);
-      });
-      req.on('error', reject);
-      req.end(Buffer.alloc(5));
-    });
-    client.close();
-    assert.equal(headers['grpc-message'], 'custom error text');
-  } finally {
-    await customServer.close();
-  }
+test('arbitrary unknown path returns UNIMPLEMENTED', async () => {
+  const res = await callUnary('/some.unknown.Service/Method');
+  assert.equal(res.code, GRPC_STATUS_UNIMPLEMENTED);
 });
 
 test('listen() throws if already listening', async () => {
@@ -138,4 +109,14 @@ test('url getter throws when not listening', () => {
 test('close() is safe when not listening', async () => {
   const s = createGrpcServer();
   await s.close(); // no-op, must not throw
+});
+
+test('listen() honors custom host', async () => {
+  const s = createGrpcServer({ host: '127.0.0.1' });
+  await s.listen(0);
+  try {
+    assert.match(s.url, /^localhost:\d+$/);
+  } finally {
+    await s.close();
+  }
 });

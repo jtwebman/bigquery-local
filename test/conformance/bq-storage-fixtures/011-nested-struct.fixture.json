@@ -1,0 +1,18 @@
+{
+  "description": "STRUCT — nested Avro record, NULL handling on parent struct.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    {
+      "name": "addr",
+      "type": "STRUCT",
+      "mode": "NULLABLE",
+      "fields": [
+        { "name": "street", "type": "STRING", "mode": "REQUIRED" },
+        { "name": "zip", "type": "STRING" }
+      ]
+    }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, STRUCT('1 St' AS street, '01234' AS zip)), (2, STRUCT('2 St' AS street, CAST(NULL AS STRING) AS zip)), (3, NULL)",
+  "localInsertSql": "INSERT INTO $TABLE VALUES (1, {'street': '1 St', 'zip': '01234'}), (2, {'street': '2 St', 'zip': NULL}), (3, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

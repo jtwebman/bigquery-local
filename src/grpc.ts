@@ -1,38 +1,33 @@
 /**
- * gRPC port — UNIMPLEMENTED for everything.
+ * gRPC port for the BigQuery Storage Read/Write APIs.
  *
- * The BigQuery Storage Read/Write APIs are gRPC, served on a separate
- * port (`--grpc-port`, default 9060). v0 of bigquery-local does not
- * implement any gRPC RPCs, but a *real* gRPC client (e.g.
- * `@google-cloud/bigquery-storage`) pointed at this port should get a
- * clean `UNIMPLEMENTED` error rather than a hung connection.
- *
- * Implementation: plaintext HTTP/2 (h2c) via `node:http2`, no grpc
- * library dep. For every stream we send a "trailers-only" response —
- * a single HEADERS frame carrying `:status: 200`, `content-type:
- * application/grpc`, `grpc-status: 12`, `grpc-message: ...` with
- * END_STREAM set. This is the canonical gRPC shape for synchronous
- * error responses and is what the official gRPC client libraries
- * expect.
+ * Boots `@grpc/grpc-js`'s `Server`. If a `Db` is supplied, the
+ * BigQueryRead service is registered (BL-117+). Any unregistered RPC —
+ * including all of BigQueryWrite, plus Read RPCs not yet implemented —
+ * falls through to grpc-js's built-in UNIMPLEMENTED response, which is
+ * the canonical wire shape a real gRPC client expects.
  *
  * Reference:
- *   https://grpc.io/docs/guides/wire-protocol/  (HTTP/2 framing)
  *   https://github.com/grpc/grpc/blob/master/doc/statuscodes.md  (12 = UNIMPLEMENTED)
  */
 
-import {
-  type Http2Server,
-  type ServerHttp2Stream,
-  createServer as createHttp2Server,
-} from 'node:http2';
-import type { AddressInfo } from 'node:net';
+import * as grpc from '@grpc/grpc-js';
+
+import { registerBigQueryRead } from './grpc-impl/bigQueryRead.ts';
+import { registerBigQueryWrite } from './grpc-impl/bigQueryWrite.ts';
+import type { Db } from './storage/db.ts';
 
 /** gRPC canonical status code for UNIMPLEMENTED. */
 export const GRPC_STATUS_UNIMPLEMENTED = 12;
 
 export interface GrpcServerConfig {
-  /** Override the `grpc-message` returned to clients. Optional. */
-  readonly message?: string;
+  /** Bind address (default `0.0.0.0`). */
+  readonly host?: string;
+  /**
+   * DuckDB instance to back service handlers. When omitted the server
+   * boots as a pure UNIMPLEMENTED scaffold (no services registered).
+   */
+  readonly db?: Db;
 }
 
 export interface GrpcServer {
@@ -44,68 +39,40 @@ export interface GrpcServer {
   readonly url: string;
 }
 
-const DEFAULT_MESSAGE = 'bigquery-local v0 does not implement gRPC services';
-
 export function createGrpcServer(config: GrpcServerConfig = {}): GrpcServer {
-  const message = config.message ?? DEFAULT_MESSAGE;
-  let http2Server: Http2Server | null = null;
+  const host = config.host ?? '0.0.0.0';
+  let server: grpc.Server | null = null;
   let boundPort: number | null = null;
-
-  function onStream(stream: ServerHttp2Stream): void {
-    // Trailers-only response: a single HEADERS frame with END_STREAM,
-    // carrying both the response status and the gRPC trailers.
-    stream.respond(
-      {
-        ':status': 200,
-        'content-type': 'application/grpc',
-        'grpc-status': String(GRPC_STATUS_UNIMPLEMENTED),
-        'grpc-message': message,
-      },
-      { endStream: true },
-    );
-  }
 
   return {
     async listen(port = 0): Promise<void> {
-      if (http2Server !== null) {
+      if (server !== null) {
         throw new Error('gRPC server is already listening.');
       }
-      const srv = createHttp2Server();
-      srv.on('stream', onStream);
-      // gRPC clients can hold connections open indefinitely. Swallow
-      // socket errors (RST_STREAM, client aborts) so they don't bubble
-      // up as uncaught exceptions during normal client behavior.
-      srv.on('sessionError', () => {});
-      srv.on('streamError', () => {});
-      await new Promise<void>((resolve, reject) => {
-        const onError = (err: Error): void => {
-          srv.removeListener('error', onError);
-          reject(err);
-        };
-        srv.once('error', onError);
-        srv.listen(port, () => {
-          srv.removeListener('error', onError);
-          const addr = srv.address() as AddressInfo;
-          http2Server = srv;
-          boundPort = addr.port;
-          resolve();
-        });
-      });
-    },
-    async close(): Promise<void> {
-      const srv = http2Server;
-      if (srv === null) return;
-      http2Server = null;
-      boundPort = null;
-      await new Promise<void>((resolve, reject) => {
-        srv.close((err) => {
-          /* node:coverage ignore next 4 */
+      const srv = new grpc.Server();
+      if (config.db !== undefined) {
+        registerBigQueryRead(srv, config.db);
+        registerBigQueryWrite(srv, config.db);
+      }
+      const actualPort = await new Promise<number>((resolve, reject) => {
+        srv.bindAsync(`${host}:${port}`, grpc.ServerCredentials.createInsecure(), (err, p) => {
           if (err) {
             reject(err);
             return;
           }
-          resolve();
+          resolve(p);
         });
+      });
+      server = srv;
+      boundPort = actualPort;
+    },
+    async close(): Promise<void> {
+      const srv = server;
+      if (srv === null) return;
+      server = null;
+      boundPort = null;
+      await new Promise<void>((resolve) => {
+        srv.tryShutdown(() => resolve());
       });
     },
     get url(): string {

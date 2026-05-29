@@ -1,0 +1,9 @@
+{
+  "description": "BYTES round-trip — payloads decoded as raw Avro bytes (not base64). FROM_HEX works in both engines.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "blob", "type": "BYTES" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, FROM_HEX('68656c6c6f')), (2, FROM_HEX('')), (3, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

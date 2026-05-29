@@ -117,6 +117,15 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
   // SHA512 via the community crypto extension's crypto_hash('sha2-512', x):
   // native (no JS-callback ThreadSafeFunction to leak), returns BYTES like BQ.
   await loadExtension(connection, 'crypto', 'INSTALL crypto FROM community');
+  // BIGNUMERIC alias: real BQ BIGNUMERIC is DECIMAL(76, 38); DuckDB caps DECIMAL
+  // precision at 38, so we back it with DECIMAL(38, 9) — same as NUMERIC. The
+  // type name is registered so `CAST(... AS BIGNUMERIC)` works in user SQL;
+  // wire encoders still emit BQ-fidelity Avro precision=77/scale=38 + Arrow
+  // Decimal256(76, 38) by padding the unscaled int on the way out.
+  await connection.run('CREATE TYPE BIGNUMERIC AS DECIMAL(38, 9)').catch(() => {
+    // File-backed DBs that opened with the type already registered will throw
+    // "Type already exists" — that's the expected state, ignore.
+  });
   const preparedCache = new Map<string, Promise<DuckDBPreparedStatement>>();
   let closed = false;
 

@@ -1,0 +1,35 @@
+{
+  "description": "COMMITTED stream with explicit offsets: aligned append, idempotent replay, out-of-order rejection.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "note", "type": "STRING" }
+  ],
+  "operations": [
+    { "op": "createWriteStream", "type": "COMMITTED" },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "offset": 0,
+      "rows": [{ "id": 1, "note": "first" }]
+    },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "offset": 1,
+      "rows": [{ "id": 2, "note": "second" }]
+    },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "offset": 0,
+      "rows": [{ "id": 1, "note": "first" }]
+    },
+    {
+      "op": "appendRows",
+      "stream": "$0",
+      "offset": 99,
+      "rows": [{ "id": 99, "note": "jumped" }]
+    },
+    { "op": "selectTable", "sql": "SELECT id, note FROM $TABLE ORDER BY id" }
+  ]
+}

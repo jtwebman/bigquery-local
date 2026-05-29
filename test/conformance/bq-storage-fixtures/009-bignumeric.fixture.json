@@ -1,0 +1,10 @@
+{
+  "description": "BIGNUMERIC ≡ decimal(76,38). Real BQ emits precision=77 in the Avro schema. Stored as DECIMAL(38, 9) locally (DuckDB caps precision at 38) — values must fit in 29 integer digits + 9 decimal places. The fixture value here stays within DECIMAL(38, 9); wire encoder still pads to scale 38 for BQ fidelity.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "amt", "type": "BIGNUMERIC" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, CAST('0' AS BIGNUMERIC)), (2, CAST('-1.23456789' AS BIGNUMERIC)), (3, NULL)",
+  "localInsertSql": "INSERT INTO $TABLE VALUES (1, '0'), (2, '-1.23456789'), (3, NULL)",
+  "createReadSession": { "dataFormat": "AVRO" }
+}

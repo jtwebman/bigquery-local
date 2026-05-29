@@ -1,0 +1,13 @@
+{
+  "description": "ARROW: DATE, TIME, TIMESTAMP, DATETIME logical types.",
+  "schema": [
+    { "name": "id", "type": "INT64", "mode": "REQUIRED" },
+    { "name": "d", "type": "DATE" },
+    { "name": "t", "type": "TIME" },
+    { "name": "ts", "type": "TIMESTAMP" },
+    { "name": "dt", "type": "DATETIME" }
+  ],
+  "insertSql": "INSERT INTO $TABLE VALUES (1, DATE '1990-04-15', TIME '07:30:00', TIMESTAMP '2024-01-02 03:04:05+00', DATETIME '2024-06-15 10:11:12.345678'), (2, NULL, NULL, NULL, NULL)",
+  "localInsertSql": "INSERT INTO $TABLE VALUES (1, DATE '1990-04-15', TIME '07:30:00', TIMESTAMPTZ '2024-01-02 03:04:05+00', DATETIME '2024-06-15 10:11:12.345678'), (2, NULL, NULL, NULL, NULL)",
+  "createReadSession": { "dataFormat": "ARROW" }
+}
