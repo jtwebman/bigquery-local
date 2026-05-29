@@ -48,6 +48,7 @@ import {
   parseTableDdl,
   parseViewDdl,
 } from './ddl.ts';
+import { registerJsUdf } from './jsUdf.ts';
 import { translate } from './translate.ts';
 
 // ---------------------------------------------------------------------------
@@ -1379,11 +1380,28 @@ async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<voi
     }
     await ensureDatasetSchema(db, target.project, target.datasetId);
   }
-  const macroSql = buildCreateMacroSql(target);
-  try {
-    await db.exec(macroSql);
-  } catch (err) {
-    throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
+  if (target.language === 'JAVASCRIPT') {
+    if (target.body === undefined) {
+      throw BqError.invalid('CREATE FUNCTION ... LANGUAGE js requires a body.', 'query');
+    }
+    if (target.isTableValued) {
+      throw BqError.invalid('Table-valued functions cannot use LANGUAGE js.', 'query');
+    }
+    await registerJsUdf(db, {
+      name: target.functionId,
+      argNames: target.args.map((a) => a.name),
+      argBqTypes: target.args.map((a) => a.typeText),
+      returnBqType: target.returnType,
+      body: target.body,
+      ...(target.libraries !== undefined && { libraries: target.libraries }),
+    });
+  } else {
+    const macroSql = buildCreateMacroSql(target);
+    try {
+      await db.exec(macroSql);
+    } catch (err) {
+      throw BqError.invalid(err instanceof Error ? err.message : 'DDL execution failed.', 'query');
+    }
   }
   // Only persist non-TEMP routines — DuckDB owns the TEMP macro lifecycle.
   if (!target.isTemp && target.datasetId !== undefined && target.body !== undefined) {
@@ -1392,7 +1410,7 @@ async function runCreateFunction(db: Db, target: FunctionDdlTarget): Promise<voi
       datasetId: target.datasetId,
       routineId: target.functionId,
       routineType: target.isTableValued ? 'TABLE_VALUED_FUNCTION' : 'SCALAR_FUNCTION',
-      language: 'SQL',
+      language: target.language,
       arguments: target.args.map((a) => ({ name: a.name, dataType: { typeKind: a.typeText } })),
       ...(target.returnType !== undefined && {
         returnType: { typeKind: target.returnType },

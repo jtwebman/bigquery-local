@@ -11,8 +11,24 @@
  * lookups) reuse a single underlying `DuckDBPreparedStatement`.
  */
 
-import { DuckDBInstance } from '@duckdb/node-api';
-import type { DuckDBPreparedStatement, DuckDBValue } from '@duckdb/node-api';
+import {
+  BIGINT,
+  BLOB,
+  BOOLEAN,
+  DATE,
+  DECIMAL,
+  DOUBLE,
+  DuckDBInstance,
+  DuckDBListType,
+  DuckDBScalarFunction,
+  FLOAT,
+  INTEGER,
+  TIME,
+  TIMESTAMP,
+  TIMESTAMPTZ,
+  VARCHAR,
+} from '@duckdb/node-api';
+import type { DuckDBPreparedStatement, DuckDBType, DuckDBValue } from '@duckdb/node-api';
 
 export interface DbConfig {
   /** File path, or `:memory:` (the default) for a transient in-memory database. */
@@ -32,8 +48,28 @@ export interface Db {
   queryWithSchema(sql: string, params?: readonly unknown[]): Promise<QueryResult>;
   /** Get a reusable prepared statement; the same SQL string returns the same cached statement. */
   prepare(sql: string): PreparedStatement;
+  /** Register a scalar function backed by a JS callback. The callback runs
+   * in the host Node process via the DuckDB scalar-function API; the actual
+   * sandboxing for `LANGUAGE js` UDFs happens upstream in
+   * `src/sql/jsUdf.ts`, which executes user-supplied JS inside a V8 isolate
+   * (isolated-vm) and only hands a marshaled-value callback down here. */
+  registerScalarFunction(spec: ScalarFunctionSpec): void;
+  /** Register a cleanup hook that runs during `close()` (in registration
+   * order). Used by `src/sql/jsUdf.ts` to dispose its V8 isolate. */
+  onClose(hook: () => void | Promise<void>): void;
   /** Close the connection and instance. Safe to call more than once. */
   close(): Promise<void>;
+}
+
+/** A scalar function spec for `Db.registerScalarFunction`. Type strings use
+ * DuckDB's textual form (e.g. `BIGINT`, `VARCHAR`, `DOUBLE`, `DECIMAL(38, 9)`,
+ * `BOOLEAN`, `BLOB`, `DATE`, `TIME`, `TIMESTAMP`, `TIMESTAMP WITH TIME ZONE`,
+ * `JSON`, `<inner>[]` for arrays). */
+export interface ScalarFunctionSpec {
+  readonly name: string;
+  readonly argTypes: readonly string[];
+  readonly returnType: string;
+  readonly callback: (args: readonly unknown[]) => unknown;
 }
 
 export interface QueryResult {
@@ -48,6 +84,55 @@ export interface QueryResult {
 export interface PreparedStatement {
   exec(params?: readonly unknown[]): Promise<void>;
   all<Row = Record<string, unknown>>(params?: readonly unknown[]): Promise<readonly Row[]>;
+}
+
+// Parse a DuckDB type string (e.g. "BIGINT", "VARCHAR", "DECIMAL(38, 9)",
+// "BIGINT[]", "TIMESTAMP WITH TIME ZONE") into a runtime type object suitable
+// for DuckDBScalarFunction.setReturnType / addParameter. Only covers the types
+// our JS UDF runtime hands in.
+function parseDuckType(text: string): DuckDBType {
+  const trimmed = text.trim();
+  if (trimmed.endsWith('[]')) {
+    return new DuckDBListType(parseDuckType(trimmed.slice(0, -2)));
+  }
+  const upper = trimmed.toUpperCase();
+  const dec = /^DECIMAL\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)$/.exec(upper);
+  if (dec !== null) {
+    return DECIMAL(Number(dec[1]), Number(dec[2]));
+  }
+  switch (upper) {
+    case 'BIGINT':
+    case 'INT64':
+      return BIGINT;
+    case 'INTEGER':
+      return INTEGER;
+    case 'DOUBLE':
+      return DOUBLE;
+    case 'FLOAT':
+      return FLOAT;
+    case 'BOOLEAN':
+    case 'BOOL':
+      return BOOLEAN;
+    case 'VARCHAR':
+    case 'STRING':
+    case 'JSON':
+      return VARCHAR;
+    case 'BLOB':
+    case 'BYTES':
+      return BLOB;
+    case 'DATE':
+      return DATE;
+    case 'TIME':
+      return TIME;
+    case 'TIMESTAMP':
+    case 'DATETIME':
+      return TIMESTAMP;
+    case 'TIMESTAMPTZ':
+    case 'TIMESTAMP WITH TIME ZONE':
+      return TIMESTAMPTZ;
+    default:
+      throw new Error(`Unsupported DuckDB type "${text}" for scalar function registration.`);
+  }
 }
 
 // Install + load a DuckDB extension, tolerant of a cold cache hit by many
@@ -127,6 +212,7 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
     // "Type already exists" — that's the expected state, ignore.
   });
   const preparedCache = new Map<string, Promise<DuckDBPreparedStatement>>();
+  const closeHooks: Array<() => void | Promise<void>> = [];
   let closed = false;
 
   function ensureOpen(): void {
@@ -209,9 +295,52 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
         },
       };
     },
+    registerScalarFunction(spec: ScalarFunctionSpec): void {
+      ensureOpen();
+      const f = new DuckDBScalarFunction();
+      f.setName(spec.name);
+      f.setReturnType(parseDuckType(spec.returnType));
+      for (const t of spec.argTypes) {
+        f.addParameter(parseDuckType(t));
+      }
+      // setSpecialHandling lets NULL args reach the callback (default is to
+      // short-circuit and emit NULL); BQ JS UDFs do receive null and may
+      // return a non-null value, so we need the full path.
+      f.setSpecialHandling();
+      f.setMainFunction((_info, chunk, output) => {
+        const n = chunk.rowCount;
+        const argCount = spec.argTypes.length;
+        const vecs = Array.from({ length: argCount }, (_, i) => chunk.getColumnVector(i));
+        for (let row = 0; row < n; row++) {
+          const args = vecs.map((v) => v.getItem(row));
+          try {
+            const result = spec.callback(args);
+            output.setItem(row, result as DuckDBValue);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            throw new Error(`UDF "${spec.name}" failed at row ${row}: ${msg}`);
+          }
+        }
+        output.flush();
+      });
+      connection.registerScalarFunction(f);
+    },
+    onClose(hook) {
+      ensureOpen();
+      closeHooks.push(hook);
+    },
     async close() {
       if (closed) return;
       closed = true;
+      // Run hooks in reverse registration order, isolating each failure so
+      // one bad hook doesn't strand the connection.
+      for (let i = closeHooks.length - 1; i >= 0; i--) {
+        try {
+          await closeHooks[i]?.();
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
       preparedCache.clear();
       connection.closeSync();
       instance.closeSync();

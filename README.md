@@ -5,13 +5,14 @@
 [![Image size](https://img.shields.io/docker/image-size/jtwebman/bigquery-local/latest?label=image%20size)](https://hub.docker.com/r/jtwebman/bigquery-local)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A local emulator for the Google BigQuery REST API, backed by
+A local emulator for the Google BigQuery REST **and** gRPC APIs, backed by
 [DuckDB](https://duckdb.org/). Point any BigQuery client at it for tests, CI,
 and local development. No code changes needed.
 
-It works with `@google-cloud/bigquery`, the Python, Go, and Java clients, and
-the `bq` CLI. The image is multi-arch (amd64 and arm64), and `PATCH` on
-datasets and tables actually changes state (some emulators skip that).
+It works with `@google-cloud/bigquery`, `@google-cloud/bigquery-storage`, the
+Python / Go / Java / C# clients, dbt, and the `bq` CLI — exercised by a
+5-language conformance suite. The image is multi-arch (amd64 and arm64), and
+`PATCH` on datasets and tables actually changes state (some emulators skip that).
 
 > Status: v0.7.0, published to
 > [Docker Hub](https://hub.docker.com/r/jtwebman/bigquery-local) and
@@ -26,8 +27,8 @@ datasets and tables actually changes state (some emulators skip that).
 docker run --rm -p 9050:9050 -p 9060:9060 jtwebman/bigquery-local:latest
 ```
 
-REST is on port 9050. Port 9060 is gRPC and returns `UNIMPLEMENTED` (see
-[gRPC](#grpc)).
+REST is on port 9050. gRPC is on port 9060 (BigQueryRead + BigQueryWrite
+over plaintext HTTP/2 — see [gRPC](#grpc)).
 
 ### Local (no install)
 
@@ -118,6 +119,200 @@ await server.close();
 `server.url` is a plain `http://127.0.0.1:<port>` URL, so you can also
 `fetch()` the routes directly to assert on the raw wire format.
 
+## Client recipes
+
+Each of the snippets below is exercised by the conformance suite in
+[`test/clients/`](test/clients) on every CI run. They assume the
+Docker image (or any standalone instance) running on the defaults
+(REST `localhost:9050`, gRPC `localhost:9060`).
+
+### Node — `@google-cloud/bigquery` + `@google-cloud/bigquery-storage`
+
+```ts
+import { BigQuery } from '@google-cloud/bigquery';
+import { BigQueryReadClient } from '@google-cloud/bigquery-storage';
+import * as grpc from '@grpc/grpc-js';
+import { emulatorGoogleAuth } from 'bigquery-local/auth';
+
+// REST.
+const bq = new BigQuery({
+  projectId: 'local',
+  apiEndpoint: 'http://localhost:9050',
+  authClient: emulatorGoogleAuth(),
+});
+
+// Storage Read (gRPC). google-gax wants host + port split apart.
+const readClient = new BigQueryReadClient({
+  apiEndpoint: 'localhost',
+  port: 9060,
+  sslCreds: grpc.credentials.createInsecure(),
+  projectId: 'local',
+});
+```
+
+### Python — `google-cloud-bigquery` + `google-cloud-bigquery-storage`
+
+```python
+import grpc
+from google.api_core.client_options import ClientOptions
+from google.auth.credentials import AnonymousCredentials
+from google.cloud import bigquery, bigquery_storage
+from google.cloud.bigquery_storage_v1.services.big_query_read.transports import (
+    BigQueryReadGrpcTransport,
+)
+
+# REST.
+bq = bigquery.Client(
+    project="local",
+    client_options=ClientOptions(api_endpoint="http://localhost:9050"),
+    credentials=AnonymousCredentials(),
+)
+
+# Storage Read (gRPC). The default transport tries TLS; pass an
+# insecure-channel-backed transport explicitly so the plaintext HTTP/2
+# handshake against the emulator succeeds.
+channel = grpc.insecure_channel("localhost:9060")
+read_client = bigquery_storage.BigQueryReadClient(
+    transport=BigQueryReadGrpcTransport(channel=channel),
+)
+```
+
+### Go — `cloud.google.com/go/bigquery` + `.../storage/apiv1`
+
+```go
+import (
+    "context"
+
+    "cloud.google.com/go/bigquery"
+    storage "cloud.google.com/go/bigquery/storage/apiv1"
+    "google.golang.org/api/option"
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/credentials/insecure"
+)
+
+ctx := context.Background()
+
+// REST.
+bq, err := bigquery.NewClient(ctx, "local",
+    option.WithEndpoint("http://localhost:9050"),
+    option.WithoutAuthentication(),
+)
+
+// Storage Read (gRPC) over an insecure channel.
+conn, err := grpc.NewClient("localhost:9060",
+    grpc.WithTransportCredentials(insecure.NewCredentials()))
+readClient, err := storage.NewBigQueryReadClient(ctx,
+    option.WithGRPCConn(conn),
+    option.WithoutAuthentication(),
+)
+```
+
+### Java — `google-cloud-bigquery` + `google-cloud-bigquerystorage`
+
+```java
+import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.grpc.GrpcTransportChannel;
+import com.google.api.gax.rpc.FixedTransportChannelProvider;
+import com.google.cloud.NoCredentials;
+import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
+import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+
+// REST.
+BigQuery bq = BigQueryOptions.newBuilder()
+    .setProjectId("local")
+    .setHost("http://localhost:9050")
+    .setCredentials(NoCredentials.getInstance())
+    .build()
+    .getService();
+
+// Storage Read (gRPC).
+ManagedChannel channel = ManagedChannelBuilder
+    .forAddress("localhost", 9060)
+    .usePlaintext()
+    .build();
+BigQueryReadSettings settings = BigQueryReadSettings.newBuilder()
+    .setCredentialsProvider(NoCredentialsProvider.create())
+    .setTransportChannelProvider(
+        FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel)))
+    .build();
+BigQueryReadClient readClient = BigQueryReadClient.create(settings);
+```
+
+### C# / .NET — `Google.Cloud.BigQuery.V2` + `Google.Cloud.BigQuery.Storage.V1`
+
+```csharp
+using Google.Cloud.BigQuery.V2;
+using Google.Cloud.BigQuery.Storage.V1;
+using Grpc.Core;
+
+// REST.
+var bq = new BigQueryClientBuilder
+{
+    ProjectId = "local",
+    BaseUri = "http://localhost:9050",
+}.Build();
+
+// Storage Read (gRPC). The builder rejects setting both `CallInvoker`
+// and credentials — let it construct the channel itself from the
+// endpoint + insecure creds.
+var readClient = await new BigQueryReadClientBuilder
+{
+    Endpoint = "localhost:9060",
+    ChannelCredentials = ChannelCredentials.Insecure,
+}.BuildAsync();
+```
+
+### dbt — via `dbt-bigquery`
+
+The emulator includes a small shim
+([`test/clients/dbt/sitecustomize.py`](test/clients/dbt/sitecustomize.py))
+that patches `dbt-bigquery`'s underlying clients to talk to the emulator
+when these env vars are set:
+
+```bash
+export BIGQUERY_EMULATOR_HOST=http://localhost:9050  # REST
+export BIGQUERY_EMULATOR_GRPC_HOST=localhost:9060    # gRPC (optional)
+export PYTHONPATH=$(pwd)/test/clients/dbt:$PYTHONPATH
+
+dbt run --profiles-dir test/clients/dbt/project
+```
+
+The accompanying minimal profile:
+
+```yaml
+# profiles.yml
+emu:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth
+      project: dbt-emu
+      dataset: analytics
+      threads: 1
+      location: US
+```
+
+### `bq` CLI
+
+The Google Cloud SDK's `bq` is discovery-driven, so pointing it at the
+emulator just works:
+
+```bash
+bq --api http://localhost:9050 --project_id=local query \
+  --use_legacy_sql=false 'SELECT 1 AS x'
+```
+
+The full discovery doc is served at
+`http://localhost:9050/discovery/v1/apis/bigquery/v2/rest`, and the
+emulator's `bq`-CLI conformance suite in
+[`test/clients/bq/`](test/clients/bq) exercises the common verbs
+(`query`, `mk`, `ls`, `show`, `insert`, `head`, `rm`) on every CI run.
+
 ## Feature status
 
 Legend: **✅ Supported**. **🚧 Planned** (on the roadmap). **❌ Not planned**
@@ -142,8 +337,8 @@ Legend: **✅ Supported**. **🚧 Planned** (on the roadmap). **❌ Not planned*
 | Projects list + `getServiceAccount` | ✅ |
 | `INFORMATION_SCHEMA` views | ✅ |
 | Multi-project isolation, `--data-from-yaml` seed | ✅ |
-| Storage Read API (gRPC) | 🚧 |
-| Storage Write API (gRPC) | 🚧 |
+| Storage Read API (gRPC) — Avro + Arrow IPC, multi-stream, snapshot stub | ✅ |
+| Storage Write API (gRPC) — `_default` / COMMITTED / BUFFERED / PENDING, FlushRows, BatchCommit, multiplexed streams | ✅ |
 | Sessions, Connections, Data Transfer Service | 🚧 |
 | Reservations, RowAccessPolicies, IAM metadata APIs | 🚧 |
 | Federated queries (Bigtable / Spanner / Cloud SQL) | 🚧 |
@@ -175,13 +370,67 @@ enforce access control. The IAM and policy metadata endpoints may still land
 | Function library: string, math, date/time, JSON, array, aggregate, hash (broad) | ✅ |
 | Geography type + core ST_* (ST_GEOGPOINT, ST_DISTANCE, ST_INTERSECTS, ...) | ✅ |
 | Long-tail ST_* (ST_BUFFER, ST_AREA, ST_UNION, ...) | 🚧 |
-| JavaScript UDFs, scripting EXCEPTION handlers | 🚧 |
+| JavaScript UDFs (V8 isolate via `isolated-vm`, 5 s CPU + 128 MB memory caps, `OPTIONS(library=[...])` honored — see section below) | ✅ |
+| Scripting EXCEPTION handlers | 🚧 |
 | Snapshots, clones, time travel (FOR SYSTEM_TIME AS OF) | 🚧 |
 | BigQuery ML, SEARCH(), VECTOR_SEARCH | 🚧 |
 | FARM_FINGERPRINT | 🚧 |
 
 The function library is broad but not exhaustive. A function we have not
 mapped returns a clear "unsupported" error, not a wrong result.
+
+### JavaScript UDFs (sandboxed V8 isolate via `isolated-vm`)
+
+`CREATE FUNCTION ... LANGUAGE js AS "..."` runs the UDF body inside a
+real V8 isolate, via [`isolated-vm`](https://github.com/laverdet/isolated-vm)
+— the same engine family BigQuery uses for its JS UDFs. Each `Db`
+connection lazily creates one Isolate (128 MB memory cap); each UDF
+invocation enforces a 5-second CPU timeout.
+
+The isolate has no `process`, no `require`, no `Buffer`, no `global`
+— UDF code can compute on its arguments and that's it. Runaway loops
+surface as a `timed out` error rather than hanging the emulator;
+allocations past 128 MB surface as a memory error.
+
+`OPTIONS(library = ["url1", "url2"])` is honored: each URL is fetched
+at `CREATE FUNCTION` time and the library source is injected into the
+isolate's shared context before the UDF body runs. Per-file fetch cap
+is 5 MB.
+
+#### Distribution: `isolated-vm` is an optional install
+
+`isolated-vm` is a native module. It's declared in
+`optionalDependencies`, so:
+
+- **`npm install bigquery-local` succeeds whether or not a prebuilt
+  binary matches your Node/platform.** If isolated-vm doesn't install,
+  everything else (REST, gRPC, SQL UDFs) still works.
+- **JS UDFs require isolated-vm.** If you call
+  `CREATE FUNCTION ... LANGUAGE js` without it installed, the response
+  is a precise error pointing you at the install or the Docker image.
+
+The cleanest way to guarantee JS UDFs work out of the box is the
+**`ghcr.io/jtwebman/bigquery-local` Docker image**, which bundles a
+working isolated-vm built against the image's Node version.
+
+To install isolated-vm directly:
+
+```sh
+npm install isolated-vm
+```
+
+You may need a C++ toolchain (`build-essential` / Xcode CLT, plus
+Python 3) if no prebuilt binary matches your platform.
+
+#### Security caveat
+
+The isolate boundary blocks accidents — a UDF body that does
+`require('fs')` gets `undefined`, not a filesystem handle. It's
+strong protection against *bugs* and reasonable protection against
+*casual mischief*. It is **not** a substitute for process- or
+hardware-level isolation if you're running fully untrusted code from
+an unknown source. Don't expose this emulator over a public network
+even with the isolate in place.
 
 These functions are known gaps and return that error today (planned for a
 later version): `INITCAP`, `REGEXP_INSTR`, `CONTAINS_SUBSTR`,
@@ -199,7 +448,7 @@ and `ST_GEOHASH`.
 | STRING, BYTES, INT64, FLOAT64, BOOL | ✅ | VARCHAR, BLOB, BIGINT, DOUBLE, BOOLEAN |
 | TIMESTAMP, DATETIME, DATE, TIME | ✅ | DuckDB temporal types |
 | NUMERIC | ✅ | DECIMAL(38,9) |
-| BIGNUMERIC | ✅ | VARCHAR (decimal string; DuckDB max precision is 38) |
+| BIGNUMERIC | ✅ | DECIMAL(38, 9) — values must fit in 29 integer digits + 9 decimal places (DuckDB caps DECIMAL precision at 38, less than BQ's 76); out-of-range values reject at insert. Wire encoders still emit BQ-fidelity precision 77 / scale 38. |
 | JSON | ✅ | DuckDB JSON |
 | `ARRAY<T>` / REPEATED | ✅ | DuckDB `T[]` (LIST) |
 | STRUCT / RECORD | ✅ | DuckDB STRUCT |
@@ -220,7 +469,7 @@ and `ST_GEOHASH`.
 | Capability | Status |
 |---|---|
 | REST on port 9050 | ✅ |
-| gRPC on port 9060 (returns UNIMPLEMENTED) | ✅ |
+| gRPC on port 9060 (BigQueryRead + BigQueryWrite over plaintext HTTP/2) | ✅ |
 | Flags: `--project`, `--port`, `--grpc-port`, `--database`, `--log-level`, `--log-format` | ✅ |
 | Multi-arch Docker image (amd64 and arm64) | ✅ |
 | File store (`--database=path.duckdb`) or in-memory | ✅ |
@@ -249,15 +498,43 @@ project id a client uses just works. You do not declare projects up front.
 
 ## gRPC
 
-The container binds the gRPC port (default 9060). Every RPC returns
-`UNIMPLEMENTED` (gRPC status 12). That is the response a gRPC client expects
-for an unsupported call, so a client like `@google-cloud/bigquery-storage`
-gets a clean error instead of a hung connection.
+The container binds the gRPC port (default 9060) and serves the BigQuery
+Storage **Read** and **Write** APIs over plaintext HTTP/2:
 
-Because the Storage Read/Write APIs are not implemented, clients that depend
-on them are not supported: the Spark and Beam connectors, and the JDBC/ODBC
-drivers. Use the REST clients (`@google-cloud/bigquery`, Python, Go, Java) or
-the `bq` CLI instead.
+- **`BigQueryRead`** — `CreateReadSession`, `ReadRows` (Avro + Arrow IPC),
+  `SplitReadStream`. Multi-stream partitioning, `selectedFields`, and
+  `row_restriction` are honored.
+- **`BigQueryWrite`** — `CreateWriteStream`, `AppendRows` (bidi),
+  `FinalizeWriteStream`, `BatchCommitWriteStreams`, `FlushRows`. All four
+  stream types (`_default`, `COMMITTED`, `BUFFERED`, `PENDING`) work with
+  BQ-faithful offset semantics; multiplexed streams over a single
+  `AppendRows` connection are supported.
+
+Conformance is validated by a **27-fixture replay suite** (21 Storage Read
+fixtures + 6 Storage Write fixtures) captured against real BigQuery and
+compared byte-for-byte (for the Avro/Arrow bytes) or value-equivalent (for
+the row order, which BQ doesn't guarantee). Refresh via
+`npm run bq-storage-replay:capture` / `bq-write-replay:capture`.
+
+Clients exercised in the conformance suite: `@google-cloud/bigquery-storage`
+(Node), `google-cloud-bigquery-storage` (Python), `cloud.google.com/go/...`
+(Go), `google-cloud-bigquerystorage` (Java), and `Google.Cloud.BigQuery.Storage.V1`
+(C#). dbt picks up Storage Read via the shim included in `test/clients/dbt`.
+
+Point a client at `localhost:9060` with insecure channel credentials:
+
+```python
+import grpc
+from google.cloud import bigquery_storage
+from google.cloud.bigquery_storage_v1.services.big_query_read.transports import (
+    BigQueryReadGrpcTransport,
+)
+
+channel = grpc.insecure_channel("localhost:9060")
+client = bigquery_storage.BigQueryReadClient(
+    transport=BigQueryReadGrpcTransport(channel=channel),
+)
+```
 
 ## Storage
 

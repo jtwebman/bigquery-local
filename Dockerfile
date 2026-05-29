@@ -15,10 +15,24 @@ FROM node:24-bookworm-slim AS deps
 
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
-# --ignore-scripts: no dependency needs install scripts (duckdb ships prebuilt
-# binaries), and it skips our `prepare` git-hook setup, which has no source
-# files in this layer and no .git to target anyway.
-RUN npm ci --omit=dev --ignore-scripts
+# Our own `prepare` script (install-hooks.mjs) runs during `npm ci` unless
+# --ignore-scripts is set. It's a no-op outside a git checkout but npm
+# still needs the file to exist; copy it now so dep-install can dispatch
+# the lifecycle hook cleanly.
+COPY scripts/install-hooks.mjs ./scripts/
+# isolated-vm needs a C++ toolchain *if* no prebuilt binary matches the
+# image's Node version. Install the toolchain here so the optional install
+# can compile from source if needed; this layer doesn't ship to runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# --include=optional guarantees isolated-vm gets installed even on
+# platforms where npm might otherwise treat optionalDependencies as
+# skippable. We intentionally do NOT pass --ignore-scripts so isolated-vm
+# can run its own install script (which downloads or builds the native
+# binary).
+RUN npm ci --omit=dev --include=optional
 
 # ---- Stage 1b: prebuild DuckDB extension cache ----
 # INSTALL + LOAD spatial and crypto once at build time so the runtime

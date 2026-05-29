@@ -23,49 +23,50 @@ their full scope/acceptance blocks.
 **Estimates:**
 
 - v0.x polish (Phase 8): ~30h.
-- v1.0.0 remaining (see milestone below): **~60 focused hours** (Phase 18/19 gRPC Storage Read/Write).
+- v1.0.0 remaining: **all targeted v1.0 work is complete.** Phase 18 (Storage Read), Phase 19 (Storage Write), BL-070 (JS UDFs), and BIGNUMERIC arithmetic all landed.
 
 ---
 
-## v1.0.0 milestone
+## v1.0.0 milestone — landed
 
-The remaining v1.0.0 scope is the minimum set of features needed for
-the emulator to be the obvious choice over `goccy/bigquery-emulator`
-for **dbt + Node-client users plus Spark/Beam pipelines**. Total
-estimate: ~60h (the gRPC Storage Read + Write APIs).
+What v1.0.0 delivers:
 
-Positioning at 1.0.0 (vs `goccy/bigquery-emulator`): we lead on the
-**management / metadata surface** — copy jobs, table snapshots/clones,
-Routines & Models CRUD, a comprehensive `INFORMATION_SCHEMA`, plus
-partitioning/clustering metadata, cost estimation, and `useQueryCache` —
-all of which goccy lists as not-yet-implemented or goals. The REST CRUD,
-query, load/extract, streaming, and view surface is at parity, and we
-match on **gRPC Storage Read/Write** once Phase 18/19 lands.
+- **gRPC Storage Read API** (Phase 18) — `CreateReadSession`, `ReadRows` (Avro + Arrow IPC), `SplitReadStream`. Multi-stream partitioning, `selectedFields`, `row_restriction`. Backed by 21 captured-replay fixtures that compare byte-for-byte against real BQ.
+- **gRPC Storage Write API** (Phase 19) — `CreateWriteStream`, `AppendRows` (bidi), `FinalizeWriteStream`, `BatchCommitWriteStreams`, `FlushRows`. All four stream types (`_default` / COMMITTED / BUFFERED / PENDING) with BQ-faithful offset semantics and multiplexing. 6 captured-replay fixtures.
+- **5-language client conformance** — Node, Python, Go, Java, C# all exercise Storage Read + Storage Write against the emulator. dbt picks up Storage Read via the shim. `bq` CLI continues to pass the REST conformance suite.
+- **JavaScript UDFs** (BL-070) — real V8 isolate via `isolated-vm`, 5 s CPU + 128 MB memory limits, OPTIONS(library) honored. Optional install: npm-install succeeds without it; Docker image bundles a working build.
+- **BIGNUMERIC arithmetic** — backed by DECIMAL(38, 9); previously a VARCHAR round-trip that errored on math. Schema readback still reports BIGNUMERIC; wire encoders pad scale 9 → 38 for byte-for-byte BQ fidelity.
+- **Total tests: 1400 passing** across all language suites + replay fixtures + sandbox proofs.
 
-goccy still leads on **raw SQL function completeness** (their
-googlesqlite engine reimplements GoogleSQL — ~570 functions, per
-goccy's own status matrix) and on **JavaScript UDFs** (BL-070,
-deferred). Type-wise we actually cover *more* BQ types than goccy:
-all 17 BQ types work end-to-end (STRING/BYTES/INT64/FLOAT64/BOOL/
-NUMERIC/BIGNUMERIC/TIMESTAMP/DATETIME/DATE/TIME/JSON/GEOGRAPHY/
-INTERVAL/RANGE/STRUCT + ARRAY-as-mode), including BIGNUMERIC
-arithmetic / aggregates / casts / comparisons — backed by DECIMAL(38, 9)
-internally (DuckDB caps precision at 38 vs BQ's 76, ample for any test
-data fitting 29 integer digits + 9 decimal places; out-of-range values
-reject cleanly at insert time). RANGE uses STRUCT(start, end BIGINT)
-storage; a few rare range functions surface as precise
-`unsupportedFeature` errors. Schema readback (INFORMATION_SCHEMA,
-`tables.get`) reports BIGNUMERIC, and wire encoders (Avro
-precision=77/scale=38, Arrow Decimal256(76, 38)) pad the unscaled int
-on the way out for byte-for-byte BQ fidelity. goccy's published type
-matrix reports `16 / 18` with BIGNUMERIC not implemented at all
-(their "18" includes googlesql types like ENUM that aren't in BQ
-proper). So they're ahead on the SQL *function* tail, not on type
-breadth.
-Architectural difference: goccy reimplements GoogleSQL for fidelity; we
-lean on DuckDB and translate the diffs — faster to build, but the
-function tail and silent-divergence risk are ours to close (the
-bq-replay conformance suite + sql-coverage test are how we do it).
+Positioning at 1.0.0: bigquery-local is intended as the most complete
+local BigQuery emulator — covering REST CRUD, query, load/extract,
+streaming, views, the gRPC Storage Read + Write APIs, JavaScript UDFs
+(real V8 isolate), Routines / Models / INFORMATION_SCHEMA,
+partitioning + clustering metadata, copy jobs and table snapshots,
+cost estimation, `useQueryCache`, and all 17 BigQuery data types
+including BIGNUMERIC arithmetic.
+
+Type coverage end-to-end: all 17 BQ types
+(STRING/BYTES/INT64/FLOAT64/BOOL/NUMERIC/BIGNUMERIC/TIMESTAMP/
+DATETIME/DATE/TIME/JSON/GEOGRAPHY/INTERVAL/RANGE/STRUCT +
+ARRAY-as-mode). BIGNUMERIC is backed by DECIMAL(38, 9) — DuckDB caps
+DECIMAL precision at 38, so values must fit in 29 integer digits + 9
+decimal places, but the schema metadata still reports BIGNUMERIC and
+the wire encoders (Avro precision=77/scale=38, Arrow Decimal256(76, 38))
+pad scale 9 → 38 on the way out for byte-for-byte BQ fidelity.
+Out-of-range BIGNUMERIC values reject cleanly at insert time rather
+than silently truncating. RANGE uses STRUCT(start, end BIGINT) storage;
+a few rare range functions surface as precise `unsupportedFeature`
+errors.
+
+Architectural choice: bigquery-local leans on DuckDB and translates BQ
+SQL onto it, rather than reimplementing GoogleSQL from scratch. That
+keeps the codebase small and ships features fast, but the long tail of
+~570 GoogleSQL built-in functions is ours to close — every function we
+haven't ported surfaces as a precise "unsupported function" error
+rather than a wrong result, and the
+[bq-replay conformance suite](test/conformance) plus the sql-coverage
+test pin both behavior and gap-discovery.
 
 **In v1.0.0 (by phase):**
 
@@ -79,7 +80,7 @@ bq-replay conformance suite + sql-coverage test are how we do it).
 
 **Explicitly deferred to post-1.0 (with rationale):**
 
-- **BL-069 EXCEPTION handlers · BL-070 JS UDFs** — already ⏸; SQL UDF / procedure / scripting story we have is enough for dbt users.
+- **BL-069 EXCEPTION handlers** — already ⏸; SQL UDF / procedure / scripting story we have is enough for dbt users.
 - **BL-074 Sessions** — minor; TEMP scoping is the only common case and it works inside scripts already.
 - **BL-080–082 INFORMATION_SCHEMA** (SEARCH/VECTOR/SESSIONS/STREAMING) — depend on deferred features.
 - **BL-086 Avro · BL-087 ORC · BL-088 Datastore export · BL-089 Iceberg** — niche file formats; CSV/JSON/Parquet cover ≥95% of real loads.
@@ -276,11 +277,11 @@ Scope: BEGIN … EXCEPTION WHEN ERROR THEN … END. Acceptance: errors caught by
 
 **Deferred at v0.4.0** — most BQ users don't write procedures with exception handling. Lands when a real-world script needs it; the interpreter's signal-class pattern (BreakSignal / ReturnSignal) already shows how to wire a new control flow.
 
-### BL-070 — JS UDFs ⏸ deferred · Est: 8h · Deps: BL-063
+### BL-070 — JS UDFs ✅ · Est: 8h · Deps: BL-063
 
-Scope: sandboxed JS UDFs via `vm` module; BQ argument/return type marshalling. Acceptance: a `RETURNS FLOAT64 LANGUAGE js AS '''return x * 2;'''` example works.
+Scope: sandboxed JS UDFs with BQ argument/return type marshalling. Acceptance: a `RETURNS FLOAT64 LANGUAGE js AS '''return x * 2;'''` example works, plus NULL propagation, STRING/INT64/NUMERIC/ARRAY marshalling, OR REPLACE, compile-error reporting, and OPTIONS(library=[...]) library injection.
 
-**Deferred at v0.4.0** — heaviest BL in the phase (vm sandbox + BQ↔JS type marshalling). Lower priority than wire-fidelity gaps (BOOL/NUMERIC string encoding, error message shapes) which break real BQ clients today.
+**Landed v1.0.0** — backed by [`isolated-vm`](https://github.com/laverdet/isolated-vm), a real V8 isolate (same engine family BQ uses). One Isolate per `Db` connection (128 MB memory cap, disposed on `Db.close()`); each UDF invocation enforces a 5 s CPU timeout via `Reference.applySync({timeout: 5000})`. Distribution via `optionalDependencies` so `npm install bigquery-local` succeeds whether or not a prebuilt binary matches the user's Node/platform; if isolated-vm is absent, the JS UDF path returns a precise error pointing at the Docker image (which bundles a working build). Sandbox proof tests pin: `globalThis.process` / `require` / `Buffer` are all `undefined`; an infinite-loop UDF surfaces as a `timed out` `BqError`; a 200+ MB allocation surfaces as a memory error. OPTIONS(library=[...]) fetches each URL (5 MB cap), runs the source in the shared isolate context before the UDF compiles.
 
 ## Phase 12 — Routines / models / sessions
 

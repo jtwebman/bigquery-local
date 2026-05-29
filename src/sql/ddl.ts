@@ -590,6 +590,12 @@ export interface FunctionDdlTarget {
   /** Body text (a scalar expression, or a SELECT for a TVF), without the
    *  wrapping parens or triple quotes. */
   readonly body: string | undefined;
+  /** UDF language. Defaults to SQL; `LANGUAGE js` switches to JAVASCRIPT —
+   * the body is then a JS statement block run inside a V8 isolate. */
+  readonly language: 'SQL' | 'JAVASCRIPT';
+  /** OPTIONS(library = [...]) URLs. Honored only for JS UDFs; each library
+   * is fetched and injected into the isolate context before the body runs. */
+  readonly libraries?: readonly string[];
 }
 
 export function parseFunctionDdl(sql: string, defaultProject: string): FunctionDdlTarget {
@@ -674,6 +680,7 @@ export function parseFunctionDdl(sql: string, defaultProject: string): FunctionD
       args: [],
       returnType: undefined,
       body: undefined,
+      language: 'SQL',
     };
   }
 
@@ -692,6 +699,39 @@ export function parseFunctionDdl(sql: string, defaultProject: string): FunctionD
     const typeStart = cursor;
     cursor = consumeTypeText(tokens, cursor);
     returnType = joinTokenRange(tokens, typeStart, cursor, sql).trim();
+  }
+
+  // Optional LANGUAGE { sql | js } [OPTIONS(...)]
+  // `LANGUAGE js` switches the body interpretation to JavaScript; `LANGUAGE
+  // SQL` is explicit-SQL (default). OPTIONS(...) — typically `library = [...]`
+  // for JS UDFs — is parsed and discarded for now (crude impl doesn't load
+  // remote libraries; most test UDFs don't need them).
+  let language: 'SQL' | 'JAVASCRIPT' = 'SQL';
+  if (isIdentKeyword(tokens[cursor], 'LANGUAGE')) {
+    cursor = nextNonSkippable(tokens, cursor + 1);
+    const langTok = tokens[cursor];
+    if (langTok === undefined || langTok.kind !== 'identifier') {
+      throw BqError.invalid('Expected language name after LANGUAGE.', 'query');
+    }
+    const langName = langTok.value.toUpperCase();
+    if (langName === 'JS' || langName === 'JAVASCRIPT') {
+      language = 'JAVASCRIPT';
+    } else if (langName === 'SQL') {
+      language = 'SQL';
+    } else {
+      throw BqError.invalid(`Unsupported function language "${langTok.value}".`, 'query');
+    }
+    cursor = nextNonSkippable(tokens, cursor + 1);
+  }
+  let libraries: readonly string[] | undefined;
+  if (isIdentKeyword(tokens[cursor], 'OPTIONS')) {
+    cursor = nextNonSkippable(tokens, cursor + 1);
+    if (tokens[cursor]?.kind !== 'punctuation' || tokens[cursor]?.value !== '(') {
+      throw BqError.invalid('Expected `(` after OPTIONS.', 'query');
+    }
+    const optClose = findMatchingParenClose(tokens, cursor);
+    libraries = extractLibraryUrls(tokens, cursor + 1, optClose);
+    cursor = nextNonSkippable(tokens, optClose + 1);
   }
 
   // AS body — either `(expr)` or `"""expr"""` / `'''expr'''`.
@@ -726,7 +766,81 @@ export function parseFunctionDdl(sql: string, defaultProject: string): FunctionD
     args,
     returnType,
     body,
+    language,
+    ...(libraries !== undefined && { libraries }),
   };
+}
+
+/** Pull out `library = ["url1", "url2"]` from an OPTIONS clause. Other
+ *  fields are ignored. The token range is the *interior* of `(...)`. */
+function extractLibraryUrls(
+  tokens: readonly Token[],
+  start: number,
+  end: number,
+): readonly string[] | undefined {
+  // Walk identifier-equals-value triples separated by commas, looking for
+  // `library = [ "url", ... ]`. Quote-stripping mirrors how the body
+  // literals are handled elsewhere.
+  let i = start;
+  while (i < end) {
+    while (i < end && isSkippable(tokens[i] as Token)) i += 1;
+    if (i >= end) break;
+    const key = tokens[i];
+    if (key === undefined || key.kind !== 'identifier') {
+      i += 1;
+      continue;
+    }
+    const keyName = key.value.toUpperCase();
+    let j = nextNonSkippable(tokens, i + 1);
+    if (tokens[j]?.kind !== 'operator' || tokens[j]?.value !== '=') {
+      i = j;
+      continue;
+    }
+    j = nextNonSkippable(tokens, j + 1);
+    if (keyName === 'LIBRARY') {
+      // Accept both [ "url", "url" ] and a single "url".
+      const valueTok = tokens[j];
+      if (valueTok?.kind === 'string') {
+        return [unwrapStringLiteral(valueTok.value)];
+      }
+      if (valueTok?.kind === 'punctuation' && valueTok.value === '[') {
+        const close = findMatchingBracket(tokens, j);
+        const urls: string[] = [];
+        for (let k = j + 1; k < close; k++) {
+          const t = tokens[k];
+          if (t === undefined) continue;
+          if (t.kind === 'string') urls.push(unwrapStringLiteral(t.value));
+        }
+        return urls;
+      }
+    }
+    // Skip past this value; either a literal or a bracketed array.
+    const valueTok = tokens[j];
+    if (valueTok?.kind === 'punctuation' && valueTok.value === '[') {
+      i = findMatchingBracket(tokens, j) + 1;
+    } else {
+      i = j + 1;
+    }
+    // Skip trailing comma if any.
+    while (i < end && isSkippable(tokens[i] as Token)) i += 1;
+    if (tokens[i]?.kind === 'punctuation' && tokens[i]?.value === ',') i += 1;
+  }
+  return undefined;
+}
+
+function findMatchingBracket(tokens: readonly Token[], openIdx: number): number {
+  let depth = 0;
+  for (let i = openIdx; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t?.kind === 'punctuation') {
+      if (t.value === '[') depth += 1;
+      else if (t.value === ']') {
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+    }
+  }
+  return tokens.length - 1;
 }
 
 /**
@@ -1002,10 +1116,14 @@ function parseFunctionArgs(tokens: readonly Token[], start: number, end: number)
 function consumeTypeText(tokens: readonly Token[], start: number): number {
   let i = start;
   let depth = 0;
+  // Keywords that legitimately terminate a function/return type — anything
+  // that follows the RETURNS clause in a CREATE FUNCTION grammar. Without
+  // these stops the type lexer is too greedy and swallows LANGUAGE/OPTIONS.
+  const TYPE_STOPS = new Set(['AS', 'LANGUAGE', 'OPTIONS', 'DETERMINISTIC', 'NOT']);
   while (i < tokens.length) {
     const tok = tokens[i] as Token;
     if (tok.kind === 'identifier' && depth === 0) {
-      if (tok.value.toUpperCase() === 'AS') break;
+      if (TYPE_STOPS.has(tok.value.toUpperCase())) break;
     }
     if (tok.kind === 'operator') {
       if (tok.value === '<') depth += 1;
