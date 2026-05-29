@@ -29,7 +29,11 @@ import { unwrapV } from '../helpers/wire.ts';
 // over a feature they can't load.
 let SKIP_REASON: string | undefined;
 try {
-  await import('isolated-vm');
+  // Dynamic string keeps tsc from trying to resolve the optional package
+  // at compile time — Node 26 runners without the prebuild fail tsc
+  // otherwise.
+  const specifier = 'isolated-vm';
+  await import(specifier);
 } catch {
   SKIP_REASON = 'isolated-vm not installed in this environment (optional dep)';
 }
