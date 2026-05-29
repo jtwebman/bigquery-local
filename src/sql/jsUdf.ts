@@ -34,23 +34,52 @@
 import type { Db, ScalarFunctionSpec } from '../storage/db.ts';
 import { BqError } from '../util/errors.ts';
 
-// We can't `import 'isolated-vm'` at the top because it's optional. Load
-// it on first JS UDF and cache the module; surface a clear error if the
-// dependency isn't installed.
-type IsolatedVm = typeof import('isolated-vm');
-let ivmModulePromise: Promise<IsolatedVm | null> | null = null;
-function loadIsolatedVm(): Promise<IsolatedVm | null> {
+// We can't statically `import 'isolated-vm'` because it's an
+// `optionalDependencies` install — it may not be present at compile time
+// on platforms without a prebuilt binary. To keep `tsc` happy in every
+// environment (CI runners that don't install isolated-vm, end users who
+// skip it), we declare the minimal API surface we need locally as
+// structural types, and dynamically `import()` the module at first use.
+interface IvmScript {
+  runSync(context: IvmContext, opts?: { reference?: boolean; timeout?: number }): IvmReference;
+  release(): void;
+}
+interface IvmReference {
+  applySync(
+    receiver: unknown,
+    args: readonly unknown[],
+    opts?: { result?: { copy: boolean }; timeout?: number },
+  ): unknown;
+  release(): void;
+}
+interface IvmContext {
+  release(): void;
+}
+interface IvmIsolate {
+  createContextSync(): IvmContext;
+  compileScriptSync(source: string, opts?: { filename?: string }): IvmScript;
+  dispose(): void;
+}
+interface IvmExternalCopy {
+  copyInto(opts?: { release?: boolean }): unknown;
+}
+interface IvmModule {
+  Isolate: new (opts?: { memoryLimit?: number }) => IvmIsolate;
+  ExternalCopy: new (value: unknown) => IvmExternalCopy;
+}
+
+let ivmModulePromise: Promise<IvmModule | null> | null = null;
+function loadIsolatedVm(): Promise<IvmModule | null> {
   if (ivmModulePromise === null) {
     ivmModulePromise = (async () => {
       try {
         // ESM-importing a CommonJS module surfaces the actual exports on
         // `.default`. Without this deref, `m.Isolate` is undefined.
-        const mod = (await import('isolated-vm')) as unknown as
-          | IsolatedVm
-          | { default: IsolatedVm };
-        return 'default' in mod && mod.default !== undefined
-          ? (mod.default as IsolatedVm)
-          : (mod as IsolatedVm);
+        // Using a dynamic specifier string keeps tsc from trying to
+        // resolve the module at compile time.
+        const specifier = 'isolated-vm';
+        const mod = (await import(specifier)) as { default?: IvmModule } & IvmModule;
+        return mod.default !== undefined ? mod.default : (mod as IvmModule);
       } catch {
         return null;
       }
@@ -60,12 +89,12 @@ function loadIsolatedVm(): Promise<IsolatedVm | null> {
 }
 
 interface JsUdfRuntime {
-  readonly ivm: IsolatedVm;
-  readonly isolate: import('isolated-vm').Isolate;
-  readonly context: import('isolated-vm').Context;
+  readonly ivm: IvmModule;
+  readonly isolate: IvmIsolate;
+  readonly context: IvmContext;
   /** Compiled UDFs keyed by function name. Each is a reference to a JS
    *  function living inside the isolate. */
-  readonly compiled: Map<string, import('isolated-vm').Reference>;
+  readonly compiled: Map<string, IvmReference>;
 }
 
 // Per-Db runtime. The Db's onClose hook disposes the Isolate.
@@ -155,7 +184,7 @@ export async function registerJsUdf(db: Db, def: JsUdfDefinition): Promise<void>
   // Wrap the body as `(function(arg1, arg2) { <body> })` so we can capture
   // a reference to the function and call it on demand.
   const wrappedSource = `(function(${def.argNames.join(', ')}) {\n${def.body}\n})`;
-  let script: import('isolated-vm').Script;
+  let script: IvmScript;
   try {
     script = runtime.isolate.compileScriptSync(wrappedSource, {
       filename: `udf:${def.name}.js`,
@@ -164,12 +193,12 @@ export async function registerJsUdf(db: Db, def: JsUdfDefinition): Promise<void>
     const msg = e instanceof Error ? e.message : String(e);
     throw BqError.invalid(`JS UDF "${def.name}" failed to compile: ${msg}`, 'query');
   }
-  let fnRef: import('isolated-vm').Reference;
+  let fnRef: IvmReference;
   try {
     fnRef = script.runSync(runtime.context, {
       reference: true,
       timeout: DEFAULT_TIMEOUT_MS,
-    }) as import('isolated-vm').Reference;
+    });
   } finally {
     script.release();
   }
@@ -248,7 +277,7 @@ async function injectLibrary(runtime: JsUdfRuntime, url: string): Promise<void> 
 
 /** Cross the isolate boundary for one argument. Primitives go raw; the
  *  rest needs ExternalCopy. */
-function toIsolateArg(ivm: IsolatedVm, value: unknown): unknown {
+function toIsolateArg(ivm: IvmModule, value: unknown): unknown {
   if (value === null || value === undefined) return null;
   const t = typeof value;
   if (t === 'number' || t === 'bigint' || t === 'string' || t === 'boolean') {
