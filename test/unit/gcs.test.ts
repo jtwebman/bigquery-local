@@ -219,3 +219,22 @@ test('getGcsObjectMetadata surfaces 404 as an error', async () => {
     /GCS metadata fetch failed/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Uploads — only the failure path is exercised here because the test server
+// rejects all non-GET methods with 405. The success path is covered by the
+// load/extract integration tests, which use a fuller GCS stub.
+// ---------------------------------------------------------------------------
+
+test('writeGcsObject surfaces an upstream non-OK response as an error', async () => {
+  const { writeGcsObject } = await import('../../src/storage/gcs.ts');
+  await assert.rejects(
+    () =>
+      writeGcsObject(
+        'gs://bq-load/cant-upload-here.csv',
+        new TextEncoder().encode('hello'),
+        'text/csv',
+      ),
+    /GCS upload failed/,
+  );
+});
