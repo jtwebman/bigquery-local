@@ -117,15 +117,29 @@ async function ensureRuntime(db: Db): Promise<JsUdfRuntime> {
   const context = isolate.createContextSync();
   const runtime: JsUdfRuntime = { ivm, isolate, context, compiled: new Map() };
   RUNTIMES.set(db, runtime);
-  // Dispose the Isolate when the Db closes. Best-effort, all-or-nothing:
-  // if any one step throws (e.g. double-dispose race), the rest still run
-  // because the entire block sits inside the Db's own catch — see
-  // `Db.close()`. A leaked Isolate would just survive until process exit.
+  // Release per-UDF references on Db.close(). We intentionally do NOT
+  // call `runtime.isolate.dispose()` here: on Linux/Windows, calling
+  // dispose after a V8 CPU timeout has fired (e.g. our sandbox infinite-
+  // loop test) can block the calling thread waiting for the V8 worker
+  // to finalize — observed as a 6-hour hang in CI on Ubuntu and Windows
+  // runners while macOS finished in seconds. The isolate is small
+  // (~tens of MB at 128 MB cap), single-instance per Db, and will be
+  // reclaimed when the host process exits. References + the context
+  // can be released safely.
   db.onClose(() => {
-    for (const ref of runtime.compiled.values()) ref.release();
+    for (const ref of runtime.compiled.values()) {
+      try {
+        ref.release();
+      } catch {
+        /* ignore — same worker-thread hazard as dispose */
+      }
+    }
     runtime.compiled.clear();
-    runtime.context.release();
-    runtime.isolate.dispose();
+    try {
+      runtime.context.release();
+    } catch {
+      /* ignore */
+    }
     RUNTIMES.delete(db);
   });
   return runtime;
