@@ -62,7 +62,18 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Node 24.16.0 leaks an event-loop handle on teardown and hangs after the
+      # suite finishes. `--test-force-exit` makes the runner exit once tests +
+      # hooks complete. It's applied everywhere EXCEPT Windows, where it races
+      # node:test's per-file child-process teardown and spuriously fails a file
+      # ("test failed" with no failing subtest). Windows relies on the job
+      # timeout-minutes backstop instead.
       - name: Test with coverage
+        if: runner.os != 'Windows'
+        run: npm run test:coverage -- --test-force-exit
+
+      - name: Test with coverage (Windows)
+        if: runner.os == 'Windows'
         run: npm run test:coverage
 
   python-client:
