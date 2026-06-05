@@ -22,6 +22,11 @@ jobs:
   ci:
     name: ${{ matrix.os }} / node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
+    # Node 24.16.0 has intermittently hung on event-loop teardown (a libuv /
+    # isolate handle leak), running to the 6h default. `--test-force-exit` (in
+    # the test scripts) handles the normal case; this caps a genuinely wedged
+    # job so it fails fast instead of burning a runner for hours.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
