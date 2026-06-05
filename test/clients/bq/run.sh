@@ -42,7 +42,10 @@ emu_log="$(mktemp)"
 emu_pid=$!
 
 API=""
-for _ in $(seq 1 100); do
+# Wait up to 60s, not 10s: a warm start prints "listening" in ~1s, but the
+# first db init on a cold CI runner downloads DuckDB's spatial + crypto
+# extensions over the network first, which can take much longer under load.
+for _ in $(seq 1 600); do
   line="$(grep -o 'listening on http://[^ ]*' "$emu_log" 2>/dev/null || true)"
   if [[ -n "$line" ]]; then
     API="${line#listening on }"
@@ -55,11 +58,12 @@ for _ in $(seq 1 100); do
   fi
   sleep 0.1
 done
-rm -f "$emu_log"
 if [[ -z "$API" ]]; then
   echo "emulator did not print a listening URL within timeout" >&2
+  cat "$emu_log" >&2
   exit 1
 fi
+rm -f "$emu_log"
 echo "emulator listening at $API"
 
 # `bq` wrapper: always pass the emulator endpoint + project. (Don't redirect
