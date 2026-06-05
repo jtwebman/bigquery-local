@@ -183,3 +183,24 @@ test('GEOGRAPHY column stores + filters with ST_INTERSECTS', async () => {
   `);
   assert.equal(inside, '1');
 });
+
+test('selecting a GEOGRAPHY column directly returns its WKT text', async () => {
+  // Reading the stored geometry back as a result column must not hit DuckDB's
+  // JS materializer with a raw GEOMETRY value (which throws "Unexpected type
+  // id: 40") — it has to come back as BQ WKT, like the table-read path.
+  const out = await scalar('SELECT loc FROM `ds.places` WHERE id = 1');
+  assert.equal(out, 'POINT(5 5)');
+});
+
+test('SELECT * over a table with a GEOGRAPHY column returns WKT for that column', async () => {
+  const res = await fetch(`${server.url}/projects/${PROJECT}/queries`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: 'SELECT * FROM `ds.places` ORDER BY id' }),
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { rows: Array<{ f: Array<{ v: unknown }> }> };
+  // Row order: id, loc (table schema order).
+  assert.equal(unwrapV(body.rows[0]?.f[0]?.v), '1');
+  assert.equal(unwrapV(body.rows[0]?.f[1]?.v), 'POINT(5 5)');
+});
