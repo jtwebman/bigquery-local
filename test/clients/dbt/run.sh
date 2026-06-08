@@ -41,7 +41,10 @@ emu_pid=$!
 
 url=""
 grpc_url=""
-for _ in $(seq 1 100); do
+# Wait up to 60s, not 10s: a warm start prints "listening" in ~1s, but the
+# first db init on a cold CI runner downloads DuckDB's spatial + crypto
+# extensions over the network first, which can take much longer under load.
+for _ in $(seq 1 600); do
   http_line="$(grep -o 'listening on http://[^ ]*' "$emu_log" 2>/dev/null || true)"
   grpc_line="$(grep -o 'gRPC on [^ ]*' "$emu_log" 2>/dev/null || true)"
   if [[ -n "$http_line" && -n "$grpc_line" ]]; then
@@ -56,11 +59,12 @@ for _ in $(seq 1 100); do
   fi
   sleep 0.1
 done
-rm -f "$emu_log"
 if [[ -z "$url" ]]; then
   echo "emulator did not print a listening URL within timeout" >&2
+  cat "$emu_log" >&2
   exit 1
 fi
+rm -f "$emu_log"
 export BIGQUERY_EMULATOR_HOST="$url"
 # Pass the gRPC URL too so the sitecustomize shim can route
 # dbt-bigquery's Storage Read fast-path through the emulator. Without

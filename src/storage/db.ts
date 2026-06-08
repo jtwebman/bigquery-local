@@ -86,6 +86,11 @@ export interface PreparedStatement {
   all<Row = Record<string, unknown>>(params?: readonly unknown[]): Promise<readonly Row[]>;
 }
 
+// DuckDB type id for the spatial extension's GEOMETRY type (backs GEOGRAPHY).
+// It isn't in the node-api's known type enum, so asType()/getRowObjectsJS()
+// throw "Unexpected type id: 40" on it; only the raw columnTypeId() is safe.
+const DUCKDB_GEOMETRY_TYPE_ID = 40;
+
 // Parse a DuckDB type string (e.g. "BIGINT", "VARCHAR", "DECIMAL(38, 9)",
 // "BIGINT[]", "TIMESTAMP WITH TIME ZONE") into a runtime type object suitable
 // for DuckDBScalarFunction.setReturnType / addParameter. Only covers the types
@@ -273,6 +278,40 @@ export async function createDb(config: DbConfig = {}): Promise<Db> {
           ? await connection.runAndReadAll(sql)
           : await connection.runAndReadAll(sql, values);
       const columnNames = reader.columnNames();
+      // The spatial extension's GEOMETRY type (which backs GEOGRAPHY) reports
+      // DuckDB type id 40 — a type the node-api doesn't recognize, so both
+      // columnTypes() and getRowObjectsJS() throw "Unexpected type id: 40" the
+      // moment a result column is GEOMETRY. The raw columnTypeId() never throws,
+      // so detect geometry columns by id and re-run with each wrapped in
+      // ST_AsText — they read back as BQ WKT text, the same conversion
+      // bqSelectExpression applies on the table-read path. The column type is
+      // still reported as GEOMETRY so the result schema maps to GEOGRAPHY (not
+      // STRING). A geometry output column implies a SELECT, so the re-run is safe.
+      // Coerce to number: columnTypeId() is typed as the DuckDBTypeId enum,
+      // which doesn't include 40 (the node-api doesn't model GEOMETRY).
+      const geoFlags = columnNames.map(
+        (_, i) => (reader.columnTypeId(i) as number) === DUCKDB_GEOMETRY_TYPE_ID,
+      );
+      if (geoFlags.some(Boolean)) {
+        const q = (name: string): string => `"${name.replace(/"/g, '""')}"`;
+        const projection = columnNames
+          .map((name, i) =>
+            geoFlags[i] ? `replace(ST_AsText(${q(name)}), ' (', '(') AS ${q(name)}` : q(name),
+          )
+          .join(', ');
+        const inner = sql.trim().replace(/;\s*$/, '');
+        const wrappedSql = `SELECT ${projection} FROM (${inner}) AS _bq_geo`;
+        const wrapped =
+          values === undefined
+            ? await connection.runAndReadAll(wrappedSql)
+            : await connection.runAndReadAll(wrappedSql, values);
+        const wrappedTypes = wrapped.columnTypes().map((t) => t.toString());
+        return {
+          columnNames: wrapped.columnNames(),
+          columnTypes: wrappedTypes.map((t, i) => (geoFlags[i] ? 'GEOMETRY' : t)),
+          rows: wrapped.getRowObjectsJS() as readonly Record<string, unknown>[],
+        };
+      }
       const columnTypes = reader.columnTypes().map((t) => t.toString());
       const rows = reader.getRowObjectsJS() as readonly Record<string, unknown>[];
       return { columnNames, columnTypes, rows };
